@@ -1,0 +1,20 @@
+# Netlify config: deploy the React frontend only.
+# The Express API (server.js) must be hosted elsewhere (Render, Railway, Azure, etc.).
+
+[build]
+  base    = "/"
+  command = "cd client && npm ci && npm run build"
+  publish = "client/dist"
+
+# SPA: serve index.html for all routes so client-side routing works
+[[redirects]]
+  from    = "/*"
+  to      = "/index.html"
+  status  = 200
+
+# Optional: headers for security
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"

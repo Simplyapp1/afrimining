@@ -1,0 +1,327 @@
+import { Router } from 'express';
+import bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
+import { query } from '../db.js';
+import { auditLog } from '../lib/audit.js';
+import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { passwordResetHtml } from '../lib/emailTemplates.js';
+
+const router = Router();
+const SALT_ROUNDS = 10;
+const RESET_EXPIRY_HOURS = 1;
+const CODE_LENGTH = 6;
+
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+    let result;
+    try {
+      result = await query(
+        `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.full_name, u.role, u.status, t.name AS tenant_name, t.[plan] AS tenant_plan
+         FROM users u
+         LEFT JOIN tenants t ON t.id = u.tenant_id
+         WHERE u.email = @email`,
+        { email: email.trim().toLowerCase() }
+      );
+    } catch (dbErr) {
+      console.error('Login: database error', dbErr.message || dbErr);
+      const msg = (dbErr.message || '').toLowerCase();
+      if (msg.includes('invalid object name') || msg.includes('does not exist')) {
+        return res.status(503).json({
+          error: 'Database not set up. Run: npm run db:schema && npm run seed',
+        });
+      }
+      throw dbErr;
+    }
+    let user = result.recordset[0];
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    if (user.status !== 'active') {
+      return res.status(403).json({ error: 'Account is not active' });
+    }
+    let tenant_ids = [];
+    try {
+      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: user.id });
+      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
+    } catch (_) {}
+    if (tenant_ids.length === 0 && user.tenant_id) tenant_ids = [user.tenant_id];
+    const hash = user.password_hash;
+    if (!hash || typeof hash !== 'string') {
+      console.error('Login: invalid password_hash for user', user.id);
+      return res.status(500).json({ error: 'Account configuration error. Contact support.' });
+    }
+    let match = false;
+    try {
+      match = await bcrypt.compare(password, hash);
+    } catch (bcryptErr) {
+      console.error('Login: bcrypt compare failed', bcryptErr);
+      return res.status(500).json({ error: 'Account configuration error. Contact support.' });
+    }
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    try {
+      await query(
+        `UPDATE users SET last_login_at = SYSUTCDATETIME(), login_count = login_count + 1, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id: user.id }
+      );
+    } catch (updateErr) {
+      console.error('Login: update last_login failed', updateErr);
+      // continue anyway; login can succeed
+    }
+    req.session.userId = user.id;
+    req.session.tenantId = user.tenant_id || tenant_ids[0] || null;
+    try {
+      await auditLog({
+        tenantId: req.session.tenantId,
+        userId: user.id,
+        action: 'login',
+        entityType: 'user',
+        entityId: user.id,
+        ip: req.ip || req.connection?.remoteAddress,
+      });
+    } catch (auditErr) {
+      console.error('Login: audit log failed', auditErr);
+    }
+    let page_roles = [];
+    try {
+      const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @id`, { id: user.id });
+      page_roles = (pr.recordset || []).map((r) => r.page_id ?? r.page_Id).filter(Boolean);
+    } catch (_) {}
+    if (user.role === 'super_admin') {
+      const { PAGE_IDS } = await import('./users.js');
+      page_roles = PAGE_IDS.slice();
+    }
+    res.json({
+      user: {
+        id: user.id,
+        tenant_id: req.session.tenantId,
+        tenant_ids: tenant_ids,
+        tenant_name: user.tenant_name,
+        tenant_plan: user.tenant_plan,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role,
+        status: user.status,
+        page_roles,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/logout', (req, res) => {
+  req.session.destroy(() => {});
+  res.json({ ok: true });
+});
+
+/** Switch current tenant (user must belong to that tenant). */
+router.post('/switch-tenant', async (req, res, next) => {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const { tenant_id } = req.body || {};
+    if (!tenant_id) return res.status(400).json({ error: 'tenant_id required' });
+    const check = await query(
+      `SELECT 1 FROM user_tenants WHERE user_id = @userId AND tenant_id = @tenantId`,
+      { userId: req.session.userId, tenantId: tenant_id }
+    );
+    if (!check.recordset?.length) {
+      const primary = await query(`SELECT tenant_id FROM users WHERE id = @id`, { id: req.session.userId });
+      const primaryId = primary.recordset?.[0]?.tenant_id;
+      if (primaryId !== tenant_id) return res.status(403).json({ error: 'You do not have access to this tenant' });
+    }
+    req.session.tenantId = tenant_id;
+    const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: tenant_id });
+    const tenantName = trow.recordset?.[0]?.name ?? null;
+    const tenantPlan = trow.recordset?.[0]?.plan ?? null;
+    res.json({ ok: true, tenant_id, tenant_name: tenantName, tenant_plan: tenantPlan });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/me', async (req, res, next) => {
+  if (!req.session?.userId) {
+    return res.status(200).json({ user: null });
+  }
+  try {
+    const result = await query(
+      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name, t.[plan] AS tenant_plan
+       FROM users u
+       LEFT JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.id = @id`,
+      { id: req.session.userId }
+    );
+    const row = result.recordset[0];
+    if (!row) return res.status(401).json({ error: 'User not found' });
+    const get = (r, k) => { if (!r) return undefined; const l = k.toLowerCase(); const e = Object.entries(r).find(([key]) => key && String(key).toLowerCase() === l); return e ? e[1] : undefined; };
+    const role = get(row, 'role');
+    let page_roles = [];
+    try {
+      const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @id`, { id: req.session.userId });
+      page_roles = (pr.recordset || []).map((r) => r.page_id ?? r.page_Id).filter(Boolean);
+    } catch (_) {
+      // table may not exist yet
+    }
+    if (role === 'super_admin') {
+      const { PAGE_IDS } = await import('./users.js');
+      page_roles = PAGE_IDS.slice();
+    }
+    let tenant_ids = [];
+    try {
+      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: req.session.userId });
+      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
+    } catch (_) {}
+    if (tenant_ids.length === 0 && get(row, 'tenant_id')) tenant_ids = [get(row, 'tenant_id')];
+    const primaryTenantId = get(row, 'tenant_id');
+    const currentTenantId = req.session.tenantId && tenant_ids.includes(req.session.tenantId) ? req.session.tenantId : (primaryTenantId || tenant_ids[0] || null);
+    let tenantName = get(row, 'tenant_name');
+    let tenantPlan = get(row, 'tenant_plan');
+    if (currentTenantId && currentTenantId !== primaryTenantId) {
+      try {
+        const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: currentTenantId });
+        if (trow.recordset?.[0]) {
+          tenantName = trow.recordset[0].name ?? trow.recordset[0].name;
+          tenantPlan = trow.recordset[0].plan ?? trow.recordset[0].plan;
+        }
+      } catch (_) {}
+    }
+    res.json({
+      user: {
+        id: get(row, 'id'),
+        tenant_id: currentTenantId,
+        tenant_ids,
+        tenant_name: tenantName,
+        tenant_plan: tenantPlan,
+        email: get(row, 'email'),
+        full_name: get(row, 'full_name'),
+        role,
+        status: get(row, 'status'),
+        avatar_url: get(row, 'avatar_url'),
+        last_login_at: get(row, 'last_login_at'),
+        login_count: get(row, 'login_count'),
+        created_at: get(row, 'created_at'),
+        page_roles,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /auth/forgot-password: id_number, full_name, email. If user exists and full_name matches, create reset token and send email. */
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { id_number, full_name, email } = req.body || {};
+    const emailStr = (email && String(email).trim()) || '';
+    if (!emailStr || !emailStr.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    const fullNameStr = (full_name && String(full_name).trim()) || '';
+    if (!fullNameStr) {
+      return res.status(400).json({ error: 'Name and surname are required' });
+    }
+
+    const result = await query(
+      `SELECT id, email, full_name FROM users WHERE email = @email AND [status] = N'active'`,
+      { email: emailStr.toLowerCase() }
+    );
+    const user = result.recordset?.[0];
+    if (!user) {
+      return res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
+    }
+
+    const dbFullName = (user.full_name || '').trim();
+    if (dbFullName && fullNameStr && dbFullName.toLowerCase() !== fullNameStr.toLowerCase()) {
+      return res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
+    }
+
+    if (!isEmailConfigured()) {
+      return res.status(503).json({ error: 'Email is not configured. Contact support to reset your password.' });
+    }
+
+    const token = randomBytes(32).toString('hex');
+    const code = String(Math.floor(100000 + Math.random() * 900000)).slice(0, CODE_LENGTH);
+    const expiresAt = new Date(Date.now() + RESET_EXPIRY_HOURS * 60 * 60 * 1000);
+
+    await query(
+      `DELETE FROM password_reset_tokens WHERE user_id = @userId`,
+      { userId: user.id }
+    );
+    await query(
+      `INSERT INTO password_reset_tokens (user_id, token, code, expires_at) VALUES (@userId, @token, @code, @expiresAt)`,
+      { userId: user.id, token, code, expiresAt: expiresAt.toISOString() }
+    );
+
+    const appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    const html = passwordResetHtml({ resetLink, code, appUrl });
+    await sendEmail({
+      to: user.email,
+      subject: 'Reset your password – Thinkers',
+      body: html,
+      html: true,
+    });
+
+    res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /auth/reset-password: token, code, new_password, confirm_password. Validates token/code and updates password. */
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, code, new_password, confirm_password } = req.body || {};
+    const tokenStr = (token && String(token).trim()) || '';
+    const codeStr = (code && String(code).trim()) || '';
+    if (!tokenStr || !codeStr) {
+      return res.status(400).json({ error: 'Token and code are required' });
+    }
+    if (!new_password || String(new_password).length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    if (new_password !== confirm_password) {
+      return res.status(400).json({ error: 'Passwords do not match' });
+    }
+
+    const row = await query(
+      `SELECT id, user_id, code, expires_at FROM password_reset_tokens WHERE token = @token`,
+      { token: tokenStr }
+    );
+    const reset = row.recordset?.[0];
+    if (!reset) {
+      return res.status(400).json({ error: 'Invalid or expired reset link. Request a new one from the forgot password page.' });
+    }
+    const userId = reset.user_id ?? reset.user_Id;
+    const expiresAt = reset.expires_at;
+    if (new Date(expiresAt) < new Date()) {
+      await query(`DELETE FROM password_reset_tokens WHERE id = @id`, { id: reset.id });
+      return res.status(400).json({ error: 'This reset link has expired. Request a new one from the forgot password page.' });
+    }
+    const storedCode = (reset.code || '').trim();
+    if (storedCode !== codeStr) {
+      return res.status(400).json({ error: 'Invalid code. Check the code in your email and try again.' });
+    }
+
+    const passwordHash = await bcrypt.hash(new_password, SALT_ROUNDS);
+    await query(
+      `UPDATE users SET password_hash = @passwordHash, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id: userId, passwordHash }
+    );
+    await query(`DELETE FROM password_reset_tokens WHERE user_id = @userId`, { userId });
+
+    res.json({ ok: true, message: 'Password updated. You can now sign in with your new password.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;

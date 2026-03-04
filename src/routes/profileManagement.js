@@ -1,0 +1,1031 @@
+import { Router } from 'express';
+import path from 'path';
+import fs from 'fs';
+import multer from 'multer';
+import { query, getPool } from '../db.js';
+import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { scheduleCreatedHtml, leaveAppliedHtml, leaveReviewedHtml, warningIssuedHtml, rewardIssuedHtml } from '../lib/emailTemplates.js';
+import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
+
+const router = Router();
+const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
+
+function getRow(row, key) {
+  if (!row) return undefined;
+  const k = Object.keys(row).find((x) => x && String(x).toLowerCase() === String(key).toLowerCase());
+  return k ? row[k] : undefined;
+}
+
+function canAccessTenant(req, tenantId) {
+  if (req.user?.role === 'super_admin') return true;
+  const tid = req.user?.tenant_id;
+  if (!tid) return false;
+  if (Array.isArray(req.user?.tenant_ids)) return req.user.tenant_ids.includes(tenantId);
+  return tid === tenantId;
+}
+
+const leaveUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tenantId = String(req.user?.tenant_id || 'anon');
+      const leaveId = String(req.params?.id || 'new');
+      const dir = path.join(uploadsBase, 'leave', tenantId, leaveId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${Date.now()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+}).array('files', 10);
+
+const documentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tenantId = String(req.user?.tenant_id || 'anon');
+      const userId = String(req.user?.id || 'new');
+      const dir = path.join(uploadsBase, 'documents', tenantId, userId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${Date.now()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+}).single('file');
+
+router.use(requireAuth);
+router.use(loadUser);
+
+// —— Work schedules: one schedule per employee (private). Profile sees only own; Management creates/edits for any employee. ——
+router.get('/schedules', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const userId = req.query.user_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    let sqlQuery = `SELECT s.id, s.user_id, s.title, s.period_start, s.period_end, s.created_at, u.full_name AS user_name, u.email AS user_email
+       FROM work_schedules s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE s.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (userId) {
+      sqlQuery += ' AND s.user_id = @userId';
+      params.userId = userId;
+    }
+    sqlQuery += ' ORDER BY s.period_start DESC';
+    const result = await query(sqlQuery, params);
+    res.json({ schedules: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/schedules', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, title, period_start, period_end } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!user_id || !title || !period_start || !period_end) return res.status(400).json({ error: 'user_id (employee), title, period_start, period_end required' });
+    const ins = await query(
+      `INSERT INTO work_schedules (tenant_id, user_id, title, period_start, period_end, created_by)
+       OUTPUT INSERTED.id, INSERTED.user_id, INSERTED.title, INSERTED.period_start, INSERTED.period_end, INSERTED.created_at
+       VALUES (@tenantId, @userId, @title, @period_start, @period_end, @createdBy)`,
+      { tenantId, userId: user_id, title: String(title).trim(), period_start, period_end, createdBy: req.user.id }
+    );
+    const row = ins.recordset[0];
+    if (isEmailConfigured()) {
+      const userRow = await query(`SELECT email FROM users WHERE id = @userId`, { userId: user_id });
+      const email = userRow.recordset?.[0] && getRow(userRow.recordset[0], 'email');
+      if (email && String(email).trim()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const html = scheduleCreatedHtml({
+          scheduleTitle: getRow(row, 'title'),
+          periodStart: getRow(row, 'period_start'),
+          periodEnd: getRow(row, 'period_end'),
+          createdByName: req.user.full_name || req.user.email || null,
+          appUrl,
+        });
+        sendEmail({ to: email, subject: `Work schedule created: ${getRow(row, 'title')}`, body: html, html: true }).catch((e) => console.error('[profile-management] Schedule created email error:', e?.message));
+      }
+    }
+    res.status(201).json({
+      schedule: {
+        id: getRow(row, 'id'),
+        user_id: getRow(row, 'user_id'),
+        title: getRow(row, 'title'),
+        period_start: getRow(row, 'period_start'),
+        period_end: getRow(row, 'period_end'),
+        created_at: getRow(row, 'created_at'),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Bulk generate: one schedule for an employee over a time frame, with a repeating pattern (day/night/off).
+const TIME_FRAME_MONTHS = [1, 3, 6, 12];
+router.post('/schedules/bulk', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, start_date, time_frame_months, pattern } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!user_id || !start_date || !pattern || !Array.isArray(pattern) || pattern.length === 0) {
+      return res.status(400).json({ error: 'user_id, start_date, and pattern (non-empty array) required' });
+    }
+    const months = parseInt(time_frame_months, 10);
+    if (!TIME_FRAME_MONTHS.includes(months)) {
+      return res.status(400).json({ error: 'time_frame_months must be 1, 3, 6, or 12' });
+    }
+    const normalized = pattern.map((p) => (String(p).toLowerCase() === 'night' ? 'night' : String(p).toLowerCase() === 'off' ? 'off' : 'day'));
+    const start = new Date(start_date + 'T12:00:00.000Z');
+    if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Invalid start_date' });
+    const end = new Date(start);
+    end.setUTCMonth(end.getUTCMonth() + months);
+    end.setUTCDate(0);
+    const periodStart = start.toISOString().slice(0, 10);
+    const periodEnd = end.toISOString().slice(0, 10);
+    const title = months === 1
+      ? `${start.toLocaleString('default', { month: 'short' })} ${start.getUTCFullYear()}`
+      : `${start.toLocaleString('default', { month: 'short' })} ${start.getUTCFullYear()} – ${end.toLocaleString('default', { month: 'short' })} ${end.getUTCFullYear()}`;
+    const ins = await query(
+      `INSERT INTO work_schedules (tenant_id, user_id, title, period_start, period_end, created_by)
+       OUTPUT INSERTED.id
+       VALUES (@tenantId, @userId, @title, @periodStart, @periodEnd, @createdBy)`,
+      { tenantId, userId: user_id, title, periodStart, periodEnd, createdBy: req.user.id }
+    );
+    const scheduleId = getRow(ins.recordset[0], 'id');
+    if (!scheduleId) return res.status(500).json({ error: 'Failed to create schedule' });
+    let dayIndex = 0;
+    let inserted = 0;
+    for (let d = new Date(start); d.toISOString().slice(0, 10) <= periodEnd; d.setUTCDate(d.getUTCDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const slot = normalized[dayIndex % normalized.length];
+      if (slot === 'day' || slot === 'night') {
+        await query(
+          `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes) VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
+          { scheduleId, workDate: dateStr, shiftType: slot, notes: null }
+        );
+        inserted++;
+      }
+      dayIndex++;
+    }
+    if (isEmailConfigured()) {
+      const userRow = await query(`SELECT email FROM users WHERE id = @userId`, { userId: user_id });
+      const email = userRow.recordset?.[0] && getRow(userRow.recordset[0], 'email');
+      if (email && String(email).trim()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const html = scheduleCreatedHtml({
+          scheduleTitle: title,
+          periodStart,
+          periodEnd,
+          createdByName: req.user.full_name || req.user.email || null,
+          appUrl,
+        });
+        sendEmail({ to: email, subject: `Work schedule created: ${title}`, body: html, html: true }).catch((e) => console.error('[profile-management] Schedule created email error:', e?.message));
+      }
+    }
+    res.status(201).json({
+      schedule: { id: scheduleId, user_id, title, period_start: periodStart, period_end: periodEnd },
+      entries_created: inserted,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/schedules/:id/entries', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { entries } = req.body || {};
+    const sched = await query(`SELECT id, tenant_id, user_id FROM work_schedules WHERE id = @id`, { id });
+    const row = sched.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Schedule not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const arr = Array.isArray(entries) ? entries : [];
+    for (const e of arr) {
+      const { work_date, shift_type, notes } = e || {};
+      if (!work_date || !shift_type) continue;
+      const st = shift_type === 'night' ? 'night' : 'day';
+      await query(
+        `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes)
+         VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
+        { scheduleId: id, workDate: work_date, shiftType: st, notes: notes || null }
+      );
+    }
+    res.status(201).json({ added: arr.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { month, year } = req.query;
+    const userId = req.user.id;
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
+    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
+    const start = new Date(y, m, 1);
+    const end = new Date(y, m + 1, 0);
+    const result = await query(
+      `SELECT e.work_date, e.shift_type, e.notes, s.title AS schedule_title
+       FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
+       WHERE e.work_date >= @start AND e.work_date <= @end
+       ORDER BY e.work_date`,
+      { tenantId, userId, start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+    );
+    const entries = (result.recordset || []).map((r) => ({
+      work_date: getRow(r, 'work_date'),
+      shift_type: getRow(r, 'shift_type'),
+      notes: getRow(r, 'notes'),
+      schedule_title: getRow(r, 'schedule_title'),
+    }));
+    res.json({ entries });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/schedules/:id/entries', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const sched = await query(`SELECT s.id, s.tenant_id, s.user_id, u.full_name AS user_name FROM work_schedules s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = @id`, { id });
+    const row = sched.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Schedule not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const result = await query(
+      `SELECT e.id, e.work_date, e.shift_type, e.notes
+       FROM work_schedule_entries e
+       WHERE e.work_schedule_id = @id ORDER BY e.work_date`,
+      { id }
+    );
+    const entries = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      work_date: getRow(r, 'work_date'),
+      shift_type: getRow(r, 'shift_type'),
+      notes: getRow(r, 'notes'),
+    }));
+    res.json({ schedule_user_id: getRow(row, 'user_id'), schedule_user_name: getRow(row, 'user_name'), entries });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Leave types (tenant-defined; profile lists, management CRUD) ——
+router.get('/leave/types', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ types: [] });
+    const result = await query(
+      `SELECT id, name, default_days_per_year FROM leave_types WHERE tenant_id = @tenantId ORDER BY name`,
+      { tenantId }
+    );
+    res.json({ types: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/leave/types', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { name, default_days_per_year } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !name) return res.status(400).json({ error: 'name required' });
+    await query(
+      `INSERT INTO leave_types (tenant_id, name, default_days_per_year) VALUES (@tenantId, @name, @defaultDays)`,
+      { tenantId, name: String(name).trim(), defaultDays: default_days_per_year != null ? parseInt(default_days_per_year, 10) : null }
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Leave balance (Profile) ——
+router.get('/leave/balance', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const tenantId = req.user.tenant_id;
+    const year = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    const result = await query(
+      `SELECT leave_type, total_days, used_days FROM leave_balance WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year`,
+      { userId, tenantId, year }
+    );
+    res.json({ balance: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Leave applications ——
+router.get('/leave/applications', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT id, leave_type, start_date, end_date, days_requested, reason, status, created_at, reviewed_at, review_notes
+       FROM leave_applications WHERE user_id = @userId AND tenant_id = @tenantId ORDER BY created_at DESC`,
+      { userId, tenantId }
+    );
+    res.json({ applications: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Leave applications history (same as applications; for export label)
+router.get('/leave/applications/history', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT id, leave_type, start_date, end_date, days_requested, reason, status, created_at, reviewed_at, review_notes
+       FROM leave_applications WHERE user_id = @userId AND tenant_id = @tenantId ORDER BY created_at DESC`,
+      { userId, tenantId }
+    );
+    res.json({ applications: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/leave/applications', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { leave_type, start_date, end_date, days_requested, reason } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!leave_type || !start_date || !end_date) return res.status(400).json({ error: 'leave_type, start_date, end_date required' });
+    const days = Math.max(1, parseInt(days_requested, 10) || 1);
+    const ins = await query(
+      `INSERT INTO leave_applications (tenant_id, user_id, leave_type, start_date, end_date, days_requested, reason)
+       OUTPUT INSERTED.id, INSERTED.status, INSERTED.created_at
+       VALUES (@tenantId, @userId, @leaveType, @startDate, @endDate, @days, @reason)`,
+      { tenantId, userId: req.user.id, leaveType: String(leave_type).trim(), startDate: start_date, endDate: end_date, days, reason: reason || null }
+    );
+    const row = ins.recordset[0];
+    if (isEmailConfigured()) {
+      const managementEmails = await getManagementEmailsForTenant(query, tenantId);
+      const applicantName = req.user.full_name || req.user.email || 'An employee';
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      const html = leaveAppliedHtml({
+        applicantName,
+        leaveType: String(leave_type).trim(),
+        startDate: start_date,
+        endDate: end_date,
+        daysRequested: days,
+        reason: reason || null,
+        appUrl,
+      });
+      const subject = `Leave application: ${applicantName} – ${String(leave_type).trim()}`;
+      for (const to of managementEmails) {
+        sendEmail({ to, subject, body: html, html: true }).catch((e) => console.error('[profile-management] Leave applied email error:', e?.message));
+      }
+    }
+    res.status(201).json({ application: { id: getRow(row, 'id'), status: getRow(row, 'status'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/leave/applications/:id/attachments', leaveUpload, requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const files = req.files || [];
+    const app = await query(`SELECT id, tenant_id, user_id FROM leave_applications WHERE id = @id`, { id });
+    const row = app.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Application not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'user_id') !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    const uploaded = [];
+    for (const file of files) {
+      const rel = path.relative(path.join(process.cwd(), 'uploads'), file.path).replace(/\\/g, '/');
+      const ins = await query(
+        `INSERT INTO leave_attachments (leave_application_id, file_name, file_path, uploaded_by)
+         OUTPUT INSERTED.id, INSERTED.file_name, INSERTED.created_at
+         VALUES (@leaveId, @fileName, @filePath, @userId)`,
+        { leaveId: id, fileName: file.originalname || file.filename, filePath: rel, userId: req.user.id }
+      );
+      const r = ins.recordset[0];
+      uploaded.push({ id: getRow(r, 'id'), file_name: getRow(r, 'file_name'), created_at: getRow(r, 'created_at') });
+    }
+    res.status(201).json({ attachments: uploaded });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/leave/pending', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const result = await query(
+      `SELECT l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason, l.created_at, u.full_name AS user_name
+       FROM leave_applications l
+       LEFT JOIN users u ON u.id = l.user_id
+       WHERE l.tenant_id = @tenantId AND l.status = N'pending' ORDER BY l.created_at`,
+      { tenantId }
+    );
+    res.json({ applications: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/leave/applications/:id/review', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status, review_notes } = req.body || {};
+    if (!status || !['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'status must be approved or rejected' });
+    const app = await query(`SELECT id, tenant_id, user_id, leave_type, start_date, end_date, days_requested FROM leave_applications WHERE id = @id`, { id });
+    const row = app.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Application not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    await query(
+      `UPDATE leave_applications SET status = @status, reviewed_by = @reviewedBy, reviewed_at = SYSUTCDATETIME(), review_notes = @reviewNotes WHERE id = @id`,
+      { id, status, reviewedBy: req.user.id, reviewNotes: review_notes || null }
+    );
+    if (status === 'approved') {
+      const year = new Date(getRow(row, 'start_date')).getFullYear();
+      const leaveType = getRow(row, 'leave_type');
+      const days = getRow(row, 'days_requested') || 0;
+      const uid = getRow(row, 'user_id');
+      const tid = getRow(row, 'tenant_id');
+      await query(
+        `UPDATE leave_balance SET used_days = used_days + @days
+         WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year AND leave_type = @leaveType`,
+        { userId: uid, tenantId: tid, year, leaveType, days }
+      );
+      const upd = await query(`SELECT @@ROWCOUNT AS n`, {});
+      if (getRow(upd.recordset[0], 'n') === 0) {
+        await query(
+          `INSERT INTO leave_balance (user_id, tenant_id, [year], leave_type, total_days, used_days)
+           VALUES (@userId, @tenantId, @year, @leaveType, 0, @days)`,
+          { userId: uid, tenantId: tid, year, leaveType, days }
+        );
+      }
+    }
+    if (isEmailConfigured()) {
+      const applicantId = getRow(row, 'user_id');
+      const applicantResult = await query(`SELECT email FROM users WHERE id = @id`, { id: applicantId });
+      const applicantEmail = applicantResult.recordset?.[0] && getRow(applicantResult.recordset[0], 'email');
+      if (applicantEmail && String(applicantEmail).trim()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const html = leaveReviewedHtml({
+          status,
+          leaveType: getRow(row, 'leave_type'),
+          startDate: getRow(row, 'start_date'),
+          endDate: getRow(row, 'end_date'),
+          reviewedByName: req.user.full_name || req.user.email || null,
+          reviewNotes: review_notes || null,
+          appUrl,
+        });
+        const subject = status === 'approved' ? 'Leave application approved' : 'Leave application declined';
+        sendEmail({ to: applicantEmail, subject, body: html, html: true }).catch((e) => console.error('[profile-management] Leave reviewed email error:', e?.message));
+      }
+    }
+    res.json({ status });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Documents ——
+router.get('/documents', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const userId = req.query.userId || req.user.id;
+    if (userId !== req.user.id && !req.user.page_roles?.includes('management')) return res.status(403).json({ error: 'Forbidden' });
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT id, file_name, category, created_at FROM profile_documents WHERE user_id = @userId AND tenant_id = @tenantId ORDER BY created_at DESC`,
+      { userId, tenantId }
+    );
+    res.json({ documents: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documents', documentUpload, requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    const userId = req.user.id;
+    const tenantId = req.user.tenant_id;
+    const category = req.body?.category || null;
+    const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
+    const ins = await query(
+      `INSERT INTO profile_documents (user_id, tenant_id, file_name, file_path, category, uploaded_by)
+       OUTPUT INSERTED.id, INSERTED.file_name, INSERTED.created_at
+       VALUES (@userId, @tenantId, @fileName, @filePath, @category, @uploadedBy)`,
+      { userId, tenantId, fileName: req.file.originalname || req.file.filename, filePath: rel, category, uploadedBy: req.user.id }
+    );
+    const row = ins.recordset[0];
+    res.status(201).json({ document: { id: getRow(row, 'id'), file_name: getRow(row, 'file_name'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documents/:id/download', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT d.file_path, d.file_name, d.user_id, d.tenant_id FROM profile_documents d WHERE d.id = @id`,
+      { id }
+    );
+    const row = result.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'user_id') !== req.user.id && !req.user.page_roles?.includes('management')) return res.status(403).json({ error: 'Forbidden' });
+    const fullPath = path.join(process.cwd(), 'uploads', getRow(row, 'file_path'));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    res.download(fullPath, getRow(row, 'file_name') || 'document');
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documents/library', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT d.id, d.user_id, d.file_name, d.category, d.created_at, u.full_name AS user_name
+       FROM profile_documents d
+       LEFT JOIN users u ON u.id = d.user_id
+       WHERE d.tenant_id = @tenantId ORDER BY d.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ documents: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Warnings & rewards ——
+router.get('/warnings', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT w.id, w.warning_type, w.description, w.created_at, u.full_name AS issued_by_name
+       FROM disciplinary_warnings w LEFT JOIN users u ON u.id = w.issued_by
+       WHERE w.user_id = @userId ORDER BY w.created_at DESC`,
+      { userId: req.user.id }
+    );
+    res.json({ warnings: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/rewards', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT r.id, r.reward_type, r.description, r.created_at, u.full_name AS issued_by_name
+       FROM rewards r LEFT JOIN users u ON u.id = r.issued_by
+       WHERE r.user_id = @userId ORDER BY r.created_at DESC`,
+      { userId: req.user.id }
+    );
+    res.json({ rewards: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/warnings', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, warning_type, description } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !user_id || !warning_type) return res.status(400).json({ error: 'user_id and warning_type required' });
+    const ins = await query(
+      `INSERT INTO disciplinary_warnings (tenant_id, user_id, issued_by, warning_type, description)
+       OUTPUT INSERTED.id, INSERTED.created_at
+       VALUES (@tenantId, @userId, @issuedBy, @warningType, @description)`,
+      { tenantId, userId: user_id, issuedBy: req.user.id, warningType: String(warning_type).trim(), description: description || null }
+    );
+    const row = ins.recordset[0];
+    if (isEmailConfigured()) {
+      const userRow = await query(`SELECT email FROM users WHERE id = @id`, { id: user_id });
+      const email = userRow.recordset?.[0] && getRow(userRow.recordset[0], 'email');
+      if (email && String(email).trim()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const html = warningIssuedHtml({
+          warningType: String(warning_type).trim(),
+          description: description || null,
+          issuedByName: req.user.full_name || req.user.email || null,
+          appUrl,
+        });
+        sendEmail({ to: email, subject: `Disciplinary warning: ${String(warning_type).trim()}`, body: html, html: true }).catch((e) => console.error('[profile-management] Warning email error:', e?.message));
+      }
+    }
+    res.status(201).json({ warning: { id: getRow(row, 'id'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/rewards', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, reward_type, description } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !user_id || !reward_type) return res.status(400).json({ error: 'user_id and reward_type required' });
+    const ins = await query(
+      `INSERT INTO rewards (tenant_id, user_id, issued_by, reward_type, description)
+       OUTPUT INSERTED.id, INSERTED.created_at
+       VALUES (@tenantId, @userId, @issuedBy, @rewardType, @description)`,
+      { tenantId, userId: user_id, issuedBy: req.user.id, rewardType: String(reward_type).trim(), description: description || null }
+    );
+    const row = ins.recordset[0];
+    if (isEmailConfigured()) {
+      const userRow = await query(`SELECT email FROM users WHERE id = @id`, { id: user_id });
+      const email = userRow.recordset?.[0] && getRow(userRow.recordset[0], 'email');
+      if (email && String(email).trim()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const html = rewardIssuedHtml({
+          rewardType: String(reward_type).trim(),
+          description: description || null,
+          issuedByName: req.user.full_name || req.user.email || null,
+          appUrl,
+        });
+        sendEmail({ to: email, subject: `Reward: ${String(reward_type).trim()}`, body: html, html: true }).catch((e) => console.error('[profile-management] Reward email error:', e?.message));
+      }
+    }
+    res.status(201).json({ reward: { id: getRow(row, 'id'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/warnings/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ warnings: [] });
+    const result = await query(
+      `SELECT w.id, w.user_id, w.warning_type, w.description, w.created_at,
+              u.full_name AS user_name, u.email AS user_email, iss.full_name AS issued_by_name
+       FROM disciplinary_warnings w
+       LEFT JOIN users u ON u.id = w.user_id
+       LEFT JOIN users iss ON iss.id = w.issued_by
+       WHERE w.tenant_id = @tenantId ORDER BY w.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ warnings: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/rewards/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ rewards: [] });
+    const result = await query(
+      `SELECT r.id, r.user_id, r.reward_type, r.description, r.created_at,
+              u.full_name AS user_name, u.email AS user_email, iss.full_name AS issued_by_name
+       FROM rewards r
+       LEFT JOIN users u ON u.id = r.user_id
+       LEFT JOIN users iss ON iss.id = r.issued_by
+       WHERE r.tenant_id = @tenantId ORDER BY r.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ rewards: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Queries (grievances) ——
+router.get('/queries', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT id, subject, body, status, created_at, responded_at, response_text FROM queries WHERE user_id = @userId ORDER BY created_at DESC`,
+      { userId: req.user.id }
+    );
+    res.json({ queries: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/queries', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { subject, body } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !subject) return res.status(400).json({ error: 'subject required' });
+    const ins = await query(
+      `INSERT INTO queries (tenant_id, user_id, subject, body)
+       OUTPUT INSERTED.id, INSERTED.status, INSERTED.created_at
+       VALUES (@tenantId, @userId, @subject, @body)`,
+      { tenantId, userId: req.user.id, subject: String(subject).trim(), body: body || null }
+    );
+    const row = ins.recordset[0];
+    res.status(201).json({ query: { id: getRow(row, 'id'), status: getRow(row, 'status'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/queries/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT q.id, q.user_id, q.subject, q.body, q.status, q.created_at, q.responded_at, u.full_name AS user_name
+       FROM queries q LEFT JOIN users u ON u.id = q.user_id
+       WHERE q.tenant_id = @tenantId ORDER BY q.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ queries: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/queries/:id/respond', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { response_text } = req.body || {};
+    const q = await query(`SELECT id, tenant_id FROM queries WHERE id = @id`, { id });
+    const row = q.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    await query(
+      `UPDATE queries SET status = N'closed', response_text = @responseText, responded_at = SYSUTCDATETIME(), responded_by = @userId WHERE id = @id`,
+      { id, responseText: response_text || null, userId: req.user.id }
+    );
+    res.json({ status: 'closed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Evaluations ——
+router.get('/evaluations', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT e.id, e.period, e.rating, e.notes, e.created_at, u.full_name AS evaluator_name
+       FROM evaluations e LEFT JOIN users u ON u.id = e.evaluator_id
+       WHERE e.user_id = @userId ORDER BY e.created_at DESC`,
+      { userId: req.user.id }
+    );
+    res.json({ evaluations: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/evaluations/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT e.id, e.user_id, e.period, e.rating, e.notes, e.file_path, e.created_at, u.full_name AS user_name, ev.full_name AS evaluator_name
+       FROM evaluations e
+       LEFT JOIN users u ON u.id = e.user_id
+       LEFT JOIN users ev ON ev.id = e.evaluator_id
+       WHERE e.tenant_id = @tenantId ORDER BY e.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ evaluations: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/evaluations', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, period, rating, notes } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !user_id || !period) return res.status(400).json({ error: 'user_id and period required' });
+    const ins = await query(
+      `INSERT INTO evaluations (tenant_id, user_id, evaluator_id, period, rating, notes)
+       OUTPUT INSERTED.id, INSERTED.created_at
+       VALUES (@tenantId, @userId, @evaluatorId, @period, @rating, @notes)`,
+      { tenantId, userId: user_id, evaluatorId: req.user.id, period: String(period).trim(), rating: rating || null, notes: notes || null }
+    );
+    const row = ins.recordset[0];
+    res.status(201).json({ evaluation: { id: getRow(row, 'id'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET controller (shift report) evaluations for Management → Evaluations tab */
+router.get('/evaluations/controller-evaluations', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT e.id, e.shift_report_id, e.answers, e.overall_comment, e.created_at,
+        r.route, r.report_date, r.controller1_name, r.controller2_name,
+        ev.full_name AS evaluator_name
+       FROM controller_evaluations e
+       INNER JOIN command_centre_shift_reports r ON r.id = e.shift_report_id
+       LEFT JOIN users ev ON ev.id = e.evaluator_user_id
+       WHERE (@tenantId IS NULL OR e.tenant_id = @tenantId OR e.tenant_id IS NULL)
+       ORDER BY e.created_at DESC`,
+      { tenantId: tenantId || null }
+    );
+    const list = (result.recordset || []).map((row) => ({
+      id: getRow(row, 'id'),
+      shift_report_id: getRow(row, 'shift_report_id'),
+      route: getRow(row, 'route'),
+      report_date: getRow(row, 'report_date'),
+      controller1_name: getRow(row, 'controller1_name'),
+      controller2_name: getRow(row, 'controller2_name'),
+      evaluator_name: getRow(row, 'evaluator_name'),
+      overall_comment: getRow(row, 'overall_comment'),
+      answers: getRow(row, 'answers'),
+      created_at: getRow(row, 'created_at'),
+    }));
+    res.json({ evaluations: list });
+  } catch (err) {
+    if (err?.message && (err.message.includes('controller_evaluations') || err.message.includes('Invalid object'))) {
+      console.warn('[profile-management] Controller evaluations table may be missing. Run: node scripts/run-command-centre-controller-evaluations.js');
+      return res.json({ evaluations: [], migrationRequired: true });
+    }
+    next(err);
+  }
+});
+
+/** GET one controller evaluation (full detail for Management) */
+router.get('/evaluations/controller-evaluations/:id', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT e.id, e.shift_report_id, e.answers, e.overall_comment, e.created_at,
+        r.route, r.report_date, r.shift_date, r.controller1_name, r.controller2_name, r.controller1_email, r.controller2_email,
+        ev.full_name AS evaluator_name, ev.email AS evaluator_email
+       FROM controller_evaluations e
+       INNER JOIN command_centre_shift_reports r ON r.id = e.shift_report_id
+       LEFT JOIN users ev ON ev.id = e.evaluator_user_id
+       WHERE e.id = @id AND (@tenantId IS NULL OR e.tenant_id = @tenantId)`,
+      { id: req.params.id, tenantId: tenantId || null }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Evaluation not found' });
+    const answers = (() => { try { return typeof row.answers === 'string' ? JSON.parse(row.answers) : row.answers; } catch (_) { return {}; } })();
+    res.json({
+      evaluation: {
+        id: getRow(row, 'id'),
+        shift_report_id: getRow(row, 'shift_report_id'),
+        route: getRow(row, 'route'),
+        report_date: getRow(row, 'report_date'),
+        shift_date: getRow(row, 'shift_date'),
+        controller1_name: getRow(row, 'controller1_name'),
+        controller2_name: getRow(row, 'controller2_name'),
+        controller1_email: getRow(row, 'controller1_email'),
+        controller2_email: getRow(row, 'controller2_email'),
+        evaluator_name: getRow(row, 'evaluator_name'),
+        evaluator_email: getRow(row, 'evaluator_email'),
+        answers,
+        overall_comment: getRow(row, 'overall_comment'),
+        created_at: getRow(row, 'created_at'),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— PIP ——
+router.get('/pip', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT id, title, goals, status, start_date, end_date, created_at FROM performance_improvement_plans WHERE user_id = @userId ORDER BY created_at DESC`,
+      { userId: req.user.id }
+    );
+    res.json({ plans: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/pip/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const result = await query(
+      `SELECT p.id, p.user_id, p.title, p.goals, p.status, p.start_date, p.end_date, p.created_at, u.full_name AS user_name
+       FROM performance_improvement_plans p LEFT JOIN users u ON u.id = p.user_id
+       WHERE p.tenant_id = @tenantId ORDER BY p.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ plans: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/pip', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { user_id, title, goals, start_date, end_date } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !user_id || !title) return res.status(400).json({ error: 'user_id and title required' });
+    const ins = await query(
+      `INSERT INTO performance_improvement_plans (tenant_id, user_id, created_by, title, goals, start_date, end_date)
+       OUTPUT INSERTED.id, INSERTED.created_at
+       VALUES (@tenantId, @userId, @createdBy, @title, @goals, @startDate, @endDate)`,
+      { tenantId, userId: user_id, createdBy: req.user.id, title: String(title).trim(), goals: goals || null, startDate: start_date || null, endDate: end_date || null }
+    );
+    const row = ins.recordset[0];
+    res.status(201).json({ plan: { id: getRow(row, 'id'), created_at: getRow(row, 'created_at') } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PIP progress updates (profile: own PIPs; management: any)
+router.get('/pip/:id/progress', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const pip = await query(`SELECT id, user_id, tenant_id FROM performance_improvement_plans WHERE id = @id`, { id });
+    const row = pip.recordset[0];
+    if (!row) return res.status(404).json({ error: 'PIP not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'user_id') !== req.user.id && !req.user.page_roles?.includes('management')) return res.status(403).json({ error: 'Forbidden' });
+    const result = await query(
+      `SELECT id, progress_date, notes, created_at FROM pip_progress_updates WHERE pip_id = @id ORDER BY progress_date DESC`,
+      { id }
+    );
+    res.json({ progress: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/pip/:id/progress', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { progress_date, notes } = req.body || {};
+    const pip = await query(`SELECT id, user_id, tenant_id FROM performance_improvement_plans WHERE id = @id`, { id });
+    const row = pip.recordset[0];
+    if (!row) return res.status(404).json({ error: 'PIP not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'user_id') !== req.user.id && !req.user.page_roles?.includes('management')) return res.status(403).json({ error: 'Forbidden' });
+    if (!progress_date) return res.status(400).json({ error: 'progress_date required' });
+    await query(
+      `INSERT INTO pip_progress_updates (pip_id, progress_date, notes, created_by) VALUES (@pipId, @progressDate, @notes, @userId)`,
+      { pipId: id, progressDate: progress_date, notes: notes || null, userId: req.user.id }
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Schedule events (tenant events; profile lists by month, management CRUD)
+router.get('/schedule-events', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const { month, year } = req.query;
+    if (!tenantId) return res.json({ events: [] });
+    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
+    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
+    const start = new Date(y, m, 1).toISOString().slice(0, 10);
+    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    const result = await query(
+      `SELECT id, title, event_date, description, created_at FROM schedule_events
+       WHERE tenant_id = @tenantId AND event_date >= @start AND event_date <= @end ORDER BY event_date`,
+      { tenantId, start, end }
+    );
+    res.json({ events: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/schedule-events', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { title, event_date, description } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    if (!tenantId || !title || !event_date) return res.status(400).json({ error: 'title and event_date required' });
+    await query(
+      `INSERT INTO schedule_events (tenant_id, title, event_date, description, created_by) VALUES (@tenantId, @title, @eventDate, @description, @userId)`,
+      { tenantId, title: String(title).trim(), eventDate: event_date, description: description || null, userId: req.user.id }
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Tenant users for dropdowns (management)
+router.get('/users/tenant', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ users: [] });
+    const result = await query(
+      `SELECT u.id, u.full_name, u.email FROM users u
+       INNER JOIN user_tenants ut ON ut.user_id = u.id AND ut.tenant_id = @tenantId
+       WHERE u.status = 'active' ORDER BY u.full_name`,
+      { tenantId }
+    );
+    res.json({ users: (result.recordset || []).map((r) => ({ id: getRow(r, 'id'), full_name: getRow(r, 'full_name'), email: getRow(r, 'email') })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;

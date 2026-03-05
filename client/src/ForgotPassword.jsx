@@ -3,9 +3,8 @@ import { Link } from 'react-router-dom';
 import { auth } from './api';
 
 export default function ForgotPassword() {
-  const [idNumber, setIdNumber] = useState('');
-  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [idNumber, setIdNumber] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,14 +16,12 @@ export default function ForgotPassword() {
     setLoading(true);
     try {
       await auth.forgotPassword({
-        id_number: idNumber.trim() || undefined,
-        full_name: fullName.trim(),
         email: email.trim().toLowerCase(),
+        id_number: idNumber.trim(),
       });
       setSuccess('If an account exists with this email, you will receive reset instructions shortly. Check your inbox and spam folder.');
-      setIdNumber('');
-      setFullName('');
       setEmail('');
+      setIdNumber('');
     } catch (err) {
       setError(err.message || 'Request failed');
     } finally {
@@ -42,7 +39,7 @@ export default function ForgotPassword() {
           <h1 className="text-2xl font-bold text-white tracking-tight">Thinkers Afrika</h1>
           <p className="text-[#fecaca] text-base mt-1.5 font-medium">Management System</p>
           <p className="text-[#fca5a5]/80 mt-3 text-sm leading-relaxed">
-            Enter your details to receive a password reset link and code by email.
+            Enter your username and SA ID to receive a password reset link and code by email.
           </p>
         </div>
       </div>
@@ -57,7 +54,7 @@ export default function ForgotPassword() {
           <div className="bg-[#262626]/90 rounded-xl shadow-2xl shadow-black/20 border border-[#404040]/80 p-6 backdrop-blur-sm">
             <div className="mb-5">
               <h2 className="text-lg font-semibold text-white">Forgot password</h2>
-              <p className="text-[#a3a3a3] text-xs mt-0.5">Enter your details to receive a reset link and code</p>
+              <p className="text-[#a3a3a3] text-xs mt-0.5">Enter your username and SA ID to receive a reset link and code</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -73,31 +70,6 @@ export default function ForgotPassword() {
               )}
 
               <div>
-                <label htmlFor="id_number" className="block text-xs font-medium text-[#e5e5e5] mb-1">ID number</label>
-                <input
-                  id="id_number"
-                  type="text"
-                  value={idNumber}
-                  onChange={(e) => setIdNumber(e.target.value)}
-                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
-                  placeholder="Optional"
-                  autoComplete="off"
-                />
-              </div>
-              <div>
-                <label htmlFor="full_name" className="block text-xs font-medium text-[#e5e5e5] mb-1">Name and surname</label>
-                <input
-                  id="full_name"
-                  type="text"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
-                  placeholder="As registered in the system"
-                  required
-                  autoComplete="name"
-                />
-              </div>
-              <div>
                 <label htmlFor="email" className="block text-xs font-medium text-[#e5e5e5] mb-1">Username (email)</label>
                 <input
                   id="email"
@@ -107,7 +79,20 @@ export default function ForgotPassword() {
                   className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
                   placeholder="you@company.com"
                   required
-                  autoComplete="email"
+                  autoComplete="username"
+                />
+              </div>
+              <div>
+                <label htmlFor="id_number" className="block text-xs font-medium text-[#e5e5e5] mb-1">SA ID number</label>
+                <input
+                  id="id_number"
+                  type="text"
+                  value={idNumber}
+                  onChange={(e) => setIdNumber(e.target.value)}
+                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
+                  placeholder="South African ID number"
+                  required
+                  autoComplete="off"
                 />
               </div>
 

@@ -50,7 +50,9 @@ In the App Service → **Configuration** → **Application settings**, add:
 |------|--------|--------------|
 | `AZURE_SQL_CONNECTION_STRING` | `Server=tcp:YOUR_SERVER.database.windows.net,1433;Initial Catalog=YOUR_DB;User ID=YOUR_USER;Password=YOUR_PASSWORD;Encrypt=true;TrustServerCertificate=false` | ✓ |
 
-**Option B – Separate variables**
+**Option B – Separate variables (recommended if Option A fails)**
+
+Use this if the single connection string fails (e.g. password with `;`, `=`, or `@`; or parsing errors). The app prefers Option B when all four variables are set.
 
 | Name | Value | Slot setting |
 |------|--------|--------------|

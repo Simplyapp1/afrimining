@@ -65,6 +65,13 @@ export default function UserManagement() {
   const [formUser, setFormUser] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [tab, setTab] = useState('users'); // 'users' | 'approvals'
+  const [signUpRequests, setSignUpRequests] = useState([]);
+  const [signUpRequestStatus, setSignUpRequestStatus] = useState('pending');
+  const [approvalRequest, setApprovalRequest] = useState(null);
+  const [approvalForm, setApprovalForm] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -104,6 +111,22 @@ export default function UserManagement() {
       tenantsApi.list().then((d) => setTenants(d.tenants || [])).catch(() => {});
     }
   }, [canManageUsers]);
+
+  const fetchSignUpRequests = useCallback(async () => {
+    setApprovalsLoading(true);
+    try {
+      const data = await usersApi.signUpRequests.list({ status: signUpRequestStatus });
+      setSignUpRequests(data.requests || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [signUpRequestStatus]);
+
+  useEffect(() => {
+    if (tab === 'approvals') fetchSignUpRequests();
+  }, [tab, fetchSignUpRequests]);
 
   const handleSort = (col) => {
     if (sort === col) setOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
@@ -176,7 +199,7 @@ export default function UserManagement() {
   };
 
   const openCreate = () => {
-    setFormUser({ email: '', full_name: '', password: '', role: 'user', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [] });
+    setFormUser({ email: '', full_name: '', password: '', role: 'user', id_number: '', cellphone: '', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [] });
     setModal('create');
     setError('');
   };
@@ -185,6 +208,7 @@ export default function UserManagement() {
     setFormUser({
       ...u,
       password: '',
+      cellphone: u.cellphone ?? '',
       page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
       tenant_ids: Array.isArray(u.tenant_ids) ? u.tenant_ids.slice() : (u.tenant_id ? [u.tenant_id] : []),
     });
@@ -203,6 +227,8 @@ export default function UserManagement() {
           full_name: formUser.full_name,
           password: formUser.password || 'ChangeMe123!',
           role: formUser.role,
+          id_number: formUser.id_number?.trim() || undefined,
+          cellphone: formUser.cellphone?.trim() || undefined,
           tenant_ids: (formUser.tenant_ids || []).length ? formUser.tenant_ids : (formUser.tenant_id ? [formUser.tenant_id] : []),
           page_roles: formUser.page_roles || [],
         });
@@ -211,6 +237,8 @@ export default function UserManagement() {
           full_name: formUser.full_name,
           role: formUser.role,
           status: formUser.status,
+          id_number: formUser.id_number?.trim() || undefined,
+          cellphone: formUser.cellphone?.trim() ?? undefined,
           tenant_ids: formUser.tenant_ids,
           page_roles: formUser.page_roles || [],
           ...(formUser.password ? { password: formUser.password } : {}),
@@ -242,6 +270,58 @@ export default function UserManagement() {
     }
   };
 
+  const openApproval = (request) => {
+    setApprovalRequest(request);
+    setApprovalForm({
+      role: 'user',
+      tenant_ids: me?.tenant_id ? [me.tenant_id] : (tenants.length ? [tenants[0].id] : []),
+      page_roles: [],
+    });
+    setRejectReason('');
+    setError('');
+  };
+
+  const approveSignUpRequest = async () => {
+    if (!approvalRequest || !approvalForm) return;
+    if (!(approvalForm.tenant_ids || []).length) {
+      setError('Select at least one tenant.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await usersApi.signUpRequests.approve(approvalRequest.id, {
+        role: approvalForm.role,
+        tenant_ids: approvalForm.tenant_ids,
+        page_roles: approvalForm.page_roles || [],
+      });
+      setApprovalRequest(null);
+      setApprovalForm(null);
+      fetchSignUpRequests();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const rejectSignUpRequest = async () => {
+    if (!approvalRequest) return;
+    setSaving(true);
+    setError('');
+    try {
+      await usersApi.signUpRequests.reject(approvalRequest.id, { reason: rejectReason.trim() || undefined });
+      setApprovalRequest(null);
+      setApprovalForm(null);
+      setRejectReason('');
+      fetchSignUpRequests();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.limit));
 
   return (
@@ -250,23 +330,47 @@ export default function UserManagement() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <h1 className="text-xl font-semibold text-surface-900">User management</h1>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={exportCsv}
-            className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
-          >
-            Export CSV
-          </button>
-          {canManageUsers && (
-            <button
-              type="button"
-              onClick={openCreate}
-              className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
-            >
-              Add user
-            </button>
+          {tab === 'users' && (
+            <>
+              <button
+                type="button"
+                onClick={exportCsv}
+                className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+              >
+                Export CSV
+              </button>
+              {canManageUsers && (
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+                >
+                  Add user
+                </button>
+              )}
+            </>
           )}
         </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-surface-200">
+        <button
+          type="button"
+          onClick={() => setTab('users')}
+          className={`px-4 py-2 text-sm font-medium rounded-t-lg ${tab === 'users' ? 'bg-white border border-surface-200 border-b-0 -mb-px text-brand-600' : 'text-surface-600 hover:text-surface-900'}`}
+        >
+          Users
+        </button>
+        {canManageUsers && (
+          <button
+            type="button"
+            onClick={() => setTab('approvals')}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg ${tab === 'approvals' ? 'bg-white border border-surface-200 border-b-0 -mb-px text-brand-600' : 'text-surface-600 hover:text-surface-900'}`}
+          >
+            Sign-up approvals
+          </button>
+        )}
       </div>
 
       {error && (
@@ -276,6 +380,8 @@ export default function UserManagement() {
         </div>
       )}
 
+      {tab === 'users' && (
+      <>
       {/* Filters & search */}
       <div className="bg-white rounded-xl border border-surface-200 p-4 mb-4">
         <div className="flex flex-wrap gap-3 items-center">
@@ -451,6 +557,61 @@ export default function UserManagement() {
           </div>
         )}
       </div>
+      </>
+      )}
+
+      {tab === 'approvals' && canManageUsers && (
+        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="p-4 border-b border-surface-100 flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium text-surface-700">Status</span>
+            <select
+              value={signUpRequestStatus}
+              onChange={(e) => setSignUpRequestStatus(e.target.value)}
+              className="rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-700"
+            >
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-50 border-b border-surface-200">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Name</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Email</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">ID number</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Cellphone</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Requested</th>
+                  {signUpRequestStatus === 'pending' && <th className="px-4 py-3 text-right font-medium text-surface-700">Actions</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {approvalsLoading ? (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+                ) : signUpRequests.length === 0 ? (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No sign-up requests.</td></tr>
+                ) : (
+                  signUpRequests.map((r) => (
+                    <tr key={r.id} className="hover:bg-surface-50/50">
+                      <td className="px-4 py-2 font-medium text-surface-900">{r.full_name}</td>
+                      <td className="px-4 py-2 text-surface-600 font-mono text-xs">{r.email}</td>
+                      <td className="px-4 py-2 text-surface-600">{r.id_number || '—'}</td>
+                      <td className="px-4 py-2 text-surface-600">{r.cellphone || '—'}</td>
+                      <td className="px-4 py-2 text-surface-600">{formatDate(r.created_at)}</td>
+                      {signUpRequestStatus === 'pending' && (
+                        <td className="px-4 py-2 text-right">
+                          <button type="button" onClick={() => openApproval(r)} className="text-brand-600 hover:underline">Review</button>
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Detail drawer */}
       {detailUser && (
@@ -548,6 +709,26 @@ export default function UserManagement() {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">SA ID number (for password reset)</label>
+                <input
+                  type="text"
+                  value={formUser.id_number || ''}
+                  onChange={(e) => setFormUser((f) => ({ ...f, id_number: e.target.value }))}
+                  placeholder="Optional"
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Cellphone number</label>
+                <input
+                  type="tel"
+                  value={formUser.cellphone || ''}
+                  onChange={(e) => setFormUser((f) => ({ ...f, cellphone: e.target.value }))}
+                  placeholder="Optional"
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-surface-700 mb-1">Password {modal === 'edit' && '(leave blank to keep)'}</label>
                 <input
                   type="password"
@@ -634,6 +815,124 @@ export default function UserManagement() {
             <div className="flex gap-2 mt-6">
               <button type="button" onClick={saveUser} disabled={saving || !formUser.full_name || (modal === 'create' && !formUser.email)} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Save</button>
               <button type="button" onClick={() => { setModal(null); setFormUser(null); }} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sign-up approval modal */}
+      {approvalRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/30" onClick={() => { setApprovalRequest(null); setApprovalForm(null); setRejectReason(''); }} />
+          <div className="relative bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
+            <h2 className="text-lg font-semibold text-surface-900 mb-4">Approve or reject sign-up</h2>
+            <div className="space-y-4 mb-4">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <p className="text-surface-500">Full name</p>
+                <p className="font-medium text-surface-900">{approvalRequest.full_name}</p>
+                <p className="text-surface-500">Email</p>
+                <p className="font-mono text-surface-900">{approvalRequest.email}</p>
+                <p className="text-surface-500">ID number</p>
+                <p className="text-surface-900">{approvalRequest.id_number || '—'}</p>
+                <p className="text-surface-500">Cellphone</p>
+                <p className="text-surface-900">{approvalRequest.cellphone || '—'}</p>
+              </div>
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              {approvalForm && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-surface-700 mb-1">Role</label>
+                    <select
+                      value={approvalForm.role}
+                      onChange={(e) => setApprovalForm((f) => ({ ...f, role: e.target.value }))}
+                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    >
+                      {ROLES.filter((r) => me?.role === 'super_admin' || r !== 'super_admin').map((r) => (
+                        <option key={r} value={r}>{r.replace('_', ' ')}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-surface-700 mb-2">Page access (roles)</label>
+                    <div className="flex flex-wrap gap-3">
+                      {PAGE_ROLES.map((pr) => (
+                        <label key={pr.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={(approvalForm.page_roles || []).includes(pr.id)}
+                            onChange={(e) => {
+                              const next = new Set(approvalForm.page_roles || []);
+                              if (e.target.checked) next.add(pr.id);
+                              else next.delete(pr.id);
+                              setApprovalForm((f) => ({ ...f, page_roles: [...next] }));
+                            }}
+                            className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          <span className="text-sm text-surface-700">{pr.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  {tenants.length > 0 && (
+                    <div>
+                      <label className="block text-sm font-medium text-surface-700 mb-2">Tenants</label>
+                      <div className="flex flex-wrap gap-3 max-h-32 overflow-y-auto">
+                        {tenants.map((t) => (
+                          <label key={t.id} className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={(approvalForm.tenant_ids || []).includes(t.id)}
+                              onChange={(e) => {
+                                const next = new Set(approvalForm.tenant_ids || []);
+                                if (e.target.checked) next.add(t.id);
+                                else next.delete(t.id);
+                                setApprovalForm((f) => ({ ...f, tenant_ids: [...next] }));
+                              }}
+                              className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                            />
+                            <span className="text-sm text-surface-700">{t.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Rejection reason (optional, for Reject)</label>
+                <input
+                  type="text"
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  placeholder="e.g. Duplicate or invalid details"
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-6">
+              <button
+                type="button"
+                onClick={approveSignUpRequest}
+                disabled={saving || !(approvalForm?.tenant_ids || []).length}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Approve & send login email'}
+              </button>
+              <button
+                type="button"
+                onClick={rejectSignUpRequest}
+                disabled={saving}
+                className="px-4 py-2 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                onClick={() => { setApprovalRequest(null); setApprovalForm(null); setRejectReason(''); }}
+                className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

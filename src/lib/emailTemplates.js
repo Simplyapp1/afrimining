@@ -625,3 +625,19 @@ export function shiftReportOverrideCodeToRequesterHtml({ reportRoute, reportDate
   `;
   return taskEmailLayout('Your override code', content, 'Command Centre');
 }
+
+/** Account approved: login details (same style as forgot password). */
+export function accountApprovedHtml({ loginUrl, email, temporaryPassword, appUrl }) {
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">Your sign-up request has been approved. You can now sign in with the details below. Please change your password after your first login.</p>`;
+  const rows = [
+    ['Email (username)', email || ''],
+    ['Temporary password', temporaryPassword || ''],
+  ];
+  const content = `
+    ${firstParagraph}
+    ${taskSectionBar('Login details')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(loginUrl || (appUrl || '') + '/login')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Sign in →</a></p>
+  `;
+  return taskEmailLayout('Account approved', content);
+}

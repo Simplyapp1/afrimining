@@ -2,34 +2,37 @@ import sql from 'mssql';
 import 'dotenv/config';
 
 const getConfig = () => {
-  if (process.env.AZURE_SQL_CONNECTION_STRING) {
-    return process.env.AZURE_SQL_CONNECTION_STRING;
-  }
   const server = process.env.AZURE_SQL_SERVER;
   const database = process.env.AZURE_SQL_DATABASE;
   const user = process.env.AZURE_SQL_USER;
   const password = process.env.AZURE_SQL_PASSWORD;
-  if (!server || !database || !user || !password) {
-    throw new Error(
-      'Set AZURE_SQL_CONNECTION_STRING or AZURE_SQL_SERVER, AZURE_SQL_DATABASE, AZURE_SQL_USER, AZURE_SQL_PASSWORD in .env'
-    );
+  const haveAllVars = server && database && user && password;
+
+  // Prefer Option B (separate vars): avoids connection-string parsing issues (e.g. special chars in password).
+  if (haveAllVars) {
+    return {
+      user,
+      password,
+      server,
+      port: parseInt(process.env.AZURE_SQL_PORT || '1433', 10),
+      database,
+      options: {
+        encrypt: true,
+        trustServerCertificate: false,
+      },
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000,
+      },
+    };
   }
-  return {
-    user,
-    password,
-    server,
-    port: parseInt(process.env.AZURE_SQL_PORT || '1433', 10),
-    database,
-    options: {
-      encrypt: true,
-      trustServerCertificate: false,
-    },
-    pool: {
-      max: 10,
-      min: 0,
-      idleTimeoutMillis: 30000,
-    },
-  };
+  if (process.env.AZURE_SQL_CONNECTION_STRING) {
+    return process.env.AZURE_SQL_CONNECTION_STRING;
+  }
+  throw new Error(
+    'Set AZURE_SQL_SERVER, AZURE_SQL_DATABASE, AZURE_SQL_USER, AZURE_SQL_PASSWORD (Option B), or AZURE_SQL_CONNECTION_STRING (Option A). If Option A fails, use Option B.'
+  );
 };
 
 let pool = null;

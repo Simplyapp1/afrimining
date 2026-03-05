@@ -211,7 +211,9 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen,
     <>
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-surface-700/50 px-3">
         {!isCollapsed && (
-          <span className="font-semibold tracking-tight text-white">Thinkers</span>
+          <span className="font-semibold tracking-tight text-white truncate">
+            {user?.tenant_name || import.meta.env.VITE_APP_NAME || 'Portal'}
+          </span>
         )}
         <div className="flex items-center gap-1">
           <button

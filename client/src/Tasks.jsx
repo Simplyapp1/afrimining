@@ -5,6 +5,7 @@ import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth }
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', section: 'Overview' },
   { id: 'create', label: 'Create task', section: 'Tasks' },
+  { id: 'library', label: 'Library', section: 'Library' },
 ];
 
 const STATUS_OPTIONS = [
@@ -273,6 +274,8 @@ export default function Tasks() {
               onCancel={() => setActiveTab('dashboard')}
             />
           )}
+
+          {activeTab === 'library' && <TabLibrary />}
         </div>
       </div>
     </div>
@@ -1034,6 +1037,204 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
           <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function TabLibrary() {
+  const [folders, setFolders] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [loadingFolders, setLoadingFolders] = useState(true);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [error, setError] = useState('');
+  const [migrationRequired, setMigrationRequired] = useState(false);
+
+  const loadFolders = useCallback(async () => {
+    setLoadingFolders(true);
+    setError('');
+    try {
+      const data = await tasksApi.library.folders.list();
+      setFolders(data.folders || []);
+      if (data.migrationRequired) setMigrationRequired(true);
+    } catch (e) {
+      setError(e?.message || 'Failed to load folders');
+      setFolders([]);
+    } finally {
+      setLoadingFolders(false);
+    }
+  }, []);
+
+  const loadFiles = useCallback(async () => {
+    setLoadingFiles(true);
+    setError('');
+    try {
+      const data = await tasksApi.library.files.list(selectedFolderId);
+      setFiles(data.files || []);
+    } catch (e) {
+      setError(e?.message || 'Failed to load files');
+      setFiles([]);
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, [selectedFolderId]);
+
+  useEffect(() => { loadFolders(); }, [loadFolders]);
+  useEffect(() => { loadFiles(); }, [loadFiles]);
+
+  const handleCreateFolder = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    setCreatingFolder(true);
+    setError('');
+    try {
+      await tasksApi.library.folders.create({ name: newFolderName.trim(), parent_id: selectedFolderId || undefined });
+      setNewFolderName('');
+      loadFolders();
+    } catch (err) {
+      setError(err?.message || 'Failed to create folder');
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      await tasksApi.library.files.upload(file, selectedFolderId);
+      loadFiles();
+    } catch (err) {
+      setError(err?.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const downloadFile = (file) => {
+    const url = tasksApi.library.files.downloadUrl(file.id);
+    window.open(url, '_blank');
+  };
+
+  const buildFolderTree = (parentId = null) => {
+    return folders
+      .filter((f) => (parentId == null ? !f.parent_id : f.parent_id === parentId))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  };
+
+  const rootFolders = buildFolderTree(null);
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-xl font-semibold text-surface-900">Library</h1>
+      <p className="text-sm text-surface-600">Upload files and organise them in folders. Select a folder on the left to view or add files.</p>
+
+      {migrationRequired && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-800 px-4 py-2 text-sm">
+          Library tables are not set up. Run: <code className="bg-amber-100 px-1 rounded">node scripts/run-tasks-library-schema.js</code>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 px-4 py-2 text-sm flex justify-between items-center">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')}>Dismiss</button>
+        </div>
+      )}
+
+      <div className="flex gap-6 flex-1 min-h-0">
+        <div className="w-64 shrink-0 rounded-xl border border-surface-200 bg-white p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-surface-500 uppercase">Folders</span>
+            <span className="text-xs text-surface-500">Select folder then create below</span>
+          </div>
+          {loadingFolders ? (
+            <p className="text-sm text-surface-500 py-2">Loading…</p>
+          ) : (
+            <ul className="space-y-0.5 text-sm">
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFolderId(null)}
+                  className={`w-full text-left px-2 py-1.5 rounded-lg ${selectedFolderId === null ? 'bg-brand-100 text-brand-800' : 'hover:bg-surface-100 text-surface-700'}`}
+                >
+                  Root
+                </button>
+              </li>
+              {rootFolders.map((f) => (
+                <li key={f.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFolderId(f.id)}
+                    className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-1 ${selectedFolderId === f.id ? 'bg-brand-100 text-brand-800' : 'hover:bg-surface-100 text-surface-700'}`}
+                  >
+                    <span className="truncate">{f.name}</span>
+                  </button>
+                  {buildFolderTree(f.id).map((sub) => (
+                    <li key={sub.id} className="pl-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFolderId(sub.id)}
+                        className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-1 ${selectedFolderId === sub.id ? 'bg-brand-100 text-brand-800' : 'hover:bg-surface-100 text-surface-700'}`}
+                      >
+                        <span className="truncate">{sub.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={handleCreateFolder} className="mt-3 pt-3 border-t border-surface-100">
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder={selectedFolderId ? 'New subfolder name' : 'New folder name (root)'}
+              className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm mb-1"
+            />
+            <button type="submit" disabled={creatingFolder || !newFolderName.trim()} className="w-full py-1.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+              {creatingFolder ? 'Creating…' : 'Create folder'}
+            </button>
+          </form>
+        </div>
+
+        <div className="flex-1 min-w-0 rounded-xl border border-surface-200 bg-white p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold text-surface-900">
+              {selectedFolderId == null ? 'Files in Root' : `Files in "${folders.find((x) => x.id === selectedFolderId)?.name || 'Folder'}"`}
+            </h2>
+            <label className="cursor-pointer">
+              <span className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+                {uploading ? 'Uploading…' : 'Upload file'}
+              </span>
+              <input type="file" className="hidden" onChange={handleUpload} disabled={uploading} />
+            </label>
+          </div>
+          {loadingFiles ? (
+            <p className="text-surface-500 py-4">Loading…</p>
+          ) : files.length === 0 ? (
+            <p className="text-surface-500 py-6 text-center">No files in this folder. Upload a file or select another folder.</p>
+          ) : (
+            <ul className="space-y-1">
+              {files.map((file) => (
+                <li key={file.id} className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-surface-50">
+                  <span className="text-sm text-surface-800 truncate">{file.file_name}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {file.file_size != null && <span className="text-xs text-surface-500">{(file.file_size / 1024).toFixed(1)} KB</span>}
+                    <button type="button" onClick={() => downloadFile(file)} className="text-sm text-brand-600 hover:text-brand-700">Download</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

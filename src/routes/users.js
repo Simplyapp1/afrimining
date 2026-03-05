@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
-import { query, getPool } from '../db.js';
+import { query, getPool, sql } from '../db.js';
 import { requireAuth, loadUser, requireTenantAdmin, requirePageAccess } from '../middleware/auth.js';
 import { auditLog } from '../lib/audit.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
-import { newUserCreatedHtml } from '../lib/emailTemplates.js';
+import { newUserCreatedHtml, accountApprovedHtml } from '../lib/emailTemplates.js';
+import { randomBytes } from 'crypto';
 import { getSuperAdminEmails } from '../lib/emailRecipients.js';
 
 const router = Router();
@@ -108,7 +109,7 @@ router.get('/', async (req, res, next) => {
     const total = countResult.recordset[0].total;
 
     const result = await query(
-      `SELECT DISTINCT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name
+      `SELECT DISTINCT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.id_number, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name
        ${fromJoin}
        ${where}
        ORDER BY u.${validSort} ${validOrder}
@@ -134,10 +135,179 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+/** List sign-up requests (query: status = pending | approved | rejected). */
+router.get('/sign-up-requests', async (req, res, next) => {
+  try {
+    const { status = 'pending' } = req.query;
+    const validStatus = ['pending', 'approved', 'rejected'].includes(status) ? status : 'pending';
+    const result = await query(
+      `SELECT id, email, full_name, id_number, cellphone, [status], reviewed_at, created_at
+       FROM sign_up_requests
+       WHERE [status] = @status
+       ORDER BY created_at DESC`,
+      { status: validStatus }
+    );
+    res.json({ requests: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Get one sign-up request. */
+router.get('/sign-up-requests/:id', async (req, res, next) => {
+  try {
+    const pool = await getPool();
+    const r = pool.request();
+    r.input('id', sql.UniqueIdentifier, req.params.id);
+    const result = await r.query(
+      `SELECT id, email, full_name, id_number, cellphone, [status], reviewed_by_user_id, reviewed_at, rejection_reason, created_at
+       FROM sign_up_requests WHERE id = @id`
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Sign-up request not found' });
+    res.json({ request: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Approve sign-up request: create user with role, tenants, page_roles; send login-details email. */
+router.post('/sign-up-requests/:id/approve', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const pool = await getPool();
+    let r = pool.request();
+    r.input('id', sql.UniqueIdentifier, id);
+    const fetchResult = await r.query(
+      `SELECT id, email, full_name, id_number, cellphone FROM sign_up_requests WHERE id = @id AND [status] = N'pending'`
+    );
+    const request = fetchResult.recordset?.[0];
+    if (!request) return res.status(404).json({ error: 'Sign-up request not found or already processed' });
+
+    const { role, tenant_ids: bodyTenantIds, page_roles } = req.body || {};
+    let tenantIds = Array.isArray(bodyTenantIds) ? bodyTenantIds.filter(Boolean) : [];
+    if (req.user.role !== 'super_admin') {
+      tenantIds = tenantIds.length ? tenantIds.filter((tid) => canAccessTenant(req, tid)) : [req.user.tenant_id];
+      if (tenantIds.length === 0) tenantIds = [req.user.tenant_id];
+    }
+    if (tenantIds.length === 0) return res.status(400).json({ error: 'At least one tenant is required' });
+    const primaryTenantId = tenantIds[0];
+    if (!canAccessTenant(req, primaryTenantId)) return res.status(403).json({ error: 'Forbidden' });
+
+    const safeRole = role === 'tenant_admin' || role === 'user' ? role : 'user';
+    const finalRole = req.user.role === 'super_admin' ? (role || 'user') : safeRole;
+    const tempPassword = randomBytes(12).toString('base64').replace(/[/+=]/g, '').slice(0, 16);
+    const passwordHash = await bcrypt.hash(tempPassword, SALT_ROUNDS);
+    const emailLower = (request.email || '').trim().toLowerCase();
+    const fullName = (request.full_name || '').trim();
+    const idNumberVal = request.id_number != null && String(request.id_number).trim() ? String(request.id_number).trim() : null;
+    const cellphoneVal = request.cellphone != null && String(request.cellphone).trim() ? String(request.cellphone).trim() : null;
+
+    const insertResult = await query(
+      `INSERT INTO users (tenant_id, email, password_hash, full_name, role, status, id_number, cellphone)
+       OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.email, INSERTED.full_name, INSERTED.role, INSERTED.status
+       VALUES (@tenantId, @email, @passwordHash, @fullName, @role, 'active', @id_number, @cellphone)`,
+      {
+        tenantId: primaryTenantId,
+        email: emailLower,
+        passwordHash,
+        fullName,
+        role: finalRole,
+        id_number: idNumberVal,
+        cellphone: cellphoneVal,
+      }
+    );
+    const user = insertResult.recordset[0];
+    for (const tid of tenantIds) {
+      await query(`INSERT INTO user_tenants (user_id, tenant_id) VALUES (@userId, @tenantId)`, { userId: user.id, tenantId: tid });
+    }
+    const pageIds = Array.isArray(page_roles) ? page_roles.filter((p) => PAGE_IDS.includes(p)) : [];
+    for (const pageId of pageIds) {
+      await query(`INSERT INTO user_page_roles (user_id, page_id) VALUES (@userId, @pageId)`, { userId: user.id, pageId });
+    }
+    r = pool.request();
+    r.input('id', sql.UniqueIdentifier, id);
+    r.input('userId', sql.UniqueIdentifier, req.user.id);
+    await r.query(
+      `UPDATE sign_up_requests SET [status] = N'approved', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME() WHERE id = @id`
+    );
+    await auditLog({
+      tenantId: user.tenant_id,
+      userId: req.user.id,
+      action: 'sign_up.approve',
+      entityType: 'user',
+      entityId: user.id,
+      details: { email: user.email, request_id: id },
+      ip: req.ip,
+    });
+
+    const appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const loginUrl = `${appUrl}/login`;
+    if (isEmailConfigured()) {
+      const html = accountApprovedHtml({ loginUrl, email: user.email, temporaryPassword: tempPassword, appUrl });
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: 'Your account has been approved – Thinkers',
+          body: html,
+          html: true,
+        });
+      } catch (emailErr) {
+        console.error('[users] Approve sign-up: failed to send email to', user.email, emailErr?.message || emailErr);
+      }
+    }
+    const pageRolesByUser = await getPageRolesForUsers(pool, [user.id]);
+    const tenantIdsByUser = await getTenantIdsForUsers(pool, [user.id]);
+    res.status(201).json({
+      user: {
+        ...user,
+        page_roles: pageRolesByUser[user.id] || pageIds,
+        tenant_ids: tenantIdsByUser[user.id] || tenantIds,
+      },
+    });
+  } catch (err) {
+    if (err.number === 2627) return res.status(409).json({ error: 'Email already exists' });
+    next(err);
+  }
+});
+
+/** Reject sign-up request. */
+router.post('/sign-up-requests/:id/reject', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const pool = await getPool();
+    let r = pool.request();
+    r.input('id', sql.UniqueIdentifier, id);
+    const result = await r.query(
+      `SELECT id FROM sign_up_requests WHERE id = @id AND [status] = N'pending'`
+    );
+    if (!result.recordset?.length) return res.status(404).json({ error: 'Sign-up request not found or already processed' });
+    r = pool.request();
+    r.input('id', sql.UniqueIdentifier, id);
+    r.input('userId', sql.UniqueIdentifier, req.user.id);
+    r.input('reason', sql.NVarChar, reason != null ? String(reason).trim() : null);
+    await r.query(
+      `UPDATE sign_up_requests SET [status] = N'rejected', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME(), rejection_reason = @reason WHERE id = @id`
+    );
+    await auditLog({
+      userId: req.user.id,
+      action: 'sign_up.reject',
+      entityType: 'sign_up_request',
+      entityId: id,
+      details: { reason },
+      ip: req.ip,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id', async (req, res, next) => {
   try {
     const result = await query(
-      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.metadata, u.created_at, u.updated_at, t.name AS tenant_name
+      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.id_number, u.cellphone, u.avatar_url, u.last_login_at, u.login_count, u.metadata, u.created_at, u.updated_at, t.name AS tenant_name
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = @id`,
@@ -184,7 +354,7 @@ router.get('/:id/activity', async (req, res, next) => {
 
 router.post('/', requireTenantAdmin, async (req, res, next) => {
   try {
-    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds } = req.body || {};
+    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone } = req.body || {};
     if (!email || !password || !full_name) {
       return res.status(400).json({ error: 'Email, password, and full_name required' });
     }
@@ -200,16 +370,20 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
     const safeRole = role === 'tenant_admin' || role === 'user' ? role : 'user';
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
+    const idNumberVal = id_number != null && String(id_number).trim() ? String(id_number).trim() : null;
+    const cellphoneVal = cellphone != null && String(cellphone).trim() ? String(cellphone).trim() : null;
     const result = await query(
-      `INSERT INTO users (tenant_id, email, password_hash, full_name, role, status)
-       OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.email, INSERTED.full_name, INSERTED.role, INSERTED.status, INSERTED.created_at
-       VALUES (@tenantId, @email, @passwordHash, @fullName, @role, 'active')`,
+      `INSERT INTO users (tenant_id, email, password_hash, full_name, role, status, id_number, cellphone)
+       OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.email, INSERTED.full_name, INSERTED.role, INSERTED.status, INSERTED.id_number, INSERTED.created_at
+       VALUES (@tenantId, @email, @passwordHash, @fullName, @role, 'active', @id_number, @cellphone)`,
       {
         tenantId: primaryTenantId,
         email: email.trim().toLowerCase(),
         passwordHash,
         fullName: full_name.trim(),
         role: req.user.role === 'super_admin' ? (role || 'user') : safeRole,
+        id_number: idNumberVal,
+        cellphone: cellphoneVal,
       }
     );
     const user = result.recordset[0];
@@ -269,11 +443,13 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     const canAccess = canAccessTenant(req, existing.tenant_id) || existingList.includes(req.user.tenant_id);
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
 
-    const { full_name, role, status, password, page_roles, tenant_ids: bodyTenantIds } = req.body || {};
+    const { full_name, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone } = req.body || {};
     const updates = [];
     const params = { id };
 
     if (full_name !== undefined) { updates.push('full_name = @full_name'); params.full_name = full_name.trim(); }
+    if (id_number !== undefined) { updates.push('id_number = @id_number'); params.id_number = id_number != null && String(id_number).trim() ? String(id_number).trim() : null; }
+    if (cellphone !== undefined) { updates.push('cellphone = @cellphone'); params.cellphone = cellphone != null && String(cellphone).trim() ? String(cellphone).trim() : null; }
     if (status !== undefined) { updates.push('status = @status'); params.status = status; }
     if (role !== undefined) {
       if (req.user.role !== 'super_admin' && (role === 'super_admin' || (existing.role === 'tenant_admin' && role !== 'tenant_admin'))) {
@@ -312,7 +488,7 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
       await query(`UPDATE users SET ${updates.join(', ')} WHERE id = @id`, params);
     }
     const getResult = await query(
-      `SELECT id, tenant_id, email, full_name, role, status, last_login_at, created_at FROM users WHERE id = @id`,
+      `SELECT id, tenant_id, email, full_name, role, status, id_number, cellphone, last_login_at, created_at FROM users WHERE id = @id`,
       { id }
     );
     const updatedUser = getResult.recordset[0];

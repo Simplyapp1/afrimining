@@ -4720,14 +4720,44 @@ function TabApplications() {
 
   useEffect(() => { loadList(); }, [filter]);
 
+  const [applicationComments, setApplicationComments] = useState([]);
+  const [applicationCommentBody, setApplicationCommentBody] = useState('');
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [submittingComment, setSubmittingComment] = useState(false);
+
   useEffect(() => {
-    if (!selectedId) { setDetail(null); return; }
+    if (!selectedId) { setDetail(null); setApplicationComments([]); return; }
     setDetailLoading(true);
     ccApi.fleetApplications.get(selectedId)
       .then((r) => { setDetail(r.application); })
       .catch(() => { setDetail(null); })
       .finally(() => setDetailLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    setCommentsLoading(true);
+    ccApi.fleetApplications.getComments(selectedId)
+      .then((r) => { setApplicationComments(r.comments || []); })
+      .catch(() => setApplicationComments([]))
+      .finally(() => setCommentsLoading(false));
+  }, [selectedId]);
+
+  const handleAddApplicationComment = async () => {
+    const body = applicationCommentBody.trim();
+    if (!body || !selectedId) return;
+    setSubmittingComment(true);
+    try {
+      await ccApi.fleetApplications.addComment(selectedId, body);
+      setApplicationCommentBody('');
+      const r = await ccApi.fleetApplications.getComments(selectedId);
+      setApplicationComments(r.comments || []);
+    } catch (e) {
+      window.alert(e?.message || 'Failed to add comment');
+    } finally {
+      setSubmittingComment(false);
+    }
+  };
 
   const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
@@ -5109,96 +5139,132 @@ function TabApplications() {
           </div>
         </section>
 
-        {/* Detail panel */}
+        {/* Addition details – side panel (like breakdown view) */}
       {selectedId && (
-        <div className="w-full max-w-lg shrink-0 border-l border-surface-200 bg-white shadow-lg overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-surface-100 flex justify-between items-center">
-            <h3 className="font-semibold text-surface-900">Addition details</h3>
-            <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
-            {detailLoading ? (
-              <p className="text-surface-500">Loading…</p>
-            ) : detail ? (
-              <>
-                <div>
-                  <p className="font-medium text-surface-900">Contractor</p>
-                  <p className="text-surface-600">{detail.contractorName || '—'}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-surface-900">Type</p>
-                  <p className="text-surface-600">{detail.entityType === 'truck' ? 'Truck' : 'Driver'}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-surface-900">Source</p>
-                  <p className="text-surface-600">{(detail.source || 'manual') === 'import' ? 'Import' : 'Manual'}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-surface-900">Submitted</p>
-                  <p className="text-surface-600">{formatDate(detail.createdAt)}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-surface-900">Status</p>
-                  <p className="text-surface-600">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${detail.status === 'approved' ? 'bg-green-100 text-green-800' : detail.status === 'declined' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
-                      {detail.status === 'pending' ? 'Pending' : detail.status === 'approved' ? 'Approved' : 'Declined'}
-                    </span>
-                  </p>
-                </div>
+        <div className="fixed inset-0 z-50 flex items-stretch" aria-modal="true" role="dialog" aria-label="Addition details">
+          <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="absolute inset-0 bg-black/40" aria-label="Close" />
+          <div className="relative w-full max-w-xl ml-auto bg-white shadow-xl flex flex-col max-h-full overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200">
+              <h3 className="font-semibold text-surface-900">Addition details</h3>
+              <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="p-2 rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Close">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
+              {detailLoading ? (
+                <p className="text-surface-500">Loading…</p>
+              ) : detail ? (
+                <>
+                  <div>
+                    <p className="font-medium text-surface-900">Contractor</p>
+                    <p className="text-surface-600">{detail.contractorName || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-surface-900">Type</p>
+                    <p className="text-surface-600">{detail.entityType === 'truck' ? 'Truck' : 'Driver'}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-surface-900">Source</p>
+                    <p className="text-surface-600">{(detail.source || 'manual') === 'import' ? 'Import' : 'Manual'}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-surface-900">Submitted</p>
+                    <p className="text-surface-600">{formatDate(detail.createdAt)}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-surface-900">Status</p>
+                    <p className="text-surface-600">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${detail.status === 'approved' ? 'bg-green-100 text-green-800' : detail.status === 'declined' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                        {detail.status === 'pending' ? 'Pending' : detail.status === 'approved' ? 'Approved' : 'Declined'}
+                      </span>
+                    </p>
+                  </div>
 
-                {detail.entityType === 'truck' && detail.entity && (
-                  <div className="border-t border-surface-200 pt-3 space-y-2">
-                    <p className="font-medium text-surface-900">Truck details</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Registration:</span> {detail.entity.registration || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Make / model:</span> {detail.entity.make_model || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Year model:</span> {detail.entity.year_model || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Ownership:</span> {detail.entity.ownership_desc || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Main contractor:</span> {detail.entity.main_contractor || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Sub contractor:</span> {detail.entity.sub_contractor || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Fleet no:</span> {detail.entity.fleet_no || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Trailer 1 reg:</span> {detail.entity.trailer_1_reg_no || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Trailer 2 reg:</span> {detail.entity.trailer_2_reg_no || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Commodity / capacity:</span> {[detail.entity.commodity_type, detail.entity.capacity_tonnes != null ? `${detail.entity.capacity_tonnes} t` : null].filter(Boolean).join(' · ') || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Status:</span> {detail.entity.status || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Tracking provider (tracker name):</span> {detail.entity.tracking_provider || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Tracking username:</span> {detail.entity.tracking_username || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Tracking password:</span> {detail.entity.tracking_password || '—'}</p>
-                  </div>
-                )}
-                {detail.entityType === 'driver' && detail.entity && (
-                  <div className="border-t border-surface-200 pt-3 space-y-2">
-                    <p className="font-medium text-surface-900">Driver details</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Name:</span> {detail.entity.full_name || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Surname:</span> {detail.entity.surname || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">ID number:</span> {detail.entity.id_number || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Licence:</span> {detail.entity.license_number || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Licence expiry:</span> {detail.entity.license_expiry ? new Date(detail.entity.license_expiry).toLocaleDateString() : '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Phone:</span> {detail.entity.phone || '—'}</p>
-                    <p className="text-surface-600"><span className="text-surface-500">Email:</span> {detail.entity.email || '—'}</p>
-                  </div>
-                )}
+                  {detail.entityType === 'truck' && detail.entity && (
+                    <div className="border-t border-surface-200 pt-3 space-y-2">
+                      <p className="font-medium text-surface-900">Truck details</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Registration:</span> {detail.entity.registration || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Make / model:</span> {detail.entity.make_model || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Year model:</span> {detail.entity.year_model || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Ownership:</span> {detail.entity.ownership_desc || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Main contractor:</span> {detail.entity.main_contractor || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Sub contractor:</span> {detail.entity.sub_contractor || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Fleet no:</span> {detail.entity.fleet_no || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Trailer 1 reg:</span> {detail.entity.trailer_1_reg_no || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Trailer 2 reg:</span> {detail.entity.trailer_2_reg_no || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Commodity / capacity:</span> {[detail.entity.commodity_type, detail.entity.capacity_tonnes != null ? `${detail.entity.capacity_tonnes} t` : null].filter(Boolean).join(' · ') || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Status:</span> {detail.entity.status || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Tracking provider (tracker name):</span> {detail.entity.tracking_provider || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Tracking username:</span> {detail.entity.tracking_username || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Tracking password:</span> {detail.entity.tracking_password || '—'}</p>
+                    </div>
+                  )}
+                  {detail.entityType === 'driver' && detail.entity && (
+                    <div className="border-t border-surface-200 pt-3 space-y-2">
+                      <p className="font-medium text-surface-900">Driver details</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Name:</span> {detail.entity.full_name || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Surname:</span> {detail.entity.surname || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">ID number:</span> {detail.entity.id_number || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Licence:</span> {detail.entity.license_number || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Licence expiry:</span> {detail.entity.license_expiry ? new Date(detail.entity.license_expiry).toLocaleDateString() : '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Phone:</span> {detail.entity.phone || '—'}</p>
+                      <p className="text-surface-600"><span className="text-surface-500">Email:</span> {detail.entity.email || '—'}</p>
+                    </div>
+                  )}
 
-                {detail.status === 'declined' && detail.declineReason && (
-                  <div className="border-t border-surface-200 pt-3">
-                    <p className="font-medium text-surface-900">Reason declined</p>
-                    <p className="text-surface-600 mt-1 whitespace-pre-wrap">{detail.declineReason}</p>
-                  </div>
-                )}
+                  {detail.status === 'declined' && detail.declineReason && (
+                    <div className="border-t border-surface-200 pt-3">
+                      <p className="font-medium text-surface-900">Reason declined</p>
+                      <p className="text-surface-600 mt-1 whitespace-pre-wrap">{detail.declineReason}</p>
+                    </div>
+                  )}
 
-                {detail.status === 'pending' && (
-                  <div className="border-t border-surface-200 pt-4 flex flex-wrap gap-3">
-                    <button type="button" disabled={acting} onClick={() => handleApprove(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
-                      {acting ? 'Processing…' : 'Approve — grant facility access'}
-                    </button>
-                    <button type="button" disabled={acting} onClick={() => openDeclineModal(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50">
-                      Decline
-                    </button>
+                  {detail.status === 'pending' && (
+                    <div className="border-t border-surface-200 pt-4 flex flex-wrap gap-3">
+                      <button type="button" disabled={acting} onClick={() => handleApprove(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+                        {acting ? 'Processing…' : 'Approve — grant facility access'}
+                      </button>
+                      <button type="button" disabled={acting} onClick={() => openDeclineModal(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50">
+                        Decline
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Comments */}
+                  <div className="border-t border-surface-200 pt-4">
+                    <p className="font-medium text-surface-900 mb-2">Comments</p>
+                    {commentsLoading ? (
+                      <p className="text-surface-500 text-xs">Loading comments…</p>
+                    ) : applicationComments.length === 0 ? (
+                      <p className="text-surface-500 text-xs">No comments yet.</p>
+                    ) : (
+                      <ul className="space-y-2 mb-3">
+                        {applicationComments.map((c) => (
+                          <li key={c.id} className="rounded-lg bg-surface-50 p-2 text-sm">
+                            <p className="text-surface-800 whitespace-pre-wrap">{c.body}</p>
+                            <p className="text-xs text-surface-500 mt-1">{c.author_name || 'Someone'} · {c.created_at ? new Date(c.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : ''}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="flex gap-2">
+                      <textarea
+                        value={applicationCommentBody}
+                        onChange={(e) => setApplicationCommentBody(e.target.value)}
+                        placeholder="Add a comment…"
+                        rows={2}
+                        className="flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm resize-y"
+                      />
+                      <button type="button" disabled={submittingComment || !applicationCommentBody.trim()} onClick={handleAddApplicationComment} className="shrink-0 px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+                        {submittingComment ? 'Sending…' : 'Add comment'}
+                      </button>
+                    </div>
                   </div>
-                )}
-              </>
-            ) : (
-              <p className="text-surface-500">Could not load details.</p>
-            )}
+                </>
+              ) : (
+                <p className="text-surface-500">Could not load details.</p>
+              )}
+            </div>
           </div>
         </div>
       )}

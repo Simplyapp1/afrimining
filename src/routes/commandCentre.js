@@ -973,6 +973,68 @@ router.get('/fleet-applications/:id', async (req, res, next) => {
   }
 });
 
+/** GET fleet application comments */
+router.get('/fleet-applications/:id/comments', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const appCheck = await query(`SELECT id FROM cc_fleet_applications WHERE id = @id`, { id });
+    if (!appCheck.recordset?.[0]) return res.status(404).json({ error: 'Application not found' });
+    const result = await query(
+      `SELECT c.id, c.fleet_application_id, c.user_id, c.body, c.created_at, u.full_name AS author_name
+       FROM cc_fleet_application_comments c
+       LEFT JOIN users u ON u.id = c.user_id
+       WHERE c.fleet_application_id = @id
+       ORDER BY c.created_at ASC`,
+      { id }
+    );
+    const comments = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      fleet_application_id: getRow(r, 'fleet_application_id'),
+      user_id: getRow(r, 'user_id'),
+      body: getRow(r, 'body'),
+      created_at: getRow(r, 'created_at'),
+      author_name: getRow(r, 'author_name'),
+    }));
+    res.json({ comments });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_application_comments')) return res.json({ comments: [], migrationRequired: true });
+    next(err);
+  }
+});
+
+/** POST fleet application comment */
+router.post('/fleet-applications/:id/comments', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body?.body != null ? String(req.body.body).trim() : '';
+    if (!body) return res.status(400).json({ error: 'Comment body is required' });
+    const appCheck = await query(`SELECT id FROM cc_fleet_applications WHERE id = @id`, { id });
+    if (!appCheck.recordset?.[0]) return res.status(404).json({ error: 'Application not found' });
+    const result = await query(
+      `INSERT INTO cc_fleet_application_comments (fleet_application_id, user_id, body)
+       OUTPUT INSERTED.id, INSERTED.fleet_application_id, INSERTED.user_id, INSERTED.body, INSERTED.created_at
+       VALUES (@id, @userId, @body)`,
+      { id, userId: req.user.id, body }
+    );
+    const row = result.recordset?.[0];
+    const authorResult = row ? await query(`SELECT full_name FROM users WHERE id = @userId`, { userId: req.user.id }) : null;
+    const authorName = authorResult?.recordset?.[0] ? getRow(authorResult.recordset[0], 'full_name') : null;
+    res.status(201).json({
+      comment: row ? {
+        id: getRow(row, 'id'),
+        fleet_application_id: getRow(row, 'fleet_application_id'),
+        user_id: getRow(row, 'user_id'),
+        body: getRow(row, 'body'),
+        created_at: getRow(row, 'created_at'),
+        author_name: authorName,
+      } : null,
+    });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_application_comments')) return res.status(503).json({ error: 'Comments not set up. Run: node scripts/run-fleet-application-comments.js' });
+    next(err);
+  }
+});
+
 /** PATCH approve: grant facility access */
 router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
   try {

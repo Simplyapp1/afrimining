@@ -880,4 +880,157 @@ router.get('/users/tenant', async (req, res, next) => {
   }
 });
 
+// --- Tasks Library (folders + files) ---
+const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'tasks-library');
+const libraryUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tenantId = String(req.user?.tenant_id || 'anon');
+      const dir = path.join(libraryUploadsDir, tenantId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${randomUUID()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+}).single('file');
+
+function canAccessLibraryTenant(req, tenantId) {
+  if (req.user?.role === 'super_admin') return true;
+  const tid = req.user?.tenant_id;
+  if (!tid) return false;
+  if (Array.isArray(req.user?.tenant_ids)) return req.user.tenant_ids.includes(tenantId);
+  return tid === tenantId;
+}
+
+/** GET /api/tasks/library/folders – list folders (flat with parent_id; root when parent_id null) */
+router.get('/library/folders', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ folders: [] });
+    const result = await query(
+      `SELECT id, parent_id, name, created_at FROM task_library_folders WHERE tenant_id = @tenantId ORDER BY name`,
+      { tenantId }
+    );
+    const folders = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      parent_id: getRow(r, 'parent_id'),
+      name: getRow(r, 'name'),
+      created_at: getRow(r, 'created_at'),
+    }));
+    res.json({ folders });
+  } catch (err) {
+    if (err.message?.includes('task_library_folders')) return res.json({ folders: [], migrationRequired: true });
+    next(err);
+  }
+});
+
+/** POST /api/tasks/library/folders – create folder */
+router.post('/library/folders', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(403).json({ error: 'No tenant' });
+    const { name, parent_id } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'Folder name required' });
+    const parentId = parent_id && String(parent_id).trim() ? parent_id : null;
+    if (parentId) {
+      const parent = await query(`SELECT id, tenant_id FROM task_library_folders WHERE id = @parentId`, { parentId });
+      const row = parent.recordset?.[0];
+      if (!row || !canAccessLibraryTenant(req, getRow(row, 'tenant_id'))) return res.status(404).json({ error: 'Parent folder not found' });
+    }
+    const result = await query(
+      `INSERT INTO task_library_folders (tenant_id, parent_id, name, created_by)
+       OUTPUT INSERTED.id, INSERTED.parent_id, INSERTED.name, INSERTED.created_at
+       VALUES (@tenantId, @parentId, @name, @userId)`,
+      { tenantId, parentId, name: String(name).trim().slice(0, 255), userId: req.user.id }
+    );
+    const row = result.recordset?.[0];
+    res.status(201).json({ folder: row ? { id: getRow(row, 'id'), parent_id: getRow(row, 'parent_id'), name: getRow(row, 'name'), created_at: getRow(row, 'created_at') } : null });
+  } catch (err) {
+    if (err.message?.includes('task_library_folders')) return res.status(503).json({ error: 'Library not set up. Run: node scripts/run-tasks-library-schema.js' });
+    next(err);
+  }
+});
+
+/** GET /api/tasks/library/files?folder_id= – list files (optional folder_id; null = root) */
+router.get('/library/files', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ files: [] });
+    const folderId = req.query.folder_id && String(req.query.folder_id).trim() ? req.query.folder_id : null;
+    let sql = `SELECT f.id, f.folder_id, f.file_name, f.file_path, f.file_size, f.created_at
+               FROM task_library_files f WHERE f.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (folderId === '') {
+      sql += ` AND f.folder_id IS NULL`;
+    } else if (folderId) {
+      sql += ` AND f.folder_id = @folderId`;
+      params.folderId = folderId;
+    }
+    sql += ` ORDER BY f.file_name`;
+    const result = await query(sql, params);
+    const files = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      folder_id: getRow(r, 'folder_id'),
+      file_name: getRow(r, 'file_name'),
+      file_path: getRow(r, 'file_path'),
+      file_size: getRow(r, 'file_size'),
+      created_at: getRow(r, 'created_at'),
+    }));
+    res.json({ files });
+  } catch (err) {
+    if (err.message?.includes('task_library_files')) return res.json({ files: [], migrationRequired: true });
+    next(err);
+  }
+});
+
+/** POST /api/tasks/library/files – upload file (body: folder_id optional) */
+router.post('/library/files', libraryUpload, async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(403).json({ error: 'No tenant' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const folderId = req.body?.folder_id && String(req.body.folder_id).trim() ? req.body.folder_id : null;
+    if (folderId) {
+      const folder = await query(`SELECT id, tenant_id FROM task_library_folders WHERE id = @folderId`, { folderId });
+      const row = folder.recordset?.[0];
+      if (!row || !canAccessLibraryTenant(req, getRow(row, 'tenant_id'))) return res.status(404).json({ error: 'Folder not found' });
+    }
+    const relativePath = path.relative(path.join(libraryUploadsDir, tenantId), req.file.path);
+    const filePath = path.join(tenantId, relativePath).replace(/\\/g, '/');
+    const result = await query(
+      `INSERT INTO task_library_files (tenant_id, folder_id, file_name, file_path, file_size, created_by)
+       OUTPUT INSERTED.id, INSERTED.folder_id, INSERTED.file_name, INSERTED.file_path, INSERTED.file_size, INSERTED.created_at
+       VALUES (@tenantId, @folderId, @fileName, @filePath, @fileSize, @userId)`,
+      { tenantId, folderId, fileName: req.file.originalname || req.file.filename || 'file', filePath, fileSize: req.file.size || null, userId: req.user.id }
+    );
+    const row = result.recordset?.[0];
+    res.status(201).json({ file: row ? { id: getRow(row, 'id'), folder_id: getRow(row, 'folder_id'), file_name: getRow(row, 'file_name'), file_path: getRow(row, 'file_path'), file_size: getRow(row, 'file_size'), created_at: getRow(row, 'created_at') } : null });
+  } catch (err) {
+    if (err.message?.includes('task_library_files')) return res.status(503).json({ error: 'Library not set up. Run: node scripts/run-tasks-library-schema.js' });
+    next(err);
+  }
+});
+
+/** GET /api/tasks/library/files/:id/download – download file */
+router.get('/library/files/:id/download', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT f.id, f.file_name, f.file_path, f.tenant_id FROM task_library_files f WHERE f.id = @id`,
+      { id }
+    );
+    const row = result.recordset?.[0];
+    if (!row || !canAccessLibraryTenant(req, getRow(row, 'tenant_id'))) return res.status(404).json({ error: 'File not found' });
+    const fullPath = path.join(libraryUploadsDir, getRow(row, 'file_path'));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on disk' });
+    res.download(fullPath, getRow(row, 'file_name') || 'download');
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

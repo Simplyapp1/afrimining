@@ -59,6 +59,7 @@ export const auth = {
   switchTenant: (tenantId) => request('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenant_id: tenantId }) }),
   forgotPassword: (body) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify(body) }),
   resetPassword: (body) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify(body) }),
+  signUp: (body) => request('/auth/sign-up', { method: 'POST', body: JSON.stringify(body) }),
 };
 
 export const users = {
@@ -72,6 +73,15 @@ export const users = {
   update: (id, body) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   bulk: (body) => request('/users/bulk', { method: 'POST', body: JSON.stringify(body) }),
   delete: (id) => request(`/users/${id}`, { method: 'DELETE' }),
+  signUpRequests: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return request(`/users/sign-up-requests${q ? `?${q}` : ''}`);
+    },
+    get: (id) => request(`/users/sign-up-requests/${id}`),
+    approve: (id, body) => request(`/users/sign-up-requests/${id}/approve`, { method: 'POST', body: JSON.stringify(body) }),
+    reject: (id, body) => request(`/users/sign-up-requests/${id}/reject`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  },
 };
 
 export const tenants = {
@@ -376,6 +386,8 @@ export const commandCentre = {
   fleetApplications: {
     list: (status) => request(`/command-centre/fleet-applications${status ? `?status=${encodeURIComponent(status)}` : ''}`),
     get: (id) => request(`/command-centre/fleet-applications/${id}`),
+    getComments: (id) => request(`/command-centre/fleet-applications/${id}/comments`),
+    addComment: (id, body) => request(`/command-centre/fleet-applications/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
     approve: (id) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH' }),
     decline: (id, declineReason) => request(`/command-centre/fleet-applications/${id}/decline`, { method: 'PATCH', body: JSON.stringify({ decline_reason: declineReason }) }),
   },
@@ -438,6 +450,23 @@ export const tasks = {
   },
   attachmentDownloadUrl: (id, attachmentId) => `${API}/tasks/${id}/attachments/${attachmentId}/download`,
   tenantUsers: () => request('/tasks/users/tenant'),
+  library: {
+    folders: {
+      list: () => request('/tasks/library/folders'),
+      create: (body) => request('/tasks/library/folders', { method: 'POST', body: JSON.stringify(body) }),
+    },
+    files: {
+      list: (folderId) => request(`/tasks/library/files${folderId != null && folderId !== '' ? `?folder_id=${encodeURIComponent(folderId)}` : '?folder_id='}`),
+      upload: (file, folderId) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        if (folderId != null && folderId !== '') formData.append('folder_id', folderId);
+        return fetch(`${API}/tasks/library/files`, { method: 'POST', body: formData, credentials: 'include' })
+          .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+      },
+      downloadUrl: (id) => `${API}/tasks/library/files/${id}/download`,
+    },
+  },
 };
 
 const pm = (path, options = {}) => request(`/profile-management${path}`, options);

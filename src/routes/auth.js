@@ -216,30 +216,84 @@ router.get('/me', async (req, res, next) => {
   }
 });
 
-/** POST /auth/forgot-password: id_number, full_name, email. If user exists and full_name matches, create reset token and send email. */
-router.post('/forgot-password', async (req, res, next) => {
+/** POST /auth/sign-up: submit sign-up request (full_name, id_number, email, cellphone). No auth. */
+router.post('/sign-up', async (req, res, next) => {
   try {
-    const { id_number, full_name, email } = req.body || {};
+    const { full_name, id_number, email, cellphone } = req.body || {};
     const emailStr = (email && String(email).trim()) || '';
     if (!emailStr || !emailStr.includes('@')) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
-    const fullNameStr = (full_name && String(full_name).trim()) || '';
-    if (!fullNameStr) {
-      return res.status(400).json({ error: 'Name and surname are required' });
+    const fullNameStr = (full_name != null && String(full_name).trim()) || '';
+    if (!fullNameStr) return res.status(400).json({ error: 'Full name is required' });
+
+    const emailLower = emailStr.toLowerCase();
+    const existingUser = await query(
+      `SELECT id FROM users WHERE email = @email`,
+      { email: emailLower }
+    );
+    if (existingUser.recordset?.length) {
+      return res.status(409).json({ error: 'An account with this email already exists' });
+    }
+    const existingPending = await query(
+      `SELECT id FROM sign_up_requests WHERE email = @email AND [status] = N'pending'`,
+      { email: emailLower }
+    );
+    if (existingPending.recordset?.length) {
+      return res.status(409).json({ error: 'A sign-up request with this email is already pending' });
     }
 
-    const result = await query(
-      `SELECT id, email, full_name FROM users WHERE email = @email AND [status] = N'active'`,
-      { email: emailStr.toLowerCase() }
+    const idNumberVal = id_number != null && String(id_number).trim() ? String(id_number).trim() : null;
+    const cellphoneVal = cellphone != null && String(cellphone).trim() ? String(cellphone).trim() : null;
+    await query(
+      `INSERT INTO sign_up_requests (email, full_name, id_number, cellphone, [status])
+       VALUES (@email, @fullName, @idNumber, @cellphone, N'pending')`,
+      { email: emailLower, fullName: fullNameStr, idNumber: idNumberVal, cellphone: cellphoneVal }
     );
+    res.status(201).json({ ok: true, message: 'Your request has been submitted for approval. You will receive an email once approved.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Normalize SA ID for comparison: strip spaces and dashes, lowercase */
+function normalizeIdNumber(s) {
+  return (s || '').trim().replace(/[\s-]/g, '').toLowerCase();
+}
+
+/** POST /auth/forgot-password: email, id_number (SA ID). If user exists and id_number matches, create reset token and send email. */
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email, id_number } = req.body || {};
+    const emailStr = (email && String(email).trim()) || '';
+    if (!emailStr || !emailStr.includes('@')) {
+      return res.status(400).json({ error: 'Valid email (username) is required' });
+    }
+    const idNumberStr = (id_number != null && String(id_number).trim()) || '';
+    if (!idNumberStr) {
+      return res.status(400).json({ error: 'SA ID number is required' });
+    }
+
+    let result;
+    try {
+      result = await query(
+        `SELECT id, email, full_name, id_number FROM users WHERE email = @email AND [status] = N'active'`,
+        { email: emailStr.toLowerCase() }
+      );
+    } catch (e) {
+      if (e.message && e.message.includes('id_number')) {
+        return res.status(503).json({ error: 'Password reset is not configured. Contact support.' });
+      }
+      throw e;
+    }
     const user = result.recordset?.[0];
     if (!user) {
       return res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
     }
 
-    const dbFullName = (user.full_name || '').trim();
-    if (dbFullName && fullNameStr && dbFullName.toLowerCase() !== fullNameStr.toLowerCase()) {
+    const dbIdNumber = normalizeIdNumber(user.id_number);
+    const reqIdNumber = normalizeIdNumber(idNumberStr);
+    if (dbIdNumber && reqIdNumber && dbIdNumber !== reqIdNumber) {
       return res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
     }
 
@@ -263,12 +317,23 @@ router.post('/forgot-password', async (req, res, next) => {
     const appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
     const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
     const html = passwordResetHtml({ resetLink, code, appUrl });
-    await sendEmail({
-      to: user.email,
-      subject: 'Reset your password – Thinkers',
-      body: html,
-      html: true,
-    });
+
+    let emailResult;
+    try {
+      emailResult = await sendEmail({
+        to: user.email,
+        subject: 'Reset your password – Thinkers',
+        body: html,
+        html: true,
+      });
+    } catch (emailErr) {
+      console.error('[auth] Forgot password: failed to send email to', user.email, emailErr?.message || emailErr);
+      return res.status(503).json({ error: 'Unable to send reset email. Please try again later or contact support.' });
+    }
+    if (emailResult == null && isEmailConfigured()) {
+      console.error('[auth] Forgot password: sendEmail returned null (skipped) for', user.email);
+      return res.status(503).json({ error: 'Unable to send reset email. Please try again later or contact support.' });
+    }
 
     res.json({ ok: true, message: 'If an account exists with this email, you will receive reset instructions.' });
   } catch (err) {

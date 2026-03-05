@@ -45,6 +45,7 @@ export const CC_TAB_IDS = [
   'delivery',
   'contractors_details',
   'breakdowns',
+  'delete_fleet_drivers',
 ];
 
 router.use(requireAuth);
@@ -651,6 +652,118 @@ router.get('/fleet-integration', async (req, res, next) => {
       driverEmail: getRow(r, 'driver_email'),
     }));
     res.json({ rows: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET list for Delete contractors fleets/drivers tab. Query: tenant_id, contractor_id, type=truck|driver|all. Returns trucks, drivers, tenants, contractors (for filters). */
+router.get('/delete-fleet-drivers/list', async (req, res, next) => {
+  try {
+    const { tenant_id: tenantId, contractor_id: contractorId, type = 'all' } = req.query || {};
+    const tenantsResult = await query(
+      `SELECT DISTINCT t.id, t.name FROM tenants t INNER JOIN contractor_trucks tr ON tr.tenant_id = t.id`
+    );
+    const tenants = (tenantsResult.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
+    let contractors = [];
+    if (tenantId) {
+      const cResult = await query(
+        `SELECT id, name FROM contractors WHERE tenant_id = @tenantId ORDER BY name`,
+        { tenantId }
+      );
+      contractors = (cResult.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
+    }
+    const tenantFilter = tenantId ? ' AND tr.tenant_id = @tenantId' : '';
+    const contractorFilter = contractorId ? ' AND tr.contractor_id = @contractorId' : '';
+    const params = {};
+    if (tenantId) params.tenantId = tenantId;
+    if (contractorId) params.contractorId = contractorId;
+
+    let trucks = [];
+    if (type === 'all' || type === 'truck') {
+      const trResult = await query(
+        `SELECT tr.id, tr.tenant_id, tr.contractor_id, tr.registration, tr.make_model, tr.[status],
+          t.name AS tenant_name, c.name AS contractor_name
+         FROM contractor_trucks tr
+         LEFT JOIN tenants t ON t.id = tr.tenant_id
+         LEFT JOIN contractors c ON c.id = tr.contractor_id
+         WHERE 1=1 ${tenantFilter} ${contractorFilter}
+         ORDER BY t.name, c.name, tr.registration`,
+        params
+      );
+      trucks = (trResult.recordset || []).map((r) => ({
+        id: getRow(r, 'id'),
+        tenantId: getRow(r, 'tenant_id'),
+        contractorId: getRow(r, 'contractor_id'),
+        registration: getRow(r, 'registration'),
+        makeModel: getRow(r, 'make_model'),
+        status: getRow(r, 'status'),
+        tenantName: getRow(r, 'tenant_name'),
+        contractorName: getRow(r, 'contractor_name'),
+      }));
+    }
+
+    let drivers = [];
+    if (type === 'all' || type === 'driver') {
+      const drFilter = tenantId ? ' AND d.tenant_id = @tenantId' : '';
+      const drContractorFilter = contractorId ? ' AND d.contractor_id = @contractorId' : '';
+      const drResult = await query(
+        `SELECT d.id, d.tenant_id, d.contractor_id, d.full_name, d.surname, d.id_number, d.license_number,
+          t.name AS tenant_name, c.name AS contractor_name
+         FROM contractor_drivers d
+         LEFT JOIN tenants t ON t.id = d.tenant_id
+         LEFT JOIN contractors c ON c.id = d.contractor_id
+         WHERE 1=1 ${drFilter} ${drContractorFilter}
+         ORDER BY t.name, c.name, d.full_name, d.surname`,
+        params
+      );
+      drivers = (drResult.recordset || []).map((r) => ({
+        id: getRow(r, 'id'),
+        tenantId: getRow(r, 'tenant_id'),
+        contractorId: getRow(r, 'contractor_id'),
+        fullName: getRow(r, 'full_name'),
+        surname: getRow(r, 'surname'),
+        idNumber: getRow(r, 'id_number'),
+        licenseNumber: getRow(r, 'license_number'),
+        tenantName: getRow(r, 'tenant_name'),
+        contractorName: getRow(r, 'contractor_name'),
+      }));
+    }
+
+    res.json({ trucks, drivers, tenants, contractors });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE a truck (contractor fleet). Removes from contractor_trucks and related data. Any status. */
+router.delete('/delete-fleet-drivers/truck/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const truckCheck = await query(`SELECT id, tenant_id FROM contractor_trucks WHERE id = @id`, { id });
+    if (!truckCheck.recordset?.length) return res.status(404).json({ error: 'Truck not found' });
+    await query(`UPDATE contractor_drivers SET linked_truck_id = NULL WHERE linked_truck_id = @id`, { id });
+    await query(`DELETE FROM contractor_route_trucks WHERE truck_id = @id`, { id });
+    await query(`DELETE FROM cc_fleet_applications WHERE entity_type = N'truck' AND entity_id = @id`, { id });
+    await query(`UPDATE contractor_incidents SET truck_id = NULL WHERE truck_id = @id`, { id });
+    await query(`DELETE FROM contractor_trucks WHERE id = @id`, { id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE a driver. Removes from contractor_drivers and related data. Any status. */
+router.delete('/delete-fleet-drivers/driver/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const driverCheck = await query(`SELECT id, tenant_id FROM contractor_drivers WHERE id = @id`, { id });
+    if (!driverCheck.recordset?.length) return res.status(404).json({ error: 'Driver not found' });
+    await query(`UPDATE contractor_incidents SET driver_id = NULL WHERE driver_id = @id`, { id });
+    await query(`DELETE FROM contractor_route_drivers WHERE driver_id = @id`, { id });
+    await query(`DELETE FROM cc_fleet_applications WHERE entity_type = N'driver' AND entity_id = @id`, { id });
+    await query(`DELETE FROM contractor_drivers WHERE id = @id`, { id });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

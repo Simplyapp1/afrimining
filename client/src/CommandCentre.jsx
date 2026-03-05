@@ -84,6 +84,7 @@ const CC_TABS = [
   { id: 'delivery', label: 'Delivery management', icon: 'truck', section: 'Operations' },
   { id: 'contractors_details', label: 'Contractors details', icon: 'building', section: 'Operations' },
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
+  { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
 ];
 
 function CCIcon({ name, className }) {
@@ -122,6 +123,8 @@ function CCIcon({ name, className }) {
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4')}</svg>;
     case 'alert':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z')}</svg>;
+    case 'trash':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16')}</svg>;
     case 'settings':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z')}</svg>;
     default:
@@ -388,6 +391,7 @@ export default function CommandCentre() {
             <TabContractorsDetails list={contractorsDetailsList} loading={contractorsDetailsLoading} />
           )}
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
+          {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
 
           {/* Fallback when no tab content matched (e.g. permission race) */}
           {activeTab !== 'manage_access' && !allowedTabs.includes(activeTab) && (
@@ -4576,6 +4580,263 @@ function TabInspectionRecords({ inspections = [], setInspections }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TabDeleteFleetDrivers() {
+  const [tenants, setTenants] = useState([]);
+  const [contractors, setContractors] = useState([]);
+  const [trucks, setTrucks] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [tenantId, setTenantId] = useState('');
+  const [contractorId, setContractorId] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'truck' | 'driver'
+  const [deletingTruckId, setDeletingTruckId] = useState(null);
+  const [deletingDriverId, setDeletingDriverId] = useState(null);
+  const [selectedTruckIds, setSelectedTruckIds] = useState(new Set());
+  const [selectedDriverIds, setSelectedDriverIds] = useState(new Set());
+  const [deletingBulk, setDeletingBulk] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    setError('');
+    setSelectedTruckIds(new Set());
+    setSelectedDriverIds(new Set());
+    const params = {};
+    if (tenantId) params.tenant_id = tenantId;
+    if (contractorId) params.contractor_id = contractorId;
+    if (typeFilter) params.type = typeFilter;
+    return ccApi.deleteFleetDrivers.list(params)
+      .then((r) => {
+        setTenants(r.tenants || []);
+        setContractors(r.contractors || []);
+        setTrucks(r.trucks || []);
+        setDrivers(r.drivers || []);
+      })
+      .catch((e) => { setError(e?.message || 'Failed to load'); setTrucks([]); setDrivers([]); })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [tenantId, contractorId, typeFilter]);
+
+  const toggleTruck = (id) => {
+    setSelectedTruckIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleAllTrucks = (checked) => {
+    setSelectedTruckIds(checked ? new Set(trucks.map((t) => t.id)) : new Set());
+  };
+  const toggleDriver = (id) => {
+    setSelectedDriverIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleAllDrivers = (checked) => {
+    setSelectedDriverIds(checked ? new Set(drivers.map((d) => d.id)) : new Set());
+  };
+
+  const totalSelected = selectedTruckIds.size + selectedDriverIds.size;
+  const handleDeleteSelected = async () => {
+    if (totalSelected === 0) return;
+    const truckCount = selectedTruckIds.size;
+    const driverCount = selectedDriverIds.size;
+    const msg = [
+      truckCount && `${truckCount} truck${truckCount > 1 ? 's' : ''}`,
+      driverCount && `${driverCount} driver${driverCount > 1 ? 's' : ''}`,
+    ].filter(Boolean).join(' and ');
+    if (!window.confirm(`Permanently delete ${msg}? This cannot be undone.`)) return;
+    setDeletingBulk(true);
+    setError('');
+    try {
+      for (const id of selectedTruckIds) {
+        await ccApi.deleteFleetDrivers.deleteTruck(id);
+      }
+      for (const id of selectedDriverIds) {
+        await ccApi.deleteFleetDrivers.deleteDriver(id);
+      }
+      await load();
+    } catch (e) {
+      setError(e?.message || 'Failed to delete some items');
+    } finally {
+      setDeletingBulk(false);
+    }
+  };
+
+  const handleDeleteTruck = async (truck) => {
+    if (!window.confirm(`Permanently delete truck "${truck.registration || truck.id}" (${truck.contractorName || 'contractor'})? This cannot be undone.`)) return;
+    setDeletingTruckId(truck.id);
+    setError('');
+    try {
+      await ccApi.deleteFleetDrivers.deleteTruck(truck.id);
+      load();
+    } catch (e) {
+      setError(e?.message || 'Failed to delete truck');
+    } finally {
+      setDeletingTruckId(null);
+    }
+  };
+
+  const handleDeleteDriver = async (driver) => {
+    const name = [driver.fullName, driver.surname].filter(Boolean).join(' ').trim() || driver.id;
+    if (!window.confirm(`Permanently delete driver "${name}" (${driver.contractorName || 'contractor'})? This cannot be undone.`)) return;
+    setDeletingDriverId(driver.id);
+    setError('');
+    try {
+      await ccApi.deleteFleetDrivers.deleteDriver(driver.id);
+      load();
+    } catch (e) {
+      setError(e?.message || 'Failed to delete driver');
+    } finally {
+      setDeletingDriverId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-lg font-semibold text-surface-900">Delete contractors fleets/drivers</h2>
+      <p className="text-sm text-surface-600">Permanently remove trucks or drivers added by contractors under a tenant. Applies to any status (approved or not). Use filters to narrow the list, then delete as needed.</p>
+
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex justify-between items-center">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} className="text-red-600 hover:text-red-900 font-medium">Dismiss</button>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-4 items-center">
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-surface-700">Tenant</span>
+          <select value={tenantId} onChange={(e) => { setTenantId(e.target.value); setContractorId(''); }} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]">
+            <option value="">All tenants</option>
+            {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-surface-700">Contractor</span>
+          <select value={contractorId} onChange={(e) => setContractorId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]" disabled={!tenantId}>
+            <option value="">All contractors</option>
+            {contractors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-surface-700">Type</span>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
+            <option value="all">Fleet and drivers</option>
+            <option value="truck">Fleet only</option>
+            <option value="driver">Drivers only</option>
+          </select>
+        </label>
+        <button type="button" onClick={load} className="px-3 py-1.5 text-sm rounded-lg bg-surface-200 text-surface-800 hover:bg-surface-300">Refresh</button>
+      </div>
+
+      {!loading && totalSelected > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-red-800">
+            {selectedTruckIds.size > 0 && `${selectedTruckIds.size} truck${selectedTruckIds.size > 1 ? 's' : ''} selected`}
+            {selectedTruckIds.size > 0 && selectedDriverIds.size > 0 && ', '}
+            {selectedDriverIds.size > 0 && `${selectedDriverIds.size} driver${selectedDriverIds.size > 1 ? 's' : ''} selected`}
+          </span>
+          <button type="button" disabled={deletingBulk} onClick={handleDeleteSelected} className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingBulk ? 'Deleting…' : 'Delete selected'}</button>
+          <button type="button" onClick={() => { setSelectedTruckIds(new Set()); setSelectedDriverIds(new Set()); }} className="px-3 py-1.5 text-sm text-red-700 hover:text-red-900 font-medium">Clear selection</button>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        {loading ? (
+          <p className="p-6 text-surface-500">Loading…</p>
+        ) : (
+          <div className="divide-y divide-surface-200">
+            {(typeFilter === 'all' || typeFilter === 'truck') && (
+              <div className="p-4">
+                <h3 className="font-medium text-surface-900 mb-3">Fleet (trucks)</h3>
+                {trucks.length === 0 ? (
+                  <p className="text-sm text-surface-500">No trucks match the filters.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-surface-200">
+                        <th className="p-2 w-10">
+                          <input type="checkbox" checked={trucks.length > 0 && selectedTruckIds.size === trucks.length} onChange={(e) => toggleAllTrucks(e.target.checked)} className="rounded border-surface-300" aria-label="Select all trucks" />
+                        </th>
+                        <th className="text-left p-2 font-medium text-surface-700">Registration</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Make / model</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Tenant</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Status</th>
+                        <th className="p-2 w-24" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trucks.map((t) => (
+                        <tr key={t.id} className="border-b border-surface-100 hover:bg-surface-50/50">
+                          <td className="p-2">
+                            <input type="checkbox" checked={selectedTruckIds.has(t.id)} onChange={() => toggleTruck(t.id)} className="rounded border-surface-300" aria-label={`Select ${t.registration || t.id}`} />
+                          </td>
+                          <td className="p-2 font-medium">{t.registration || '—'}</td>
+                          <td className="p-2 text-surface-600">{t.makeModel || '—'}</td>
+                          <td className="p-2 text-surface-600">{t.tenantName || '—'}</td>
+                          <td className="p-2 text-surface-600">{t.contractorName || '—'}</td>
+                          <td className="p-2 text-surface-600">{t.status || '—'}</td>
+                          <td className="p-2">
+                            <button type="button" disabled={deletingTruckId === t.id} onClick={() => handleDeleteTruck(t)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingTruckId === t.id ? 'Deleting…' : 'Delete'}</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+            {(typeFilter === 'all' || typeFilter === 'driver') && (
+              <div className="p-4">
+                <h3 className="font-medium text-surface-900 mb-3">Drivers</h3>
+                {drivers.length === 0 ? (
+                  <p className="text-sm text-surface-500">No drivers match the filters.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-surface-200">
+                        <th className="p-2 w-10">
+                          <input type="checkbox" checked={drivers.length > 0 && selectedDriverIds.size === drivers.length} onChange={(e) => toggleAllDrivers(e.target.checked)} className="rounded border-surface-300" aria-label="Select all drivers" />
+                        </th>
+                        <th className="text-left p-2 font-medium text-surface-700">Name</th>
+                        <th className="text-left p-2 font-medium text-surface-700">ID / licence</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Tenant</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Contractor</th>
+                        <th className="p-2 w-24" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {drivers.map((d) => (
+                        <tr key={d.id} className="border-b border-surface-100 hover:bg-surface-50/50">
+                          <td className="p-2">
+                            <input type="checkbox" checked={selectedDriverIds.has(d.id)} onChange={() => toggleDriver(d.id)} className="rounded border-surface-300" aria-label={`Select ${[d.fullName, d.surname].filter(Boolean).join(' ') || d.id}`} />
+                          </td>
+                          <td className="p-2 font-medium">{[d.fullName, d.surname].filter(Boolean).join(' ') || '—'}</td>
+                          <td className="p-2 text-surface-600">{d.idNumber || d.licenseNumber || '—'}</td>
+                          <td className="p-2 text-surface-600">{d.tenantName || '—'}</td>
+                          <td className="p-2 text-surface-600">{d.contractorName || '—'}</td>
+                          <td className="p-2">
+                            <button type="button" disabled={deletingDriverId === d.id} onClick={() => handleDeleteDriver(d)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingDriverId === d.id ? 'Deleting…' : 'Delete'}</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

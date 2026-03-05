@@ -65,43 +65,156 @@ function getTenantId(req) {
   return u.tenant_id ?? u.tenant_Id ?? (u.tenant_id !== undefined ? u.tenant_id : undefined);
 }
 
-/** GET contractor context: confirms session + tenant and returns company info (for debugging and UI) */
-router.get('/context', (req, res) => {
+/** Allowed contractor IDs for current user. Returns null = all contractors under tenant (no restriction); [] = none; [...] = only these. */
+async function getAllowedContractorIds(req) {
   const tenantId = getTenantId(req);
-  const tenantName = req.user?.tenant_name ?? req.user?.tenant_name ?? null;
-  res.json({ ok: true, tenantId, tenantName });
+  if (!tenantId) return null;
+  try {
+    const result = await query(
+      `SELECT contractor_id FROM user_contractors WHERE user_id = @userId`,
+      { userId: req.user?.id }
+    );
+    const rows = result.recordset || [];
+    const ids = rows.map((r) => r.contractor_id ?? r.contractor_Id).filter(Boolean);
+    if (ids.length > 0) return ids;
+    if (rows.length > 0) return [];
+
+    // No user_contractors rows: user might be tenant-wide (CC/AM/Rector) or a contractor user not yet assigned
+    const pageRoles = req.user?.page_roles || [];
+    const canSeeAllContractors = ['command_centre', 'access_management', 'rector'].some((p) => pageRoles.includes(p));
+    if (canSeeAllContractors) return null;
+
+    // Contractor-only user with no assignment: restrict so they never see other contractors' data
+    const countResult = await query(
+      `SELECT id FROM contractors WHERE tenant_id = @tenantId`,
+      { tenantId }
+    );
+    const tenantContractors = countResult.recordset || [];
+    if (tenantContractors.length === 0) return null;
+    if (tenantContractors.length === 1) return [tenantContractors[0].id ?? tenantContractors[0].Id];
+    return [];
+  } catch (e) {
+    if (e.message && (e.message.includes('user_contractors') || e.message.includes('Invalid object'))) return null;
+    throw e;
+  }
+}
+
+/** Resolve effective contractor_id for create: body.contractor_id if allowed, else first allowed, else null. */
+async function resolveContractorIdForCreate(req, bodyContractorId) {
+  const allowed = await getAllowedContractorIds(req);
+  if (allowed === null) return bodyContractorId || null;
+  if (allowed.length === 0) return null;
+  if (bodyContractorId && allowed.includes(bodyContractorId)) return bodyContractorId;
+  if (allowed.length === 1) return allowed[0];
+  return bodyContractorId && allowed.includes(bodyContractorId) ? bodyContractorId : allowed[0];
+}
+
+/** POST create a contractor (company) under current tenant. */
+router.post('/contractors', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const { name } = req.body || {};
+    const nameTrim = name != null ? String(name).trim() : '';
+    if (!nameTrim) return res.status(400).json({ error: 'Contractor name is required.' });
+    const result = await query(
+      `INSERT INTO contractors (tenant_id, name) OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at VALUES (@tenantId, @name)`,
+      { tenantId, name: nameTrim }
+    );
+    const row = result.recordset[0];
+    res.status(201).json({ contractor: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET contractors list (for current tenant; scoped by user_contractors if set). */
+router.get('/contractors', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const allowed = await getAllowedContractorIds(req);
+    let result;
+    if (allowed === null) {
+      result = await query(`SELECT id, tenant_id, name, created_at FROM contractors WHERE tenant_id = @tenantId ORDER BY name`, { tenantId });
+    } else if (allowed.length === 0) {
+      return res.json({ contractors: [] });
+    } else {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      const params = { tenantId };
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+      result = await query(
+        `SELECT id, tenant_id, name, created_at FROM contractors WHERE tenant_id = @tenantId AND id IN (${placeholders}) ORDER BY name`,
+        params
+      );
+    }
+    res.json({ contractors: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET contractor context: confirms session + tenant and returns company info + contractors list (for UI). */
+router.get('/context', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const tenantName = req.user?.tenant_name ?? req.user?.tenant_name ?? null;
+    let contractors = [];
+    try {
+      const allowed = await getAllowedContractorIds(req);
+      if (allowed === null) {
+        const r = await query(`SELECT id, name FROM contractors WHERE tenant_id = @tenantId ORDER BY name`, { tenantId });
+        contractors = r.recordset || [];
+      } else if (allowed.length > 0) {
+        const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+        const params = { tenantId };
+        allowed.forEach((id, i) => { params[`c${i}`] = id; });
+        const r = await query(`SELECT id, name FROM contractors WHERE tenant_id = @tenantId AND id IN (${placeholders}) ORDER BY name`, params);
+        contractors = r.recordset || [];
+      }
+    } catch (_) {}
+    res.json({ ok: true, tenantId, tenantName, contractors });
+  } catch (err) {
+    next(err);
+  }
 });
 
 function normReg(registration) {
   return String(registration || '').trim().toLowerCase();
 }
 
-// Trucks: duplicate = same tenant + same registration (case-insensitive, trimmed)
-async function truckRegistrationExists(tenantId, registration, excludeId = null) {
+// Trucks: duplicate = same tenant + same registration (and same contractor when scoped)
+async function truckRegistrationExists(tenantId, registration, excludeId = null, contractorId = null) {
   const reg = normReg(registration);
   if (!reg) return false;
+  const contractorClause = contractorId != null
+    ? ' AND (contractor_id = @contractorId OR (contractor_id IS NULL AND @contractorId IS NULL))'
+    : '';
   const result = await query(
-    `SELECT 1 FROM contractor_trucks WHERE tenant_id = @tenantId AND LOWER(LTRIM(RTRIM(registration))) = @regNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
-    { tenantId, regNorm: reg, ...(excludeId && { excludeId }) }
+    `SELECT 1 FROM contractor_trucks WHERE tenant_id = @tenantId AND LOWER(LTRIM(RTRIM(registration))) = @regNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
+    { tenantId, regNorm: reg, ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
   );
   return (result.recordset?.length ?? 0) > 0;
 }
 
-// Drivers: duplicate = same tenant + same id_number (if provided) OR same license_number (if provided)
-async function driverDuplicateExists(tenantId, id_number, license_number, excludeId = null) {
+// Drivers: duplicate = same tenant (and same contractor when scoped) + same id_number or license_number
+async function driverDuplicateExists(tenantId, id_number, license_number, excludeId = null, contractorId = null) {
   const idNum = id_number ? String(id_number).trim() : null;
   const licNum = license_number ? String(license_number).trim() : null;
+  const contractorClause = contractorId != null
+    ? ' AND (contractor_id = @contractorId OR (contractor_id IS NULL AND @contractorId IS NULL))'
+    : '';
   if (idNum) {
     const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
-      { tenantId, idNumNorm: idNum.toLowerCase(), ...(excludeId && { excludeId }) }
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
+      { tenantId, idNumNorm: idNum.toLowerCase(), ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
     );
     if (result.recordset?.length > 0) return true;
   }
   if (licNum) {
     const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
-      { tenantId, licNumNorm: licNum.toLowerCase(), ...(excludeId && { excludeId }) }
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
+      { tenantId, licNumNorm: licNum.toLowerCase(), ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
     );
     if (result.recordset?.length > 0) return true;
   }
@@ -113,10 +226,20 @@ function listHandler(table, orderBy = 'created_at') {
     try {
       const tenantId = getTenantId(req);
       if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
-      const result = await query(
-        `SELECT * FROM ${table} WHERE tenant_id = @tenantId ORDER BY ${orderBy} DESC`,
-        { tenantId }
-      );
+      const allowed = await getAllowedContractorIds(req);
+      let sql = `SELECT * FROM ${table} WHERE tenant_id = @tenantId`;
+      const params = { tenantId };
+      if (allowed && allowed.length === 0) {
+        res.json({ [table.replace('contractor_', '')]: [] });
+        return;
+      }
+      if (allowed && allowed.length > 0) {
+        const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+        sql += ` AND contractor_id IN (${placeholders})`;
+        allowed.forEach((id, i) => { params[`c${i}`] = id; });
+      }
+      sql += ` ORDER BY ${orderBy} DESC`;
+      const result = await query(sql, params);
       const key = table.replace('contractor_', '');
       res.json({ [key]: result.recordset });
     } catch (err) {
@@ -162,17 +285,19 @@ router.post('/trucks', async (req, res, next) => {
     const {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
-      commodity_type, capacity_tonnes, status,
+      commodity_type, capacity_tonnes, status, contractor_id: bodyContractorId,
     } = req.body || {};
+    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const regTrim = registration != null ? String(registration).trim() : '';
-    if (regTrim && (await truckRegistrationExists(req.user.tenant_id, regTrim))) {
+    if (regTrim && (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId))) {
       return res.status(409).json({ error: 'A truck with this registration already exists.' });
     }
     const result = await query(
-      `INSERT INTO contractor_trucks (tenant_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
-       OUTPUT INSERTED.* VALUES (@tenantId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
+      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
       {
         tenantId: req.user.tenant_id,
+        contractorId: contractorId || null,
         main_contractor: main_contractor || null,
         sub_contractor: sub_contractor || null,
         make_model: make_model || null,
@@ -254,10 +379,11 @@ router.patch('/trucks/:id', async (req, res, next) => {
 
 router.post('/trucks/bulk', async (req, res, next) => {
   try {
-    const { trucks: items } = req.body || {};
+    const { trucks: items, contractor_id: bodyContractorId } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty trucks array' });
     }
+    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const inserted = [];
     const skipped = []; // duplicate or empty registration
     for (const row of items) {
@@ -268,15 +394,16 @@ router.post('/trucks/bulk', async (req, res, next) => {
       } = row;
       const regTrim = registration != null ? String(registration).trim() : '';
       if (!regTrim) continue;
-      if (await truckRegistrationExists(req.user.tenant_id, regTrim)) {
+      if (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId)) {
         skipped.push(regTrim);
         continue;
       }
       const result = await query(
-        `INSERT INTO contractor_trucks (tenant_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
-         OUTPUT INSERTED.* VALUES (@tenantId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
+        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
         {
           tenantId: req.user.tenant_id,
+          contractorId: contractorId || null,
           main_contractor: main_contractor || null,
           sub_contractor: sub_contractor || null,
           make_model: make_model || null,
@@ -311,21 +438,35 @@ router.get('/drivers', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
+    const allowed = await getAllowedContractorIds(req);
+    let whereClause = ' WHERE d.tenant_id = @tenantId';
+    const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ drivers: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      whereClause += ` AND d.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
     let rows = [];
     try {
       const result = await query(
         `SELECT d.*, t.registration AS linked_truck_registration, t.make_model AS linked_truck_make_model, t.fleet_no AS linked_truck_fleet_no
          FROM contractor_drivers d
          LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
-         WHERE d.tenant_id = @tenantId ORDER BY d.created_at DESC`,
-        { tenantId }
+         ${whereClause} ORDER BY d.created_at DESC`,
+        params
       );
       rows = result.recordset || [];
     } catch (colErr) {
-      if (colErr.message && (colErr.message.includes('linked_truck_id') || colErr.message.includes('Invalid column'))) {
+      if (colErr.message && (colErr.message.includes('linked_truck_id') || colErr.message.includes('Invalid column') || colErr.message.includes('contractor_id'))) {
+        const fallbackWhere = allowed && allowed.length > 0
+          ? ` WHERE tenant_id = @tenantId AND contractor_id IN (${allowed.map((_, i) => `@c${i}`).join(',')})`
+          : ' WHERE tenant_id = @tenantId';
         const fallback = await query(
-          `SELECT * FROM contractor_drivers WHERE tenant_id = @tenantId ORDER BY created_at DESC`,
-          { tenantId }
+          `SELECT * FROM contractor_drivers ${fallbackWhere} ORDER BY created_at DESC`,
+          params
         );
         rows = fallback.recordset || [];
       } else {
@@ -346,18 +487,20 @@ router.get('/drivers', async (req, res, next) => {
 });
 router.post('/drivers', async (req, res, next) => {
   try {
-    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email } = req.body || {};
+    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId } = req.body || {};
+    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const firstName = full_name || name || '';
     const lastName = surname || '';
     const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
-    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number)) {
+    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null, contractorId)) {
       return res.status(409).json({ error: 'A driver with this ID number or licence number already exists.' });
     }
     const result = await query(
-      `INSERT INTO contractor_drivers (tenant_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
-       OUTPUT INSERTED.* VALUES (@tenantId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
+      `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
       {
         tenantId: req.user.tenant_id,
+        contractorId: contractorId || null,
         full_name: fullName,
         surname: lastName || null,
         id_number: id_number || null,
@@ -381,7 +524,9 @@ router.patch('/drivers/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id } = req.body || {};
-    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, id)) {
+    const existingDriver = await query(`SELECT contractor_id FROM contractor_drivers WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId: req.user.tenant_id });
+    const driverContractorId = existingDriver.recordset?.[0]?.contractor_id ?? existingDriver.recordset?.[0]?.contractor_Id;
+    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, id, driverContractorId)) {
       return res.status(409).json({ error: 'Another driver with this ID number or licence number already exists.' });
     }
     if (linked_truck_id !== undefined && linked_truck_id !== null && linked_truck_id !== '') {
@@ -447,10 +592,11 @@ router.patch('/drivers/:id', async (req, res, next) => {
 
 router.post('/drivers/bulk', async (req, res, next) => {
   try {
-    const { drivers: items } = req.body || {};
+    const { drivers: items, contractor_id: bodyContractorId } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty drivers array' });
     }
+    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const inserted = [];
     let skipped = 0;
     for (const row of items) {
@@ -459,15 +605,16 @@ router.post('/drivers/bulk', async (req, res, next) => {
       const lastName = surname || '';
       const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
       if (!fullName.trim()) continue;
-      if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number)) {
+      if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null, contractorId)) {
         skipped += 1;
         continue;
       }
       const result = await query(
-        `INSERT INTO contractor_drivers (tenant_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
-         OUTPUT INSERTED.* VALUES (@tenantId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
+        `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
         {
           tenantId: req.user.tenant_id,
+          contractorId: contractorId || null,
           full_name: fullName.trim(),
           surname: lastName || null,
           id_number: id_number || null,
@@ -489,13 +636,22 @@ router.post('/drivers/bulk', async (req, res, next) => {
   }
 });
 
-// Incidents (breakdown/incidents) – list with normalized rows; optional filters: dateFrom, dateTo, type, resolved
+// Incidents (breakdown/incidents) – list with normalized rows; optional filters: dateFrom, dateTo, type, resolved; scoped by contractor
 router.get('/incidents', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { dateFrom, dateTo, type, resolved } = req.query || {};
+    const allowed = await getAllowedContractorIds(req);
     let sql = `SELECT * FROM contractor_incidents WHERE tenant_id = @tenantId`;
     const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ incidents: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
     if (dateFrom) { sql += ` AND reported_at >= @dateFrom`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND reported_at <= @dateTo`; params.dateTo = dateTo; }
     if (type && String(type).trim()) { sql += ` AND [type] = @type`; params.type = String(type).trim(); }
@@ -530,6 +686,7 @@ function normalizeIncidentRow(row) {
   return {
     id: pick(row, 'id'),
     tenant_id: pick(row, 'tenant_id'),
+    contractor_id: pick(row, 'contractor_id'),
     truck_id: pick(row, 'truck_id'),
     driver_id: pick(row, 'driver_id'),
     type: pick(row, 'type') != null ? String(pick(row, 'type')) : null,
@@ -602,6 +759,11 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
     }
     const truck_id = (payload.truck_id && String(payload.truck_id).length > 10) ? String(payload.truck_id).trim() : null;
     const driver_id = (payload.driver_id && String(payload.driver_id).length > 10) ? String(payload.driver_id).trim() : null;
+    let incidentContractorId = payload.contractor_id && String(payload.contractor_id).length > 10 ? String(payload.contractor_id).trim() : null;
+    if (!incidentContractorId && truck_id) {
+      const truckRow = await query(`SELECT contractor_id FROM contractor_trucks WHERE id = @truckId AND tenant_id = @tenantId`, { truckId: truck_id, tenantId: req.user.tenant_id });
+      incidentContractorId = truckRow.recordset?.[0]?.contractor_id ?? truckRow.recordset?.[0]?.contractor_Id ?? null;
+    }
     const type = (payload.type && String(payload.type).trim()) || 'incident';
     const title = (payload.title && String(payload.title).trim()) || 'Breakdown / Incident';
     const description = (payload.description && String(payload.description).trim()) ? String(payload.description).trim() : null;
@@ -618,10 +780,11 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
       if (Number.isNaN(reportedAt.getTime())) reportedAt = new Date();
     }
     const result = await query(
-      `INSERT INTO contractor_incidents (tenant_id, truck_id, driver_id, [type], title, description, severity, actions_taken, reported_at, location, route_id)
-       OUTPUT INSERTED.* VALUES (@tenantId, @truck_id, @driver_id, @type, @title, @description, @severity, @actions_taken, @reported_at, @location, @route_id)`,
+      `INSERT INTO contractor_incidents (tenant_id, contractor_id, truck_id, driver_id, [type], title, description, severity, actions_taken, reported_at, location, route_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractor_id, @truck_id, @driver_id, @type, @title, @description, @severity, @actions_taken, @reported_at, @location, @route_id)`,
       {
         tenantId: req.user.tenant_id,
+        contractor_id: incidentContractorId || null,
         truck_id: truck_id || null,
         driver_id: driver_id || null,
         type: type || 'incident',
@@ -950,14 +1113,23 @@ router.get('/compliance-records', async (req, res, next) => {
         );
       }
     }
-    let listSql = `SELECT * FROM cc_compliance_inspections WHERE tenant_id = @tenantId`;
+    const allowed = await getAllowedContractorIds(req);
+    let listSql = `SELECT c.* FROM cc_compliance_inspections c WHERE c.tenant_id = @tenantId`;
     const listParams = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ records: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      listSql += ` AND (c.truck_id IN (SELECT id FROM contractor_trucks WHERE tenant_id = @tenantId AND contractor_id IN (${placeholders})) OR c.driver_id IN (SELECT id FROM contractor_drivers WHERE tenant_id = @tenantId AND contractor_id IN (${placeholders})))`;
+      allowed.forEach((id, i) => { listParams[`c${i}`] = id; });
+    }
     const statusFilter = req.query?.status || req.query?.statusFilter;
     if (statusFilter && String(statusFilter).trim()) {
-      listSql += ` AND [status] = @statusFilter`;
+      listSql += ` AND c.[status] = @statusFilter`;
       listParams.statusFilter = String(statusFilter).trim();
     }
-    listSql += ` ORDER BY created_at DESC`;
+    listSql += ` ORDER BY c.created_at DESC`;
     const result = await query(listSql, listParams);
     const list = (result.recordset || []).map((r) => ({
       id: getRow(r, 'id'),
@@ -1117,13 +1289,22 @@ router.get('/compliance-records/:id/attachments/:attachmentId', async (req, res,
   }
 });
 
-// Suspensions and appeals; optional filters: entity_type, status
+// Suspensions and appeals; optional filters: entity_type, status; scoped by contractor
 router.get('/suspensions', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { entity_type, status } = req.query || {};
+    const allowed = await getAllowedContractorIds(req);
     let sql = `SELECT * FROM contractor_suspensions WHERE tenant_id = @tenantId`;
     const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ suspensions: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
     if (entity_type && String(entity_type).trim()) { sql += ` AND entity_type = @entity_type`; params.entity_type = String(entity_type).trim(); }
     if (status && String(status).trim()) { sql += ` AND [status] = @status`; params.status = String(status).trim(); }
     sql += ` ORDER BY created_at DESC`;
@@ -1195,16 +1376,18 @@ router.get('/reinstatement-history', async (req, res, next) => {
 router.post('/suspensions', async (req, res, next) => {
   try {
     const { entity_type, entity_id, reason, status, appeal_notes, is_permanent, duration_days } = req.body || {};
+    const contractorId = await resolveContractorIdForCreate(req, req.body?.contractor_id);
     const permanent = is_permanent !== false && is_permanent !== 'false';
     const durationDays = duration_days != null ? parseInt(duration_days, 10) : null;
     const effectivePermanent = permanent && (!durationDays || durationDays < 1);
     let result;
     if (effectivePermanent) {
       result = await query(
-        `INSERT INTO contractor_suspensions (tenant_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
-         OUTPUT INSERTED.* VALUES (@tenantId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 1, NULL)`,
+        `INSERT INTO contractor_suspensions (tenant_id, contractor_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 1, NULL)`,
         {
           tenantId: req.user.tenant_id,
+          contractorId: contractorId ?? null,
           entity_type: entity_type || 'driver',
           entity_id: entity_id || null,
           reason: reason || '',
@@ -1215,10 +1398,11 @@ router.post('/suspensions', async (req, res, next) => {
     } else {
       const days = Math.min(Math.max(1, durationDays || 7), 3650);
       result = await query(
-        `INSERT INTO contractor_suspensions (tenant_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
-         OUTPUT INSERTED.* VALUES (@tenantId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 0, DATEADD(day, @days, SYSUTCDATETIME()))`,
+        `INSERT INTO contractor_suspensions (tenant_id, contractor_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 0, DATEADD(day, @days, SYSUTCDATETIME()))`,
         {
           tenantId: req.user.tenant_id,
+          contractorId: contractorId ?? null,
           entity_type: entity_type || 'driver',
           entity_id: entity_id || null,
           reason: reason || '',
@@ -1230,6 +1414,27 @@ router.post('/suspensions', async (req, res, next) => {
     }
     res.status(201).json({ suspension: result.recordset[0] });
   } catch (err) {
+    if (err.message && err.message.includes('contractor_id')) {
+      const fallbackPayload = { tenantId: req.user.tenant_id, entity_type: req.body?.entity_type || 'driver', entity_id: req.body?.entity_id || null, reason: req.body?.reason || '', status: req.body?.status || 'suspended', appeal_notes: req.body?.appeal_notes || null };
+      const permanent = req.body?.is_permanent !== false && req.body?.is_permanent !== 'false';
+      const durationDays = req.body?.duration_days != null ? parseInt(req.body.duration_days, 10) : null;
+      let fallbackResult;
+      if (permanent && (!durationDays || durationDays < 1)) {
+        fallbackResult = await query(
+          `INSERT INTO contractor_suspensions (tenant_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
+           OUTPUT INSERTED.* VALUES (@tenantId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 1, NULL)`,
+          fallbackPayload
+        );
+      } else {
+        const days = Math.min(Math.max(1, durationDays || 7), 3650);
+        fallbackResult = await query(
+          `INSERT INTO contractor_suspensions (tenant_id, entity_type, entity_id, reason, [status], appeal_notes, is_permanent, suspension_ends_at)
+           OUTPUT INSERTED.* VALUES (@tenantId, @entity_type, @entity_id, @reason, @status, @appeal_notes, 0, DATEADD(day, @days, SYSUTCDATETIME()))`,
+          { ...fallbackPayload, days }
+        );
+      }
+      return res.status(201).json({ suspension: fallbackResult.recordset[0] });
+    }
     next(err);
   }
 });
@@ -2913,28 +3118,51 @@ router.get('/library/:id/download', async (req, res, next) => {
   }
 });
 
-// Messages
+// Messages; scoped by contractor
 router.get('/messages', async (req, res, next) => {
   try {
+    const tenantId = getTenantId(req);
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) {
+      return res.json({ messages: [] });
+    }
+    let whereClause = ' WHERE m.tenant_id = @tenantId';
+    const params = { tenantId };
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      whereClause += ` AND m.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
     const result = await query(
       `SELECT m.*, u.full_name AS sender_name FROM contractor_messages m
        JOIN users u ON u.id = m.sender_id
-       WHERE m.tenant_id = @tenantId ORDER BY m.created_at DESC`,
-      { tenantId: req.user.tenant_id }
+       ${whereClause} ORDER BY m.created_at DESC`,
+      params
     );
-    res.json({ messages: result.recordset });
+    res.json({ messages: result.recordset || [] });
   } catch (err) {
+    if (err.message && err.message.includes('contractor_id')) {
+      const fallback = await query(
+        `SELECT m.*, u.full_name AS sender_name FROM contractor_messages m
+         JOIN users u ON u.id = m.sender_id
+         WHERE m.tenant_id = @tenantId ORDER BY m.created_at DESC`,
+        { tenantId: req.user.tenant_id }
+      );
+      return res.json({ messages: fallback.recordset || [] });
+    }
     next(err);
   }
 });
 router.post('/messages', async (req, res, next) => {
   try {
     const { subject, body } = req.body || {};
+    const contractorId = await resolveContractorIdForCreate(req, req.body?.contractor_id);
     const result = await query(
-      `INSERT INTO contractor_messages (tenant_id, sender_id, subject, body)
-       OUTPUT INSERTED.* VALUES (@tenantId, @senderId, @subject, @body)`,
+      `INSERT INTO contractor_messages (tenant_id, contractor_id, sender_id, subject, body)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @senderId, @subject, @body)`,
       {
         tenantId: req.user.tenant_id,
+        contractorId: contractorId ?? null,
         senderId: req.user.id,
         subject: subject || '',
         body: body || null,
@@ -2942,6 +3170,14 @@ router.post('/messages', async (req, res, next) => {
     );
     res.status(201).json({ message: result.recordset[0] });
   } catch (err) {
+    if (err.message && err.message.includes('contractor_id')) {
+      const fallback = await query(
+        `INSERT INTO contractor_messages (tenant_id, sender_id, subject, body)
+         OUTPUT INSERTED.* VALUES (@tenantId, @senderId, @subject, @body)`,
+        { tenantId: req.user.tenant_id, senderId: req.user.id, subject: (req.body?.subject || ''), body: req.body?.body ?? null }
+      );
+      return res.status(201).json({ message: fallback.recordset[0] });
+    }
     next(err);
   }
 });

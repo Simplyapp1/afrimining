@@ -52,13 +52,96 @@ async function getTenantIdsForUsers(pool, userIds) {
   }
 }
 
+async function getContractorIdsForUsers(pool, userIds) {
+  if (!userIds || userIds.length === 0) return {};
+  try {
+    const request = pool.request();
+    const placeholders = userIds.map((_, i) => `@id${i}`).join(',');
+    userIds.forEach((id, i) => { request.input(`id${i}`, id); });
+    const result = await request.query(
+      `SELECT user_id, contractor_id FROM user_contractors WHERE user_id IN (${placeholders})`
+    );
+    const byUser = {};
+    for (const row of result.recordset || []) {
+      const uid = row.user_id ?? row.user_Id;
+      if (!byUser[uid]) byUser[uid] = [];
+      byUser[uid].push(row.contractor_id ?? row.contractor_Id);
+    }
+    return byUser;
+  } catch (_) {
+    return {};
+  }
+}
+
 router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess('users'));
 
+/** GET contractors for given tenant IDs (for User Management). Supports tenant_ids=id1,id2 or tenant_id=id. */
+router.get('/contractors-for-tenants', async (req, res, next) => {
+  try {
+    let tenantIds = [];
+    const rawMulti = req.query?.tenant_ids;
+    const rawSingle = req.query?.tenant_id;
+    if (rawMulti != null) {
+      tenantIds = (typeof rawMulti === 'string' ? rawMulti.split(',') : Array.isArray(rawMulti) ? rawMulti : [])
+        .map((id) => (id != null ? String(id).trim().replace(/^\{|\}$/g, '') : ''))
+        .filter(Boolean);
+    }
+    if (tenantIds.length === 0 && rawSingle != null) {
+      const one = String(rawSingle).trim().replace(/^\{|\}$/g, '');
+      if (one) tenantIds = [one];
+    }
+    if (tenantIds.length === 0) return res.json({ contractors: [] });
+    const allowed = req.user?.role === 'super_admin'
+      ? tenantIds
+      : tenantIds.filter((tid) => canAccessTenant(req, tid));
+    if (allowed.length === 0) return res.json({ contractors: [] });
+
+    const pool = await getPool();
+    const request = pool.request();
+    allowed.forEach((id, i) => { request.input(`t${i}`, sql.UniqueIdentifier, id); });
+    const placeholders = allowed.map((_, i) => `@t${i}`).join(',');
+    const result = await request.query(
+      `SELECT id, tenant_id, name FROM contractors WHERE tenant_id IN (${placeholders}) ORDER BY name`
+    );
+    const rows = result.recordset || [];
+    res.json({ contractors: rows });
+  } catch (err) {
+    if (err.message && (err.message.includes('Invalid object name') || err.message.includes("contractors"))) {
+      return res.status(200).json({ contractors: [], _error: 'Contractors table may not exist. Run the multi-contractor schema (e.g. npm run db:contractors-multi).' });
+    }
+    next(err);
+  }
+});
+
+/** POST create a contractor (company) under a tenant. For User Management: create contractor companies here. */
+router.post('/contractors', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const { tenant_id, name } = req.body || {};
+    const tenantId = tenant_id != null ? String(tenant_id).trim().replace(/^\{|\}$/g, '') : '';
+    const nameTrim = name != null ? String(name).trim() : '';
+    if (!tenantId || !nameTrim) return res.status(400).json({ error: 'tenant_id and name are required' });
+    if (!canAccessTenant(req, tenantId)) return res.status(403).json({ error: 'You cannot create contractors for this tenant' });
+    const result = await query(
+      `INSERT INTO contractors (tenant_id, name) OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at VALUES (@tenantId, @name)`,
+      { tenantId, name: nameTrim }
+    );
+    const row = result.recordset?.[0];
+    res.status(201).json({ contractor: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function canAccessTenant(req, tenantId) {
   if (req.user.role === 'super_admin') return true;
-  const hasTenant = req.user.tenant_id === tenantId || (Array.isArray(req.user.tenant_ids) && req.user.tenant_ids.includes(tenantId));
+  const tid = tenantId != null ? String(tenantId).replace(/^\{|\}$/g, '') : '';
+  const userTid = req.user.tenant_id != null ? String(req.user.tenant_id).replace(/^\{|\}$/g, '') : null;
+  const userTids = Array.isArray(req.user.tenant_ids)
+    ? req.user.tenant_ids.map((t) => (t != null ? String(t).replace(/^\{|\}$/g, '') : ''))
+    : [];
+  const hasTenant = tid && (tid === userTid || userTids.includes(tid));
   if (!hasTenant) return false;
   const isEnterprise = String(req.user?.tenant_plan).toLowerCase() === 'enterprise';
   if (req.user.role === 'tenant_admin' || isEnterprise) return true;
@@ -120,11 +203,19 @@ router.get('/', async (req, res, next) => {
     const pool = await getPool();
     const pageRolesByUser = await getPageRolesForUsers(pool, list.map((u) => u.id));
     const tenantIdsByUser = await getTenantIdsForUsers(pool, list.map((u) => u.id));
-    const usersWithRoles = list.map((u) => ({
-      ...u,
-      page_roles: pageRolesByUser[u.id] || [],
-      tenant_ids: tenantIdsByUser[u.id] || (u.tenant_id ? [u.tenant_id] : []),
-    }));
+    const contractorIdsByUser = await getContractorIdsForUsers(pool, list.map((u) => u.id));
+    const usersWithRoles = list.map((u) => {
+      const fromTable = tenantIdsByUser[u.id];
+      const tenant_ids = (Array.isArray(fromTable) && fromTable.length > 0)
+        ? fromTable
+        : (u.tenant_id != null ? [u.tenant_id] : []);
+      return {
+        ...u,
+        page_roles: pageRolesByUser[u.id] || [],
+        tenant_ids,
+        contractor_ids: contractorIdsByUser[u.id] || [],
+      };
+    });
 
     res.json({
       users: usersWithRoles,
@@ -321,7 +412,9 @@ router.get('/:id', async (req, res, next) => {
     const canAccess = canAccessTenant(req, user.tenant_id) || tenant_ids.includes(req.user.tenant_id);
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
     const pageRolesByUser = await getPageRolesForUsers(pool, [user.id]);
-    res.json({ user: { ...user, page_roles: pageRolesByUser[user.id] || [], tenant_ids } });
+    const contractorIdsByUser = await getContractorIdsForUsers(pool, [user.id]);
+    const contractor_ids = contractorIdsByUser[user.id] || [];
+    res.json({ user: { ...user, page_roles: pageRolesByUser[user.id] || [], tenant_ids, contractor_ids } });
   } catch (err) {
     next(err);
   }
@@ -354,7 +447,7 @@ router.get('/:id/activity', async (req, res, next) => {
 
 router.post('/', requireTenantAdmin, async (req, res, next) => {
   try {
-    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone } = req.body || {};
+    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
     if (!email || !password || !full_name) {
       return res.status(400).json({ error: 'Email, password, and full_name required' });
     }
@@ -394,6 +487,18 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
     for (const pageId of pageIds) {
       await query(`INSERT INTO user_page_roles (user_id, page_id) VALUES (@userId, @pageId)`, { userId: user.id, pageId });
     }
+    const contractorIds = Array.isArray(bodyContractorIds) ? bodyContractorIds.filter(Boolean) : [];
+    if (contractorIds.length > 0 && tenantIds.length > 0) {
+      const tPlaceholders = tenantIds.map((_, i) => `@tid${i}`).join(',');
+      for (const cid of contractorIds) {
+        const cParams = { cid };
+        tenantIds.forEach((tid, i) => { cParams[`tid${i}`] = tid; });
+        const cCheck = await query(`SELECT 1 FROM contractors WHERE id = @cid AND tenant_id IN (${tPlaceholders})`, cParams);
+        if (cCheck.recordset?.length) {
+          await query(`INSERT INTO user_contractors (user_id, contractor_id) VALUES (@userId, @contractorId)`, { userId: user.id, contractorId: cid });
+        }
+      }
+    }
     await auditLog({
       tenantId: user.tenant_id,
       userId: req.user.id,
@@ -424,7 +529,8 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
         sendEmail({ to, subject, body: html, html: true }).catch((e) => console.error('[users] New user email error:', e?.message));
       }
     }
-    res.status(201).json({ user: { ...user, page_roles: pageIds, tenant_ids: tenantIds } });
+    const contractorIdsByUser = await getContractorIdsForUsers(pool, [user.id]);
+    res.status(201).json({ user: { ...user, page_roles: pageIds, tenant_ids: tenantIds, contractor_ids: contractorIdsByUser[user.id] || [] } });
   } catch (err) {
     if (err.number === 2627) return res.status(409).json({ error: 'Email already exists in this tenant' });
     next(err);
@@ -443,7 +549,7 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     const canAccess = canAccessTenant(req, existing.tenant_id) || existingList.includes(req.user.tenant_id);
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
 
-    const { full_name, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone } = req.body || {};
+    const { full_name, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
     const updates = [];
     const params = { id };
 
@@ -482,7 +588,23 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
         params.primaryTenantId = newTenantIds[0];
       }
     }
-    if (updates.length === 0 && page_roles === undefined && bodyTenantIds === undefined) return res.status(400).json({ error: 'No fields to update' });
+    if (bodyContractorIds !== undefined) {
+      await query(`DELETE FROM user_contractors WHERE user_id = @id`, { id });
+      const newContractorIds = Array.isArray(bodyContractorIds) ? bodyContractorIds.filter(Boolean) : [];
+      const userTenantIds = bodyTenantIds !== undefined ? (Array.isArray(bodyTenantIds) ? bodyTenantIds.filter(Boolean) : existingList) : existingList;
+      if (newContractorIds.length > 0 && userTenantIds.length > 0) {
+        const tPh = userTenantIds.map((_, i) => `@tid${i}`).join(',');
+        for (const cid of newContractorIds) {
+          const cp = { cid };
+          userTenantIds.forEach((tid, i) => { cp[`tid${i}`] = tid; });
+          const cCheck = await query(`SELECT 1 FROM contractors WHERE id = @cid AND tenant_id IN (${tPh})`, cp);
+          if (cCheck.recordset?.length) {
+            await query(`INSERT INTO user_contractors (user_id, contractor_id) VALUES (@userId, @contractorId)`, { userId: id, contractorId: cid });
+          }
+        }
+      }
+    }
+    if (updates.length === 0 && page_roles === undefined && bodyTenantIds === undefined && bodyContractorIds === undefined) return res.status(400).json({ error: 'No fields to update' });
     if (updates.length > 0) {
       updates.push('updated_at = SYSUTCDATETIME()');
       await query(`UPDATE users SET ${updates.join(', ')} WHERE id = @id`, params);
@@ -503,8 +625,9 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
       ip: req.ip,
     });
     const tenantIdsByUser = await getTenantIdsForUsers(pool, [id]);
+    const contractorIdsByUser = await getContractorIdsForUsers(pool, [id]);
     const tenant_ids = tenantIdsByUser[id] || (updatedUser.tenant_id ? [updatedUser.tenant_id] : []);
-    res.json({ user: { ...updatedUser, page_roles: pageRolesByUser[id] || [], tenant_ids } });
+    res.json({ user: { ...updatedUser, page_roles: pageRolesByUser[id] || [], tenant_ids, contractor_ids: contractorIdsByUser[id] || [] } });
   } catch (err) {
     next(err);
   }

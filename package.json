@@ -42,6 +42,8 @@
     "db:users-id-number": "node scripts/run-users-id-number.js",
     "db:sign-up-requests": "node scripts/run-sign-up-requests-schema.js",
     "db:contractor-info-library": "node scripts/run-contractor-info-and-library.js",
+    "db:contractors-multi": "node scripts/run-contractors-multi-schema.js",
+    "db:backfill-contractor-id": "node scripts/run-backfill-contractor-id.js",
     "db:contractor-driver-linked-truck": "node scripts/run-contractor-driver-linked-truck.js",
     "db:profile-management": "node scripts/run-profile-management-schema.js",
     "db:profile-missing-tables": "node scripts/run-create-missing-profile-tables.js",

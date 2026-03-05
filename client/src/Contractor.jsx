@@ -206,6 +206,9 @@ export default function Contractor() {
   const [incidentRoutesForTruck, setIncidentRoutesForTruck] = useState([]);
   const [incidentRouteId, setIncidentRouteId] = useState('');
   const [incidentRoutesLoading, setIncidentRoutesLoading] = useState(false);
+  const [contextError, setContextError] = useState(null);
+  const [contractorsList, setContractorsList] = useState([]);
+  const [selectedContractorId, setSelectedContractorId] = useState(null);
   const loadingSlipRef = useRef(null);
   const seal1Ref = useRef(null);
   const seal2Ref = useRef(null);
@@ -455,9 +458,13 @@ export default function Contractor() {
   const incidentForPanel = incidentDetail ?? selectedIncident;
   const panelTruckId = getIncidentField(incidentForPanel, 'truck_id');
   const panelDriverId = getIncidentField(incidentForPanel, 'driver_id');
-  const trucksList = data.trucks || [];
-  const driversList = data.drivers || [];
-  const incidentsList = data.incidents || [];
+  const byContractor = (list) => {
+    if (!selectedContractorId || !Array.isArray(list)) return list || [];
+    return list.filter((x) => (x.contractor_id ?? x.contractor_Id) == selectedContractorId);
+  };
+  const trucksList = byContractor(data.trucks);
+  const driversList = byContractor(data.drivers);
+  const incidentsList = byContractor(data.incidents);
 
   // Subcontractor company names from fleet (trucks’ sub_contractor) + existing subcontractors, for dropdown
   const subcontractorCompanyOptions = (() => {
@@ -469,10 +476,10 @@ export default function Contractor() {
     const set = new Set([...fromFleet, ...fromList, ...(current ? [current] : [])]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   })();
-  const expiriesList = data.expiries || [];
-  const suspensionsList = data.suspensions || [];
-  const complianceRecordsList = data.complianceRecords || [];
-  const messagesList = data.messages || [];
+  const expiriesList = byContractor(data.expiries);
+  const suspensionsList = byContractor(data.suspensions);
+  const complianceRecordsList = byContractor(data.complianceRecords);
+  const messagesList = byContractor(data.messages);
   const routesList = data.routes || [];
   const [expirySearch, setExpirySearch] = useState('');
   const filteredExpiriesList = (() => {
@@ -728,8 +735,6 @@ export default function Contractor() {
     return out.slice(0, 20);
   })();
 
-  const [contextError, setContextError] = useState(null);
-
   const load = async () => {
     if (!hasTenant) return;
     setLoading(true);
@@ -749,6 +754,9 @@ export default function Contractor() {
         setLoading(false);
         return;
       }
+      const contractors = Array.isArray(contextRes.contractors) ? contextRes.contractors : [];
+      setContractorsList(contractors);
+      if (contractors.length === 1 && !selectedContractorId) setSelectedContractorId(contractors[0].id);
 
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out. Check your connection and retry.')), 20000));
       const results = await Promise.race([
@@ -837,6 +845,7 @@ export default function Contractor() {
     setError('');
     try {
       await contractorApi.trucks.create({
+        contractor_id: selectedContractorId || undefined,
         main_contractor: form.main_contractor?.value?.trim() || null,
         sub_contractor: form.sub_contractor?.value?.trim() || null,
         make_model: form.make_model?.value?.trim() || null,
@@ -872,6 +881,7 @@ export default function Contractor() {
     setError('');
     try {
       await contractorApi.drivers.create({
+        contractor_id: selectedContractorId || undefined,
         name: form.name?.value?.trim() || '',
         surname: form.surname?.value?.trim() || null,
         id_number: form.id_number?.value?.trim() || null,
@@ -964,7 +974,7 @@ export default function Contractor() {
         e.target.value = '';
         return;
       }
-      const res = await contractorApi.trucks.bulk({ trucks });
+      const res = await contractorApi.trucks.bulk({ trucks, contractor_id: selectedContractorId || undefined });
       setImportSuccess({ type: 'trucks', count: res.imported, skipped: res.skipped ?? 0, skippedRegistrations: res.skippedRegistrations });
       load();
       e.target.value = '';
@@ -988,7 +998,7 @@ export default function Contractor() {
         e.target.value = '';
         return;
       }
-      const res = await contractorApi.drivers.bulk({ drivers });
+      const res = await contractorApi.drivers.bulk({ drivers, contractor_id: selectedContractorId || undefined });
       setImportSuccess({ type: 'drivers', count: res.imported, skipped: res.skipped ?? 0 });
       load();
       e.target.value = '';
@@ -1012,12 +1022,12 @@ export default function Contractor() {
       let trucksSkipped = 0;
       let driversSkipped = 0;
       if (trucks?.length) {
-        const tr = await contractorApi.trucks.bulk({ trucks });
+        const tr = await contractorApi.trucks.bulk({ trucks, contractor_id: selectedContractorId || undefined });
         trucksImported = tr.imported ?? 0;
         trucksSkipped = tr.skipped ?? 0;
       }
       if (drivers?.length) {
-        const dr = await contractorApi.drivers.bulk({ drivers });
+        const dr = await contractorApi.drivers.bulk({ drivers, contractor_id: selectedContractorId || undefined });
         driversImported = dr.imported ?? 0;
         driversSkipped = dr.skipped ?? 0;
       }
@@ -1413,7 +1423,24 @@ export default function Contractor() {
           <p className="text-surface-500">Loading…</p>
         ) : (
           <>
-            <p className="text-xs text-surface-500 mb-4">Showing data for <strong className="text-surface-700">{user?.tenant_name || 'your company'}</strong></p>
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <p className="text-xs text-surface-500">Showing data for <strong className="text-surface-700">{user?.tenant_name || 'your company'}</strong></p>
+              {contractorsList.length > 0 && (
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-surface-600">Contractor:</span>
+                  <select
+                    value={selectedContractorId ?? ''}
+                    onChange={(e) => setSelectedContractorId(e.target.value ? e.target.value : null)}
+                    className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm text-surface-800 bg-white min-w-[180px]"
+                  >
+                    {contractorsList.length > 1 && <option value="">All contractors</option>}
+                    {contractorsList.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name || `Contractor ${c.id}`}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
             {activeTab === 'dashboard' && (
               <div className="space-y-6">
                 <h2 className="text-lg font-semibold text-surface-900">Dashboard</h2>

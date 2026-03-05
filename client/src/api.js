@@ -68,6 +68,19 @@ export const users = {
     return request(`/users${q ? `?${q}` : ''}`);
   },
   get: (id) => request(`/users/${id}`),
+  /** Contractors for given tenant IDs (for assigning user to contractors in User Management). */
+  contractorsForTenants: (tenantIds) => {
+    const ids = (Array.isArray(tenantIds) ? tenantIds : [])
+      .map((id) => (id != null ? String(id).trim() : ''))
+      .filter(Boolean);
+    if (ids.length === 0) return Promise.resolve({ contractors: [] });
+    const q = ids.length === 1
+      ? `tenant_id=${encodeURIComponent(ids[0])}`
+      : `tenant_ids=${encodeURIComponent(ids.join(','))}`;
+    return request(`/users/contractors-for-tenants?${q}`);
+  },
+  /** Create a contractor company under a tenant (from User Management). */
+  createContractor: (body) => request('/users/contractors', { method: 'POST', body: JSON.stringify(body) }),
   activity: (id) => request(`/users/${id}/activity`),
   create: (body) => request('/users', { method: 'POST', body: JSON.stringify(body) }),
   update: (id, body) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -101,6 +114,10 @@ export const tenants = {
 
 export const contractor = {
   context: () => request('/contractor/context'),
+  contractors: {
+    list: () => request('/contractor/contractors'),
+    create: (body) => request('/contractor/contractors', { method: 'POST', body: JSON.stringify(body) }),
+  },
   trucks: {
     list: () => request('/contractor/trucks'),
     create: (body) => request('/contractor/trucks', { method: 'POST', body: JSON.stringify(body) }),
@@ -397,6 +414,17 @@ export const commandCentre = {
       if (params.tenantId) q.set('tenantId', params.tenantId);
       return request(`/command-centre/fleet-integration${q.toString() ? `?${q.toString()}` : ''}`);
     },
+  },
+  deleteFleetDrivers: {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.tenant_id) q.set('tenant_id', params.tenant_id);
+      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+      if (params.type) q.set('type', params.type);
+      return request(`/command-centre/delete-fleet-drivers/list${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    deleteTruck: (id) => request(`/command-centre/delete-fleet-drivers/truck/${id}`, { method: 'DELETE' }),
+    deleteDriver: (id) => request(`/command-centre/delete-fleet-drivers/driver/${id}`, { method: 'DELETE' }),
   },
   contractorsDetails: () => request('/command-centre/contractors-details'),
   breakdowns: {

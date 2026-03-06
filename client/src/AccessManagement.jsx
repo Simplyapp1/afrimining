@@ -427,10 +427,14 @@ export default function AccessManagement() {
     const isFleet = listKind === 'fleet';
     setDistDownloading(isFleet ? 'fleet-' + format : 'driver-' + format);
     const ids = distSelectedRouteIds.length > 0 ? distSelectedRouteIds : [];
-    const q = ids.length > 0 ? (ids.length === 1 ? `?routeId=${encodeURIComponent(ids[0])}` : `?routeIds=${ids.map(encodeURIComponent).join(',')}`) : '';
+    const params = new URLSearchParams();
+    if (ids.length === 1) params.set('routeId', ids[0]);
+    else if (ids.length > 1) params.set('routeIds', ids.join(','));
+    if (format === 'excel') params.set('format', 'excel');
+    const q = params.toString() ? `?${params.toString()}` : '';
     const path = isFleet ? `/contractor/enrollment/fleet-list${q}` : `/contractor/enrollment/driver-list${q}`;
     const API_BASE = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-    const ext = format === 'excel' ? 'xls' : 'csv';
+    const ext = format === 'excel' ? 'xlsx' : 'csv';
     const filename = (isFleet ? 'fleet-list' : 'driver-list') + '.' + ext;
     fetch(`${API_BASE}${path}`, { credentials: 'include' })
       .then((res) => {

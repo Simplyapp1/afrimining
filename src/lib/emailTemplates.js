@@ -67,10 +67,13 @@ export function breakdownReportHtml(data) {
     severity,
     actionsTaken,
     incidentId,
+    contractorName,
+    tenantName,
   } = data;
 
   const incidentDetails = [
     ['Reference ID', incidentId],
+    ['Company (contractor)', contractorName || tenantName || '—'],
     ['Type', type],
     ['Title', title],
     ['Severity', severity],
@@ -125,42 +128,46 @@ export function breakdownConfirmationToDriverHtml(driverName) {
   return wrap(content, 'Breakdown reported successfully', { charcoal: false });
 }
 
-/** Notification to CC + Rector: new fleet or driver addition (single or list). */
-export function newFleetDriverNotificationHtml({ type, tenantName, list, action = 'added' }) {
+/** Notification to CC + Rector: new fleet or driver addition (single or list). Use contractorName for the company; tenantName as fallback. */
+export function newFleetDriverNotificationHtml({ type, tenantName, contractorName, list, action = 'added' }) {
   const label = type === 'truck' ? 'Fleet' : 'Driver';
+  const companyName = (contractorName && String(contractorName).trim()) || (tenantName && String(tenantName).trim()) || 'Unknown';
   const listHtml = Array.isArray(list) && list.length > 0
     ? `<ul style="margin:8px 0 0;padding-left:20px;">${list.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`
     : '<p style="margin:8px 0 0;">—</p>';
   const content = `
     <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">New ${label} ${action}</h1>
-    <p style="margin:0 0 12px;">Contractor <strong>${escapeHtml(tenantName || 'Unknown')}</strong> has ${action} the following ${type === 'truck' ? 'fleet registration(s)' : 'driver(s)'}:</p>
+    <p style="margin:0 0 12px;">Contractor company <strong>${escapeHtml(companyName)}</strong>${tenantName && contractorName && String(tenantName) !== String(contractorName) ? ` (tenant: ${escapeHtml(tenantName)})` : ''} has ${action} the following ${type === 'truck' ? 'fleet registration(s)' : 'driver(s)'}:</p>
     ${listHtml}
     <p style="margin:16px 0 0;color:#718096;font-size:14px;">Review in Command Centre → Fleet & driver applications.</p>
   `;
   return wrap(content, `New ${label} ${action}`, { charcoal: false });
 }
 
-/** Confirmation to contractor who added fleet/driver. */
-export function newFleetDriverConfirmationHtml({ type, list, action = 'added' }) {
+/** Confirmation to contractor who added fleet/driver. contractorName optional (company name). */
+export function newFleetDriverConfirmationHtml({ type, list, action = 'added', contractorName }) {
   const label = type === 'truck' ? 'Fleet' : 'Driver';
   const listHtml = Array.isArray(list) && list.length > 0
     ? `<ul style="margin:8px 0 0;padding-left:20px;">${list.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`
     : '';
+  const companyLine = (contractorName && String(contractorName).trim()) ? `<p style="margin:0 0 12px;">Company: <strong>${escapeHtml(contractorName)}</strong></p>` : '';
   const content = `
     <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">${label} ${action} successfully</h1>
     <p style="margin:0 0 12px;">Your ${type === 'truck' ? 'fleet' : 'driver'} addition has been recorded and sent to Command Centre for review.</p>
+    ${companyLine}
     ${listHtml ? `<p style="margin:12px 0 0;"><strong>${label}(s):</strong></p>${listHtml}` : ''}
     <p style="margin:16px 0 0;color:#718096;font-size:14px;">Once approved, you can enroll ${type === 'truck' ? 'the truck' : 'the driver'} on the route.</p>
   `;
   return wrap(content, `${label} ${action} successfully`, { charcoal: false });
 }
 
-/** Breakdown resolved: notify rector, driver, contractor. */
+/** Breakdown resolved: notify rector, driver, contractor. contractorName = company (contractor) name. */
 export function breakdownResolvedHtml(data) {
-  const { ref, title, driverName, truckRegistration, routeName, resolutionNote, resolvedAt } = data;
+  const { ref, title, driverName, truckRegistration, routeName, resolutionNote, resolvedAt, contractorName } = data;
   const rows = [
     ['Reference', ref],
     ['Title', title],
+    ['Company (contractor)', contractorName],
     ['Driver', driverName],
     ['Truck', truckRegistration],
     ['Route', routeName],
@@ -193,16 +200,36 @@ export function trucksEnrolledOnRouteHtml({ tenantName, routeName, registrations
   return wrap(content, 'Trucks enrolled on route', { charcoal: false });
 }
 
-/** Application approved: truck/driver can now be enrolled on route. */
-export function applicationApprovedHtml({ entityType, entityLabel, tenantName }) {
+/** Application approved: truck/driver can now be enrolled on route. contractorName = company name. */
+export function applicationApprovedHtml({ entityType, entityLabel, tenantName, contractorName }) {
   const label = entityType === 'truck' ? 'Truck' : 'Driver';
+  const companyName = (contractorName && String(contractorName).trim()) || (tenantName && String(tenantName).trim()) || 'your company';
   const content = `
     <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">${label} approved</h1>
-    <p style="margin:0 0 12px;">Good news — your application for <strong>${escapeHtml(entityLabel || label)}</strong> has been approved.</p>
+    <p style="margin:0 0 12px;">Good news — the application for <strong>${escapeHtml(entityLabel || label)}</strong> (company: <strong>${escapeHtml(companyName)}</strong>) has been approved.</p>
     <p style="margin:0 0 12px;">You can now enroll this ${entityType === 'truck' ? 'truck' : 'driver'} on the route in the Contractor portal.</p>
     <p style="margin:16px 0 0;color:#718096;font-size:14px;">Log in to the Contractor section and complete route enrollment for this ${entityType === 'truck' ? 'vehicle' : 'driver'}.</p>
   `;
   return wrap(content, `${label} approved`, { charcoal: false });
+}
+
+/** Bulk applications approved: one email listing all approved items with contractor names. */
+export function applicationBulkApprovedHtml({ items }) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return wrap('<p>No items.</p>', 'Applications approved', { charcoal: false });
+  }
+  const listHtml = items.map((item) => {
+    const label = (item.entityType === 'truck' ? 'Truck' : 'Driver') + ': ' + escapeHtml(item.entityLabel || '—');
+    const company = (item.contractorName && String(item.contractorName).trim()) ? ` (${escapeHtml(item.contractorName)})` : '';
+    return `<li>${label}${company}</li>`;
+  }).join('');
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">Applications approved</h1>
+    <p style="margin:0 0 12px;">The following have been approved. You can now enroll them on the route in the Contractor portal.</p>
+    <ul style="margin:12px 0 0;padding-left:20px;">${listHtml}</ul>
+    <p style="margin:16px 0 0;color:#718096;font-size:14px;">Log in to the Contractor section and complete route enrollment for each.</p>
+  `;
+  return wrap(content, 'Applications approved', { charcoal: false });
 }
 
 /** Truck suspended (Command Centre): to contractor – grey template, with instructions to lift suspension. */

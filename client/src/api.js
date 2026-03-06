@@ -406,6 +406,7 @@ export const commandCentre = {
     getComments: (id) => request(`/command-centre/fleet-applications/${id}/comments`),
     addComment: (id, body) => request(`/command-centre/fleet-applications/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
     approve: (id) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH' }),
+    bulkApprove: (ids) => request('/command-centre/fleet-applications/bulk-approve', { method: 'POST', body: JSON.stringify({ ids }) }),
     decline: (id, declineReason) => request(`/command-centre/fleet-applications/${id}/decline`, { method: 'PATCH', body: JSON.stringify({ decline_reason: declineReason }) }),
   },
   fleetIntegration: {
@@ -425,6 +426,7 @@ export const commandCentre = {
     },
     deleteTruck: (id) => request(`/command-centre/delete-fleet-drivers/truck/${id}`, { method: 'DELETE' }),
     deleteDriver: (id) => request(`/command-centre/delete-fleet-drivers/driver/${id}`, { method: 'DELETE' }),
+    deleteBreakdown: (id) => request(`/command-centre/delete-fleet-drivers/breakdown/${id}`, { method: 'DELETE' }),
   },
   contractorsDetails: () => request('/command-centre/contractors-details'),
   breakdowns: {

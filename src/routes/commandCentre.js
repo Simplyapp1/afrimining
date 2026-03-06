@@ -6,7 +6,7 @@ import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { getTenantUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
-import { applicationApprovedHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
+import { applicationApprovedHtml, applicationBulkApprovedHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -657,14 +657,24 @@ router.get('/fleet-integration', async (req, res, next) => {
   }
 });
 
-/** GET list for Delete contractors fleets/drivers tab. Query: tenant_id, contractor_id, type=truck|driver|all. Returns trucks, drivers, tenants, contractors (for filters). */
+/** GET list for Delete contractors fleets/drivers tab. Query: tenant_id, contractor_id, type=truck|driver|breakdown|all. Returns trucks, drivers, breakdowns, tenants, contractors. */
 router.get('/delete-fleet-drivers/list', async (req, res, next) => {
   try {
     const { tenant_id: tenantId, contractor_id: contractorId, type = 'all' } = req.query || {};
-    const tenantsResult = await query(
-      `SELECT DISTINCT t.id, t.name FROM tenants t INNER JOIN contractor_trucks tr ON tr.tenant_id = t.id`
-    );
-    const tenants = (tenantsResult.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
+    let tenants = [];
+    try {
+      const tenantsResult = await query(
+        `SELECT DISTINCT t.id, t.name FROM tenants t
+         INNER JOIN (SELECT tenant_id FROM contractor_trucks UNION SELECT tenant_id FROM contractor_incidents) u ON u.tenant_id = t.id
+         ORDER BY t.name`
+      );
+      tenants = (tenantsResult.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
+    } catch (_) {
+      const trOnly = await query(
+        `SELECT DISTINCT t.id, t.name FROM tenants t INNER JOIN contractor_trucks tr ON tr.tenant_id = t.id ORDER BY t.name`
+      );
+      tenants = (trOnly.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
+    }
     let contractors = [];
     if (tenantId) {
       const cResult = await query(
@@ -730,7 +740,65 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
       }));
     }
 
-    res.json({ trucks, drivers, tenants, contractors });
+    let breakdowns = [];
+    if (type === 'all' || type === 'breakdown') {
+      const incParams = {};
+      if (tenantId) incParams.tenantId = tenantId;
+      if (contractorId) incParams.contractorId = contractorId;
+      try {
+        const incFilter = tenantId ? ' AND i.tenant_id = @tenantId' : '';
+        const incContractorFilter = contractorId ? ' AND i.contractor_id = @contractorId' : '';
+        const incResult = await query(
+          `SELECT i.id, i.tenant_id, i.contractor_id, i.type, i.title, i.reported_at, i.resolved_at,
+            t.name AS tenant_name, c.name AS contractor_name
+           FROM contractor_incidents i
+           LEFT JOIN tenants t ON t.id = i.tenant_id
+           LEFT JOIN contractors c ON c.id = i.contractor_id
+           WHERE 1=1 ${incFilter} ${incContractorFilter}
+           ORDER BY i.reported_at DESC`,
+          incParams
+        );
+        breakdowns = (incResult.recordset || []).map((r) => ({
+          id: getRow(r, 'id'),
+          tenantId: getRow(r, 'tenant_id'),
+          contractorId: getRow(r, 'contractor_id'),
+          type: getRow(r, 'type'),
+          title: getRow(r, 'title'),
+          reportedAt: getRow(r, 'reported_at'),
+          resolvedAt: getRow(r, 'resolved_at'),
+          tenantName: getRow(r, 'tenant_name'),
+          contractorName: getRow(r, 'contractor_name'),
+        }));
+      } catch (incErr) {
+        try {
+          const incFilter = tenantId ? ' AND i.tenant_id = @tenantId' : '';
+          const fallbackParams = tenantId ? { tenantId } : {};
+          const fallbackResult = await query(
+            `SELECT i.id, i.tenant_id, i.type, i.title, i.reported_at, i.resolved_at, t.name AS tenant_name
+             FROM contractor_incidents i
+             LEFT JOIN tenants t ON t.id = i.tenant_id
+             WHERE 1=1 ${incFilter}
+             ORDER BY i.reported_at DESC`,
+            fallbackParams
+          );
+          breakdowns = (fallbackResult.recordset || []).map((r) => ({
+            id: getRow(r, 'id'),
+            tenantId: getRow(r, 'tenant_id'),
+            contractorId: null,
+            type: getRow(r, 'type'),
+            title: getRow(r, 'title'),
+            reportedAt: getRow(r, 'reported_at'),
+            resolvedAt: getRow(r, 'resolved_at'),
+            tenantName: getRow(r, 'tenant_name'),
+            contractorName: null,
+          }));
+        } catch (fallbackErr) {
+          throw incErr;
+        }
+      }
+    }
+
+    res.json({ trucks, drivers, breakdowns, tenants, contractors });
   } catch (err) {
     next(err);
   }
@@ -763,6 +831,19 @@ router.delete('/delete-fleet-drivers/driver/:id', async (req, res, next) => {
     await query(`DELETE FROM contractor_route_drivers WHERE driver_id = @id`, { id });
     await query(`DELETE FROM cc_fleet_applications WHERE entity_type = N'driver' AND entity_id = @id`, { id });
     await query(`DELETE FROM contractor_drivers WHERE id = @id`, { id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE a reported breakdown (incident). Permanently removes from contractor_incidents. */
+router.delete('/delete-fleet-drivers/breakdown/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const check = await query(`SELECT id, tenant_id FROM contractor_incidents WHERE id = @id`, { id });
+    if (!check.recordset?.length) return res.status(404).json({ error: 'Breakdown not found' });
+    await query(`DELETE FROM contractor_incidents WHERE id = @id`, { id });
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -967,20 +1048,23 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const updated = updateResult.recordset?.[0];
     if (!updated) return res.status(404).json({ error: 'Breakdown not found' });
     const detailResult = await query(
-      `SELECT i.id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
+      `SELECT i.id, i.tenant_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
               tr.registration AS truck_registration, r.name AS route_name,
-              d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
+              d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
+              c.name AS contractor_name
        FROM contractor_incidents i
        LEFT JOIN tenants t ON t.id = i.tenant_id
        LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
        LEFT JOIN contractor_routes r ON r.id = i.route_id
        LEFT JOIN contractor_drivers d ON d.id = i.driver_id
+       LEFT JOIN contractors c ON c.id = i.contractor_id
        WHERE i.id = @id`,
       { id }
     );
     const row = detailResult.recordset?.[0];
     const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
     const resolvedAtStr = row?.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
+    const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
     (async () => {
       try {
         if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmails || !getTenantUserEmails) return;
@@ -1000,6 +1084,7 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
           routeName: row?.route_name || '—',
           resolutionNote: row?.resolution_note || resolutionNote,
           resolvedAt: resolvedAtStr,
+          contractorName: contractorName || null,
         });
         const subject = `Breakdown resolved: ${row?.title || 'Incident'} – ${driverName}`;
         for (const to of allTo) {
@@ -1168,28 +1253,38 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
       { entityId }
     );
     const updated = await query(
-      `SELECT a.*, t.name AS contractor_name FROM cc_fleet_applications a JOIN tenants t ON t.id = a.tenant_id WHERE a.id = @id`,
+      `SELECT a.*, t.name AS tenant_name FROM cc_fleet_applications a JOIN tenants t ON t.id = a.tenant_id WHERE a.id = @id`,
       { id }
     );
     const row = updated.recordset?.[0];
     const tenantId = getRow(row, 'tenant_id');
+    const tenantName = getRow(row, 'tenant_name');
+    let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
+    let contractorName = null;
+    if (entityType === 'truck') {
+      const tr = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId });
+      const trRow = tr.recordset?.[0];
+      entityLabel = trRow?.registration || entityLabel;
+      if (trRow?.contractor_id) {
+        const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: trRow.contractor_id });
+        contractorName = cn.recordset?.[0]?.name ?? null;
+      }
+    } else {
+      const dr = await query(`SELECT full_name, surname, contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId });
+      const d = dr.recordset?.[0];
+      entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
+      if (d?.contractor_id) {
+        const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: d.contractor_id });
+        contractorName = cn.recordset?.[0]?.name ?? null;
+      }
+    }
 
     (async () => {
       try {
         if (!sendEmail || !getTenantUserEmails || !tenantId) return;
-        let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
-        if (entityType === 'truck') {
-          const tr = await query(`SELECT registration FROM contractor_trucks WHERE id = @entityId`, { entityId });
-          entityLabel = tr.recordset?.[0]?.registration || entityLabel;
-        } else {
-          const dr = await query(`SELECT full_name, surname FROM contractor_drivers WHERE id = @entityId`, { entityId });
-          const d = dr.recordset?.[0];
-          entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
-        }
-        const tenantName = getRow(row, 'contractor_name');
         const toEmails = await getTenantUserEmails(query, tenantId);
         if (toEmails.length > 0) {
-          const html = applicationApprovedHtml({ entityType, entityLabel, tenantName });
+          const html = applicationApprovedHtml({ entityType, entityLabel, tenantName, contractorName });
           await sendEmail({ to: toEmails, subject: `${entityType === 'truck' ? 'Truck' : 'Driver'} approved – you can now enroll on the route`, body: html, html: true });
         }
       } catch (e) {
@@ -1202,11 +1297,81 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
         id: getRow(row, 'id'),
         status: 'approved',
         reviewedAt: new Date().toISOString(),
-        contractorName: getRow(row, 'contractor_name'),
+        contractorName: contractorName || tenantName,
         entityType,
         entityId,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST bulk-approve: approve multiple fleet applications in one request; send one email listing all with contractor names. */
+router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array required' });
+    const approved = [];
+    const items = [];
+    const tenantIds = new Set();
+    for (const id of ids) {
+      const appResult = await query(`SELECT id, entity_type, entity_id, tenant_id, [status] FROM cc_fleet_applications WHERE id = @id`, { id });
+      const app = appResult.recordset?.[0];
+      if (!app || getRow(app, 'status') !== 'pending') continue;
+      const entityType = getRow(app, 'entity_type');
+      const entityId = getRow(app, 'entity_id');
+      const table = entityType === 'truck' ? 'contractor_trucks' : 'contractor_drivers';
+      await query(
+        `UPDATE cc_fleet_applications SET [status] = N'approved', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME(), decline_reason = NULL WHERE id = @id`,
+        { id, userId: req.user.id }
+      );
+      await query(`UPDATE ${table} SET facility_access = 1, last_decline_reason = NULL WHERE id = @entityId`, { entityId });
+      let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
+      let contractorName = null;
+      if (entityType === 'truck') {
+        const tr = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId });
+        const trRow = tr.recordset?.[0];
+        entityLabel = trRow?.registration || entityLabel;
+        if (trRow?.contractor_id) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: trRow.contractor_id });
+          contractorName = cn.recordset?.[0]?.name ?? null;
+        }
+      } else {
+        const dr = await query(`SELECT full_name, surname, contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId });
+        const d = dr.recordset?.[0];
+        entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
+        if (d?.contractor_id) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: d.contractor_id });
+          contractorName = cn.recordset?.[0]?.name ?? null;
+        }
+      }
+      approved.push({ id, entityType, entityId });
+      items.push({ entityType, entityLabel, contractorName });
+      const tid = getRow(app, 'tenant_id');
+      if (tid) tenantIds.add(tid);
+    }
+    if (approved.length > 0 && sendEmail && getTenantUserEmails) {
+      try {
+        const allEmails = new Set();
+        for (const tid of tenantIds) {
+          const list = await getTenantUserEmails(query, tid);
+          list.forEach((e) => allEmails.add(e));
+        }
+        if (allEmails.size > 0) {
+          const html = applicationBulkApprovedHtml({ items });
+          await sendEmail({
+            to: [...allEmails],
+            subject: `Applications approved (${approved.length}) – you can now enroll on the route`,
+            body: html,
+            html: true,
+          });
+        }
+      } catch (e) {
+        console.error('[commandCentre] Bulk approval email error:', e?.message || e);
+      }
+    }
+    res.json({ approved: approved.length, applications: approved });
   } catch (err) {
     next(err);
   }

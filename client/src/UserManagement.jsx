@@ -317,6 +317,7 @@ export default function UserManagement() {
       } else {
         await usersApi.update(formUser.id, {
           full_name: formUser.full_name,
+          ...(formUser.email != null && String(formUser.email).trim() ? { email: String(formUser.email).trim() } : {}),
           role: formUser.role,
           status: formUser.status,
           id_number: formUser.id_number?.trim() || undefined,
@@ -790,8 +791,9 @@ export default function UserManagement() {
                   type="email"
                   value={formUser.email}
                   onChange={(e) => setFormUser((f) => ({ ...f, email: e.target.value }))}
-                  disabled={modal === 'edit'}
+                  disabled={modal === 'edit' && !canManageUsers}
                   className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm disabled:bg-surface-100"
+                  title={modal === 'edit' && !canManageUsers ? 'Only admins can change email' : ''}
                 />
               </div>
               <div>

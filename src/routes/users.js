@@ -549,11 +549,22 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     const canAccess = canAccessTenant(req, existing.tenant_id) || existingList.includes(req.user.tenant_id);
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
 
-    const { full_name, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
+    const { full_name, email: bodyEmail, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
     const updates = [];
     const params = { id };
 
     if (full_name !== undefined) { updates.push('full_name = @full_name'); params.full_name = full_name.trim(); }
+    if (bodyEmail !== undefined) {
+      const emailStr = (bodyEmail && String(bodyEmail).trim()) || '';
+      if (!emailStr || !emailStr.includes('@')) return res.status(400).json({ error: 'Valid email is required' });
+      const emailLower = emailStr.toLowerCase();
+      const dup = await query(
+        `SELECT 1 FROM users WHERE tenant_id = (SELECT tenant_id FROM users WHERE id = @id) AND email = @email AND id != @id`,
+        { id, email: emailLower }
+      );
+      if (dup.recordset?.length) return res.status(409).json({ error: 'Email already exists in this tenant' });
+      updates.push('email = @email'); params.email = emailLower;
+    }
     if (id_number !== undefined) { updates.push('id_number = @id_number'); params.id_number = id_number != null && String(id_number).trim() ? String(id_number).trim() : null; }
     if (cellphone !== undefined) { updates.push('cellphone = @cellphone'); params.cellphone = cellphone != null && String(cellphone).trim() ? String(cellphone).trim() : null; }
     if (status !== undefined) { updates.push('status = @status'); params.status = status; }

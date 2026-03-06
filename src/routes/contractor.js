@@ -50,7 +50,8 @@ const contractorLibraryUpload = multer({
 
 router.use(requireAuth);
 router.use(loadUser);
-router.use(requirePageAccess(['contractor', 'rector', 'access_management']));
+// Command Centre users need read access to trucks/drivers for Report composition (shift reports)
+router.use(requirePageAccess(['contractor', 'rector', 'access_management', 'command_centre']));
 
 function requireTenant(req, res, next) {
   if (!getTenantId(req)) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
@@ -96,6 +97,18 @@ async function getAllowedContractorIds(req) {
   } catch (e) {
     if (e.message && (e.message.includes('user_contractors') || e.message.includes('Invalid object'))) return null;
     throw e;
+  }
+}
+
+/** Get contractor company name by id (for emails). Returns null if not found. */
+async function getContractorName(contractorId) {
+  if (!contractorId) return null;
+  try {
+    const r = await query(`SELECT name FROM contractors WHERE id = @id`, { id: contractorId });
+    const row = r.recordset?.[0];
+    return row ? (row.name ?? row.Name) : null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -257,19 +270,19 @@ async function createFleetApplication(tenantId, entityType, entityId, source = '
   );
 }
 
-/** Fire-and-forget: notify CC+Rector and sender when fleet/driver added or edited. */
-function notifyFleetDriverEmails(tenantName, type, list, senderEmail, action = 'added') {
+/** Fire-and-forget: notify CC+Rector and sender when fleet/driver added or edited. contractorName = company (contractor) name. */
+function notifyFleetDriverEmails(tenantName, contractorName, type, list, senderEmail, action = 'added') {
   (async () => {
     try {
       if (!sendEmail || !getCommandCentreAndRectorEmails) return;
       const ccRector = await getCommandCentreAndRectorEmails(query);
       const label = type === 'truck' ? 'Fleet' : 'Driver';
       if (ccRector.length > 0) {
-        const html = newFleetDriverNotificationHtml({ type, tenantName, list, action });
+        const html = newFleetDriverNotificationHtml({ type, tenantName, contractorName, list, action });
         await sendEmail({ to: ccRector, subject: `${label} ${action}: ${Array.isArray(list) && list.length ? list.slice(0, 3).join(', ') + (list.length > 3 ? '…' : '') : type}`, body: html, html: true });
       }
       if (senderEmail && (senderEmail || '').trim()) {
-        const html = newFleetDriverConfirmationHtml({ type, list, action });
+        const html = newFleetDriverConfirmationHtml({ type, list, action, contractorName });
         await sendEmail({ to: (senderEmail || '').trim(), subject: `${label} ${action} successfully`, body: html, html: true });
       }
     } catch (e) {
@@ -317,7 +330,8 @@ router.post('/trucks', async (req, res, next) => {
     );
     const truck = result.recordset[0];
     if (truck?.id) await createFleetApplication(req.user.tenant_id, 'truck', truck.id, 'manual');
-    notifyFleetDriverEmails(req.user.tenant_name || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
+    const contractorName = await getContractorName(contractorId || truck?.contractor_id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
     res.status(201).json({ truck });
   } catch (err) {
     next(err);
@@ -370,7 +384,8 @@ router.patch('/trucks/:id', async (req, res, next) => {
     );
     if (!result.recordset?.length) return res.status(404).json({ error: 'Truck not found' });
     const truckRow = result.recordset[0];
-    notifyFleetDriverEmails(req.user.tenant_name || null, 'truck', [truckRow.registration].filter(Boolean), req.user?.email, 'edited');
+    const contractorName = await getContractorName(truckRow.contractor_id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truckRow.registration].filter(Boolean), req.user?.email, 'edited');
     res.json({ truck: truckRow });
   } catch (err) {
     next(err);
@@ -426,7 +441,10 @@ router.post('/trucks/bulk', async (req, res, next) => {
       if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import');
     }
     const regList = inserted.map((t) => t.registration || '').filter(Boolean);
-    if (regList.length > 0) notifyFleetDriverEmails(req.user.tenant_name || null, 'truck', regList, req.user?.email, 'added (import)');
+    if (regList.length > 0) {
+      const contractorName = await getContractorName(contractorId);
+      notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', regList, req.user?.email, 'added (import)');
+    }
     res.status(201).json({ imported: inserted.length, skipped: skipped.length, skippedRegistrations: skipped, trucks: inserted });
   } catch (err) {
     next(err);
@@ -513,7 +531,8 @@ router.post('/drivers', async (req, res, next) => {
     const driver = result.recordset[0];
     if (driver?.id) await createFleetApplication(req.user.tenant_id, 'driver', driver.id, 'manual');
     const driverLabel = [driver?.full_name, driver?.surname].filter(Boolean).join(' ').trim() || 'Driver';
-    notifyFleetDriverEmails(req.user.tenant_name || null, 'driver', [driverLabel], req.user?.email);
+    const contractorName = await getContractorName(contractorId || driver?.contractor_id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email);
     res.status(201).json({ driver });
   } catch (err) {
     next(err);
@@ -575,7 +594,8 @@ router.patch('/drivers/:id', async (req, res, next) => {
       : { recordset: [] };
     const tr = linkedTruckResult.recordset?.[0];
     const driverLabel = [driver.full_name, driver.surname].filter(Boolean).join(' ').trim() || 'Driver';
-    notifyFleetDriverEmails(req.user.tenant_name || null, 'driver', [driverLabel], req.user?.email, 'edited');
+    const contractorName = await getContractorName(driver.contractor_id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email, 'edited');
     res.json({
       driver: {
         ...driver,
@@ -629,7 +649,10 @@ router.post('/drivers/bulk', async (req, res, next) => {
       if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import');
     }
     const driverList = inserted.map((d) => [d.full_name, d.surname].filter(Boolean).join(' ').trim() || 'Driver').filter(Boolean);
-    if (driverList.length > 0) notifyFleetDriverEmails(req.user.tenant_name || null, 'driver', driverList, req.user?.email, 'added (import)');
+    if (driverList.length > 0) {
+      const contractorName = await getContractorName(contractorId);
+      notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', driverList, req.user?.email, 'added (import)');
+    }
     res.status(201).json({ imported: inserted.length, skipped, drivers: inserted });
   } catch (err) {
     next(err);
@@ -836,18 +859,23 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
         if (!isEmailConfigured() || !getCommandCentreAndRectorEmails) return;
         const detailResult = await query(
           `SELECT i.id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
-            t.registration AS truck_reg, r.name AS route_name,
-            d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
+            tr.registration AS truck_reg, r.name AS route_name,
+            d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
+            c.name AS contractor_name, tn.name AS tenant_name
            FROM contractor_incidents i
-           LEFT JOIN contractor_trucks t ON t.id = i.truck_id
+           LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
            LEFT JOIN contractor_routes r ON r.id = i.route_id
            LEFT JOIN contractor_drivers d ON d.id = i.driver_id
+           LEFT JOIN contractors c ON c.id = i.contractor_id
+           LEFT JOIN tenants tn ON tn.id = i.tenant_id
            WHERE i.id = @incidentId`,
           { incidentId }
         );
         const row = detailResult.recordset?.[0];
         const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
         const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
+        const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
+        const tenantName = row?.tenant_name ?? row?.tenant_name ?? null;
         const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
         const driverEmail = (row?.driver_email || '').trim();
         const fallbackTo = (process.env.EMAIL_USER || '').trim();
@@ -867,6 +895,8 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
             severity: row?.severity || severity,
             actionsTaken: row?.actions_taken || actions_taken,
             incidentId,
+            contractorName: contractorName || null,
+            tenantName: tenantName || null,
           });
           const subject = `Breakdown reported: ${title} – ${driverName}`;
           for (const to of notificationRecipients) {
@@ -928,11 +958,13 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         const detailResult = await query(
           `SELECT i.id, i.title, i.resolution_note, i.resolved_at, i.tenant_id,
                   tr.registration AS truck_registration, r.name AS route_name,
-                  d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
+                  d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
+                  c.name AS contractor_name
            FROM contractor_incidents i
            LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
            LEFT JOIN contractor_routes r ON r.id = i.route_id
            LEFT JOIN contractor_drivers d ON d.id = i.driver_id
+           LEFT JOIN contractors c ON c.id = i.contractor_id
            WHERE i.id = @id`,
           { id }
         );
@@ -940,6 +972,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         if (!row) return;
         const driverName = [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver';
         const resolvedAtStr = row.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
+        const contractorName = row.contractor_name ?? row.contractor_Name ?? null;
         const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
         const driverEmail = (row.driver_email || '').trim();
         const contractorEmails = row.tenant_id ? await getTenantUserEmails(query, row.tenant_id) : [];
@@ -955,6 +988,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
           routeName: row.route_name || '—',
           resolutionNote: row.resolution_note || resolutionNote,
           resolvedAt: resolvedAtStr,
+          contractorName: contractorName || null,
         });
         const subject = `Breakdown resolved: ${row.title || 'Incident'} – ${driverName}`;
         for (const to of allTo) {

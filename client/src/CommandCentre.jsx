@@ -4589,15 +4589,18 @@ function TabDeleteFleetDrivers() {
   const [contractors, setContractors] = useState([]);
   const [trucks, setTrucks] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [breakdowns, setBreakdowns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tenantId, setTenantId] = useState('');
   const [contractorId, setContractorId] = useState('');
-  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'truck' | 'driver'
+  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'truck' | 'driver' | 'breakdown'
   const [deletingTruckId, setDeletingTruckId] = useState(null);
   const [deletingDriverId, setDeletingDriverId] = useState(null);
+  const [deletingBreakdownId, setDeletingBreakdownId] = useState(null);
   const [selectedTruckIds, setSelectedTruckIds] = useState(new Set());
   const [selectedDriverIds, setSelectedDriverIds] = useState(new Set());
+  const [selectedBreakdownIds, setSelectedBreakdownIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(false);
 
   const load = () => {
@@ -4605,6 +4608,7 @@ function TabDeleteFleetDrivers() {
     setError('');
     setSelectedTruckIds(new Set());
     setSelectedDriverIds(new Set());
+    setSelectedBreakdownIds(new Set());
     const params = {};
     if (tenantId) params.tenant_id = tenantId;
     if (contractorId) params.contractor_id = contractorId;
@@ -4615,8 +4619,9 @@ function TabDeleteFleetDrivers() {
         setContractors(r.contractors || []);
         setTrucks(r.trucks || []);
         setDrivers(r.drivers || []);
+        setBreakdowns(r.breakdowns || []);
       })
-      .catch((e) => { setError(e?.message || 'Failed to load'); setTrucks([]); setDrivers([]); })
+      .catch((e) => { setError(e?.message || 'Failed to load'); setTrucks([]); setDrivers([]); setBreakdowns([]); })
       .finally(() => setLoading(false));
   };
 
@@ -4642,16 +4647,28 @@ function TabDeleteFleetDrivers() {
   const toggleAllDrivers = (checked) => {
     setSelectedDriverIds(checked ? new Set(drivers.map((d) => d.id)) : new Set());
   };
+  const toggleBreakdown = (id) => {
+    setSelectedBreakdownIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleAllBreakdowns = (checked) => {
+    setSelectedBreakdownIds(checked ? new Set(breakdowns.map((b) => b.id)) : new Set());
+  };
 
-  const totalSelected = selectedTruckIds.size + selectedDriverIds.size;
+  const totalSelected = selectedTruckIds.size + selectedDriverIds.size + selectedBreakdownIds.size;
   const handleDeleteSelected = async () => {
     if (totalSelected === 0) return;
     const truckCount = selectedTruckIds.size;
     const driverCount = selectedDriverIds.size;
+    const breakdownCount = selectedBreakdownIds.size;
     const msg = [
       truckCount && `${truckCount} truck${truckCount > 1 ? 's' : ''}`,
       driverCount && `${driverCount} driver${driverCount > 1 ? 's' : ''}`,
-    ].filter(Boolean).join(' and ');
+      breakdownCount && `${breakdownCount} breakdown${breakdownCount > 1 ? 's' : ''}`,
+    ].filter(Boolean).join(', ');
     if (!window.confirm(`Permanently delete ${msg}? This cannot be undone.`)) return;
     setDeletingBulk(true);
     setError('');
@@ -4661,6 +4678,9 @@ function TabDeleteFleetDrivers() {
       }
       for (const id of selectedDriverIds) {
         await ccApi.deleteFleetDrivers.deleteDriver(id);
+      }
+      for (const id of selectedBreakdownIds) {
+        await ccApi.deleteFleetDrivers.deleteBreakdown(id);
       }
       await load();
     } catch (e) {
@@ -4699,10 +4719,27 @@ function TabDeleteFleetDrivers() {
     }
   };
 
+  const handleDeleteBreakdown = async (b) => {
+    const label = (b.title || b.type || 'Breakdown').toString().trim() || b.id;
+    if (!window.confirm(`Permanently delete breakdown "${label}"? This cannot be undone.`)) return;
+    setDeletingBreakdownId(b.id);
+    setError('');
+    try {
+      await ccApi.deleteFleetDrivers.deleteBreakdown(b.id);
+      load();
+    } catch (e) {
+      setError(e?.message || 'Failed to delete breakdown');
+    } finally {
+      setDeletingBreakdownId(null);
+    }
+  };
+
+  const formatBreakdownDate = (d) => (d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
+
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">Delete contractors fleets/drivers</h2>
-      <p className="text-sm text-surface-600">Permanently remove trucks or drivers added by contractors under a tenant. Applies to any status (approved or not). Use filters to narrow the list, then delete as needed.</p>
+      <p className="text-sm text-surface-600">Permanently remove trucks, drivers, or reported breakdowns (incidents) added by contractors. Use filters to narrow the list, then delete as needed.</p>
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex justify-between items-center">
@@ -4729,9 +4766,10 @@ function TabDeleteFleetDrivers() {
         <label className="flex items-center gap-2">
           <span className="text-sm font-medium text-surface-700">Type</span>
           <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
-            <option value="all">Fleet and drivers</option>
+            <option value="all">Fleet, drivers and breakdowns</option>
             <option value="truck">Fleet only</option>
             <option value="driver">Drivers only</option>
+            <option value="breakdown">Breakdowns only</option>
           </select>
         </label>
         <button type="button" onClick={load} className="px-3 py-1.5 text-sm rounded-lg bg-surface-200 text-surface-800 hover:bg-surface-300">Refresh</button>
@@ -4740,12 +4778,14 @@ function TabDeleteFleetDrivers() {
       {!loading && totalSelected > 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-red-800">
-            {selectedTruckIds.size > 0 && `${selectedTruckIds.size} truck${selectedTruckIds.size > 1 ? 's' : ''} selected`}
-            {selectedTruckIds.size > 0 && selectedDriverIds.size > 0 && ', '}
-            {selectedDriverIds.size > 0 && `${selectedDriverIds.size} driver${selectedDriverIds.size > 1 ? 's' : ''} selected`}
+            {[
+              selectedTruckIds.size > 0 && `${selectedTruckIds.size} truck${selectedTruckIds.size > 1 ? 's' : ''}`,
+              selectedDriverIds.size > 0 && `${selectedDriverIds.size} driver${selectedDriverIds.size > 1 ? 's' : ''}`,
+              selectedBreakdownIds.size > 0 && `${selectedBreakdownIds.size} breakdown${selectedBreakdownIds.size > 1 ? 's' : ''}`,
+            ].filter(Boolean).join(', ')} selected
           </span>
           <button type="button" disabled={deletingBulk} onClick={handleDeleteSelected} className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingBulk ? 'Deleting…' : 'Delete selected'}</button>
-          <button type="button" onClick={() => { setSelectedTruckIds(new Set()); setSelectedDriverIds(new Set()); }} className="px-3 py-1.5 text-sm text-red-700 hover:text-red-900 font-medium">Clear selection</button>
+          <button type="button" onClick={() => { setSelectedTruckIds(new Set()); setSelectedDriverIds(new Set()); setSelectedBreakdownIds(new Set()); }} className="px-3 py-1.5 text-sm text-red-700 hover:text-red-900 font-medium">Clear selection</button>
         </div>
       )}
 
@@ -4826,6 +4866,47 @@ function TabDeleteFleetDrivers() {
                           <td className="p-2 text-surface-600">{d.contractorName || '—'}</td>
                           <td className="p-2">
                             <button type="button" disabled={deletingDriverId === d.id} onClick={() => handleDeleteDriver(d)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingDriverId === d.id ? 'Deleting…' : 'Delete'}</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+            {(typeFilter === 'all' || typeFilter === 'breakdown') && (
+              <div className="p-4">
+                <h3 className="font-medium text-surface-900 mb-3">Breakdowns (reported incidents)</h3>
+                {breakdowns.length === 0 ? (
+                  <p className="text-sm text-surface-500">No breakdowns match the filters.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-surface-200">
+                        <th className="p-2 w-10">
+                          <input type="checkbox" checked={breakdowns.length > 0 && selectedBreakdownIds.size === breakdowns.length} onChange={(e) => toggleAllBreakdowns(e.target.checked)} className="rounded border-surface-300" aria-label="Select all breakdowns" />
+                        </th>
+                        <th className="text-left p-2 font-medium text-surface-700">Title / type</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Reported</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Tenant</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Status</th>
+                        <th className="p-2 w-24" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {breakdowns.map((b) => (
+                        <tr key={b.id} className="border-b border-surface-100 hover:bg-surface-50/50">
+                          <td className="p-2">
+                            <input type="checkbox" checked={selectedBreakdownIds.has(b.id)} onChange={() => toggleBreakdown(b.id)} className="rounded border-surface-300" aria-label={`Select ${b.title || b.id}`} />
+                          </td>
+                          <td className="p-2 font-medium">{(b.title || b.type || '—').toString()}</td>
+                          <td className="p-2 text-surface-600">{formatBreakdownDate(b.reportedAt)}</td>
+                          <td className="p-2 text-surface-600">{b.tenantName || '—'}</td>
+                          <td className="p-2 text-surface-600">{b.contractorName || '—'}</td>
+                          <td className="p-2 text-surface-600">{b.resolvedAt ? 'Resolved' : 'Open'}</td>
+                          <td className="p-2">
+                            <button type="button" disabled={deletingBreakdownId === b.id} onClick={() => handleDeleteBreakdown(b)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingBreakdownId === b.id ? 'Deleting…' : 'Delete'}</button>
                           </td>
                         </tr>
                       ))}
@@ -5091,10 +5172,10 @@ function TabApplications() {
   const bulkApprove = async () => {
     const ids = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id));
     if (ids.length === 0) return;
-    if (!window.confirm(`Approve ${ids.length} application(s)? This will grant facility access to all selected.`)) return;
+    if (!window.confirm(`Approve ${ids.length} application(s)? This will grant facility access to all selected. One email will be sent listing the approved items and contractor names.`)) return;
     setActing(true);
     try {
-      for (const id of ids) await ccApi.fleetApplications.approve(id);
+      await ccApi.fleetApplications.bulkApprove(ids);
       clearSelection();
       loadList();
       setSelectedId(null);

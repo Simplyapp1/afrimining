@@ -258,6 +258,8 @@ export default function Contractor() {
   const [enrollmentSelectedTruckIds, setEnrollmentSelectedTruckIds] = useState([]);
   const [enrollmentEnrollingTrucks, setEnrollmentEnrollingTrucks] = useState(false);
   const [enrollmentAddDriverOpen, setEnrollmentAddDriverOpen] = useState(false);
+  const [enrollmentSelectedDriverIds, setEnrollmentSelectedDriverIds] = useState([]);
+  const [enrollmentEnrollingDrivers, setEnrollmentEnrollingDrivers] = useState(false);
   const [enrollmentDownloading, setEnrollmentDownloading] = useState(null);
   // Contractor information tabs
   const [contractorInfo, setContractorInfo] = useState(null);
@@ -2881,6 +2883,31 @@ export default function Contractor() {
                           <p className="text-sm text-surface-500">No approved trucks available (or all are suspended).</p>
                         ) : (
                           <>
+                            <div className="flex items-center gap-2 mb-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const available = enrollmentApprovedTrucks
+                                    .filter((t) => !enrollmentRouteDetail?.trucks?.some((e) => String(e.truck_id) === String(t.id)))
+                                    .map((t) => t.id);
+                                  setEnrollmentSelectedTruckIds(available);
+                                }}
+                                className="text-xs font-medium text-brand-600 hover:text-brand-700 hover:underline"
+                              >
+                                Select all
+                              </button>
+                              <span className="text-surface-400">|</span>
+                              <button
+                                type="button"
+                                onClick={() => setEnrollmentSelectedTruckIds([])}
+                                className="text-xs font-medium text-surface-500 hover:text-surface-700 hover:underline"
+                              >
+                                Clear
+                              </button>
+                              <span className="text-xs text-surface-500 ml-auto">
+                                {enrollmentSelectedTruckIds.length} selected
+                              </span>
+                            </div>
                             <ul className="space-y-2">
                               {enrollmentApprovedTrucks.map((t) => {
                                 const enrolled = enrollmentRouteDetail?.trucks?.some((e) => String(e.truck_id) === String(t.id));
@@ -2936,37 +2963,91 @@ export default function Contractor() {
                   </div>
                 )}
                 {enrollmentAddDriverOpen && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEnrollmentAddDriverOpen(false)}>
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); }}>
                     <div className="bg-white rounded-xl shadow-lg max-w-md w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
                       <div className="p-4 border-b border-surface-200 flex justify-between items-center">
                         <h3 className="font-medium text-surface-900">Enrol drivers on route</h3>
-                        <button type="button" onClick={() => setEnrollmentAddDriverOpen(false)} className="text-surface-500 hover:text-surface-700">×</button>
+                        <button type="button" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); }} className="text-surface-500 hover:text-surface-700">×</button>
                       </div>
                       <div className="p-4 overflow-auto flex-1">
                         {enrollmentApprovedDrivers.length === 0 ? (
                           <p className="text-sm text-surface-500">No approved drivers available (or all are suspended).</p>
                         ) : (
-                          <ul className="space-y-2">
-                            {enrollmentApprovedDrivers.map((d) => {
-                              const enrolled = enrollmentRouteDetail?.drivers?.some((e) => String(e.driver_id) === String(d.id));
-                              return (
-                                <li key={d.id} className="flex items-center justify-between gap-2">
-                                  <span className="text-sm">{d.full_name} {d.license_number ? ` · ${d.license_number}` : ''}</span>
-                                  <button
-                                    type="button"
-                                    disabled={enrolled}
-                                    onClick={async () => {
-                                      if (!enrollmentRouteId || enrolled) return;
-                                      try { await contractorApi.routes.enrollDrivers(enrollmentRouteId, [d.id]); const r = await contractorApi.routes.get(enrollmentRouteId); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); }
-                                    }}
-                                    className="px-2 py-1 text-xs rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    {enrolled ? 'Enrolled' : 'Add'}
-                                  </button>
-                                </li>
-                              );
-                            })}
-                          </ul>
+                          <>
+                            <div className="flex items-center gap-2 mb-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const available = enrollmentApprovedDrivers
+                                    .filter((d) => !enrollmentRouteDetail?.drivers?.some((e) => String(e.driver_id) === String(d.id)))
+                                    .map((d) => d.id);
+                                  setEnrollmentSelectedDriverIds(available);
+                                }}
+                                className="text-xs font-medium text-brand-600 hover:text-brand-700 hover:underline"
+                              >
+                                Select all
+                              </button>
+                              <span className="text-surface-400">|</span>
+                              <button
+                                type="button"
+                                onClick={() => setEnrollmentSelectedDriverIds([])}
+                                className="text-xs font-medium text-surface-500 hover:text-surface-700 hover:underline"
+                              >
+                                Clear
+                              </button>
+                              <span className="text-xs text-surface-500 ml-auto">
+                                {enrollmentSelectedDriverIds.length} selected
+                              </span>
+                            </div>
+                            <ul className="space-y-2">
+                              {enrollmentApprovedDrivers.map((d) => {
+                                const enrolled = enrollmentRouteDetail?.drivers?.some((e) => String(e.driver_id) === String(d.id));
+                                const selected = enrollmentSelectedDriverIds.includes(d.id);
+                                return (
+                                  <li key={d.id} className="flex items-center gap-3">
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      disabled={enrolled}
+                                      onChange={() => {
+                                        if (enrolled) return;
+                                        setEnrollmentSelectedDriverIds((prev) =>
+                                          prev.includes(d.id) ? prev.filter((id) => id !== d.id) : [...prev, d.id]
+                                        );
+                                      }}
+                                      className="rounded border-surface-300 text-brand-600"
+                                    />
+                                    <span className="text-sm flex-1">{d.full_name} {d.license_number ? ` · ${d.license_number}` : ''}</span>
+                                    {enrolled && <span className="text-xs text-surface-500">Enrolled</span>}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                            <div className="mt-4 pt-4 border-t border-surface-200">
+                              <button
+                                type="button"
+                                disabled={enrollmentSelectedDriverIds.length === 0 || enrollmentEnrollingDrivers}
+                                onClick={async () => {
+                                  if (!enrollmentRouteId || enrollmentSelectedDriverIds.length === 0) return;
+                                  setEnrollmentEnrollingDrivers(true);
+                                  setError('');
+                                  try {
+                                    await contractorApi.routes.enrollDrivers(enrollmentRouteId, enrollmentSelectedDriverIds);
+                                    const r = await contractorApi.routes.get(enrollmentRouteId);
+                                    setEnrollmentRouteDetail(r);
+                                    setEnrollmentSelectedDriverIds([]);
+                                  } catch (e) {
+                                    setError(e?.message || 'Failed to enrol drivers');
+                                  } finally {
+                                    setEnrollmentEnrollingDrivers(false);
+                                  }
+                                }}
+                                className="w-full px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {enrollmentEnrollingDrivers ? 'Enrolling…' : `Enrol selected (${enrollmentSelectedDriverIds.length})`}
+                              </button>
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>

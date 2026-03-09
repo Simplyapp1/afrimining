@@ -34,6 +34,7 @@
     "db:access-management-rector-user": "node scripts/run-access-management-rector-user.js",
     "db:distribution-history": "node scripts/run-access-distribution-history.js",
     "db:user-page-roles": "node scripts/run-user-page-roles.js",
+    "db:user-page-roles-transport-operations": "node scripts/run-add-transport-operations-page-role.js",
     "db:transport-operations": "node scripts/run-transport-operations-schema.js",
     "db:transport-operations-expand": "node scripts/run-transport-operations-expand.js",
     "db:transport-operations-approvals": "node scripts/run-transport-operations-approvals.js",

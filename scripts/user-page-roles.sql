@@ -8,7 +8,7 @@ CREATE TABLE user_page_roles (
   created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
   CONSTRAINT PK_user_page_roles PRIMARY KEY (user_id, page_id),
   CONSTRAINT CK_user_page_roles_page_id CHECK (page_id IN (
-    N'users', N'tenants', N'contractor', N'command_centre', N'access_management', N'rector'
+    N'profile', N'management', N'users', N'tenants', N'contractor', N'command_centre', N'access_management', N'rector', N'tasks', N'transport_operations'
   ))
 );
 GO

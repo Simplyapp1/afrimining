@@ -164,3 +164,12 @@ export function isEmailConfigured() {
     const pass = (process.env.EMAIL_PASS || '').trim();
     return !!user && !!pass;
 }
+
+/** Format a date for display in emails (timezone-aware). Uses EMAIL_TIMEZONE or Africa/Johannesburg so timestamps are not behind. */
+export function formatDateForEmail(date) {
+    if (date == null) return '';
+    const d = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(d.getTime())) return '';
+    const tz = (process.env.EMAIL_TIMEZONE || 'Africa/Johannesburg').trim();
+    return d.toLocaleString('en-ZA', { timeZone: tz, dateStyle: 'short', timeStyle: 'medium' });
+}

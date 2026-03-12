@@ -698,3 +698,63 @@ export function accountApprovedHtml({ loginUrl, email, temporaryPassword, appUrl
   `;
   return taskEmailLayout('Account approved', content);
 }
+
+/** Safe format for report date (ISO date string or Date) – never show "Invalid Date". */
+function formatReportDate(value) {
+  if (value == null || value === '') return '—';
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return '—';
+    return value.toLocaleDateString(undefined, { dateStyle: 'long' });
+  }
+  const s = String(value).trim();
+  if (!s) return '—';
+  const d = s.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T12:00:00') : new Date(s);
+  if (Number.isNaN(d.getTime())) return s; // fallback to raw string
+  return d.toLocaleDateString(undefined, { dateStyle: 'long' });
+}
+
+/** Progress report shared via email: report title, date, sender, custom message, PDF attached. */
+export function progressReportSharedHtml({ reportTitle, reportDate, reportingStatus, senderName, message, appUrl }) {
+  const dateStr = formatReportDate(reportDate);
+  const intro = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.6;">${senderName ? `<strong>${escapeHtml(senderName)}</strong> has shared a progress report with you.` : 'A progress report has been shared with you.'}</p>`;
+  const customMsg = message && String(message).trim()
+    ? `<div style="margin: 0 0 16px 0; padding: 12px 16px; background: #f8fafc; border-left: 4px solid #0ea5e9; border-radius: 0 6px 6px 0;"><p style="margin: 0; font-size: 14px; color: #475569; line-height: 1.5; white-space: pre-wrap;">${escapeHtml(message)}</p></div>`
+    : '';
+  const content = `
+    ${intro}
+    ${customMsg}
+    ${taskSectionBar('Report details')}
+    ${taskKeyValueTable([
+      ['Report title', reportTitle || 'Progress report'],
+      ['Report date', dateStr],
+      ...(reportingStatus ? [['Reporting status', reportingStatus]] : []),
+    ])}
+    <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">The full report is attached as a PDF. You can also view it in the app.</p>
+    <p style="margin: 16px 0 0;"><a href="https://wiseapp.co.za/rector" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Progress reports in Thinkers →</a></p>
+  `;
+  return taskEmailLayout('Progress report shared', content, 'Progress reports');
+}
+
+/** Action plan shared via email: plan title, project name, document date, sender, custom message, PDF attached. */
+export function actionPlanSharedHtml({ planTitle, projectName, documentDate, documentId, senderName, message }) {
+  const dateStr = formatReportDate(documentDate);
+  const intro = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.6;">${senderName ? `<strong>${escapeHtml(senderName)}</strong> has shared an action plan with you.` : 'An action plan has been shared with you.'}</p>`;
+  const customMsg = message && String(message).trim()
+    ? `<div style="margin: 0 0 16px 0; padding: 12px 16px; background: #f8fafc; border-left: 4px solid #0ea5e9; border-radius: 0 6px 6px 0;"><p style="margin: 0; font-size: 14px; color: #475569; line-height: 1.5; white-space: pre-wrap;">${escapeHtml(message)}</p></div>`
+    : '';
+  const details = [
+    ['Title', planTitle || 'Action Plan'],
+    ['Project', projectName || '—'],
+    ['Document date', dateStr],
+    ...(documentId ? [['Document ID', documentId]] : []),
+  ];
+  const content = `
+    ${intro}
+    ${customMsg}
+    ${taskSectionBar('Action plan details')}
+    ${taskKeyValueTable(details)}
+    <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">The full action plan is attached as a PDF. You can also view it in the app under View Project timelines and action plan.</p>
+    <p style="margin: 16px 0 0;"><a href="https://wiseapp.co.za/rector" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Action plans in Thinkers →</a></p>
+  `;
+  return taskEmailLayout('Action plan shared', content, 'Action plans');
+}

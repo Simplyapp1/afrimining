@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
-import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi } from './api';
+import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { generateShiftReportPdf } from './lib/shiftReportPdf.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
+import { generateProgressReportPdf } from './lib/progressReportPdf.js';
+import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
+import { generateMonthlyPerformanceReportPdf } from './lib/monthlyPerformanceReportPdf.js';
 import { jsPDF } from 'jspdf';
 
 const TABS = [
@@ -11,6 +14,9 @@ const TABS = [
   { id: 'incidents', label: 'Breakdowns & incidents', icon: 'alert', section: 'Data' },
   { id: 'suspensions', label: 'Suspensions', icon: 'ban', section: 'Data' },
   { id: 'compliance', label: 'Compliance inspections', icon: 'shield', section: 'Data' },
+  { id: 'progress-reports', label: 'Progress reports', icon: 'chart', section: 'Reports' },
+  { id: 'action-plan-timelines', label: 'View Project timelines and action plan', icon: 'calendar', section: 'Reports' },
+  { id: 'monthly-performance-reports', label: 'Monthly Performance reports', icon: 'chart', section: 'Reports' },
   { id: 'shift-reports', label: 'Shift reports', icon: 'file', section: 'Reports' },
   { id: 'investigation-reports', label: 'Investigation reports', icon: 'search', section: 'Reports' },
 ];
@@ -35,6 +41,12 @@ function TabIcon({ name, className }) {
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z')}</svg>;
     case 'building':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4')}</svg>;
+    case 'chart':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z')}</svg>;
+    case 'calendar':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z')}</svg>;
+    case 'chart':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z')}</svg>;
     default:
       return <span className={c} />;
   }
@@ -96,6 +108,27 @@ export default function Rector() {
   const [contractorsDetailSearch, setContractorsDetailSearch] = useState('');
   const [contractorsDetailTypeFilter, setContractorsDetailTypeFilter] = useState('all'); // 'all' | 'contractor' | 'subcontractors' | 'routes'
   const [contractorsDetailSelected, setContractorsDetailSelected] = useState(null); // { type, data }
+
+  // Progress reports (created in Access Management)
+  const [progressReportsList, setProgressReportsList] = useState([]);
+  const [progressReportDetail, setProgressReportDetail] = useState(null);
+  const [progressReportsLoading, setProgressReportsLoading] = useState(false);
+  const [selectedProgressReportId, setSelectedProgressReportId] = useState(null); // clicking a row sets this; modal shows report
+  const [progressReportPdfDownloading, setProgressReportPdfDownloading] = useState(false);
+
+  // Action plans / Project timelines (created in Access Management)
+  const [actionPlansList, setActionPlansList] = useState([]);
+  const [actionPlanDetail, setActionPlanDetail] = useState(null);
+  const [actionPlansLoading, setActionPlansLoading] = useState(false);
+  const [selectedActionPlanId, setSelectedActionPlanId] = useState(null);
+  const [actionPlanPdfDownloading, setActionPlanPdfDownloading] = useState(false);
+
+  // Monthly performance reports
+  const [monthlyPerfList, setMonthlyPerfList] = useState([]);
+  const [monthlyPerfDetail, setMonthlyPerfDetail] = useState(null);
+  const [monthlyPerfLoading, setMonthlyPerfLoading] = useState(false);
+  const [selectedMonthlyPerfId, setSelectedMonthlyPerfId] = useState(null);
+  const [monthlyPerfPdfDownloading, setMonthlyPerfPdfDownloading] = useState(false);
 
   const hasTenant = user?.tenant_id;
 
@@ -260,6 +293,102 @@ export default function Rector() {
       .catch(() => { if (!cancelled) setShiftReports([]); setInvestigationReports([]); });
     return () => { cancelled = true; };
   }, [hasTenant, activeTab]);
+
+  useEffect(() => {
+    if (!hasTenant || activeTab !== 'progress-reports') return;
+    setProgressReportsLoading(true);
+    progressReportsApi.list()
+      .then((r) => {
+        setProgressReportsList(r.reports || []);
+      })
+      .catch(() => setProgressReportsList([]))
+      .finally(() => setProgressReportsLoading(false));
+  }, [hasTenant, activeTab]);
+
+  useEffect(() => {
+    if (!selectedProgressReportId) { setProgressReportDetail(null); return; }
+    progressReportsApi.get(selectedProgressReportId)
+      .then((r) => setProgressReportDetail(r.report))
+      .catch(() => setProgressReportDetail(null));
+  }, [selectedProgressReportId]);
+
+  useEffect(() => {
+    if (!hasTenant || activeTab !== 'action-plan-timelines') return;
+    setActionPlansLoading(true);
+    actionPlansApi.list()
+      .then((r) => setActionPlansList(r.plans || []))
+      .catch(() => setActionPlansList([]))
+      .finally(() => setActionPlansLoading(false));
+  }, [hasTenant, activeTab]);
+
+  useEffect(() => {
+    if (!selectedActionPlanId) { setActionPlanDetail(null); return; }
+    actionPlansApi.get(selectedActionPlanId)
+      .then((r) => setActionPlanDetail(r.plan))
+      .catch(() => setActionPlanDetail(null));
+  }, [selectedActionPlanId]);
+
+  useEffect(() => {
+    if (!hasTenant || activeTab !== 'monthly-performance-reports') return;
+    setMonthlyPerfLoading(true);
+    monthlyPerformanceReportsApi.list()
+      .then((r) => setMonthlyPerfList(r.reports || []))
+      .catch(() => setMonthlyPerfList([]))
+      .finally(() => setMonthlyPerfLoading(false));
+  }, [hasTenant, activeTab]);
+
+  useEffect(() => {
+    if (!selectedMonthlyPerfId) { setMonthlyPerfDetail(null); return; }
+    monthlyPerformanceReportsApi.get(selectedMonthlyPerfId)
+      .then((r) => setMonthlyPerfDetail(r.report))
+      .catch(() => setMonthlyPerfDetail(null));
+  }, [selectedMonthlyPerfId]);
+
+  const downloadMonthlyPerfPdf = (report) => {
+    if (!report) return;
+    setMonthlyPerfPdfDownloading(true);
+    const run = (logoDataUrl) => {
+      try {
+        const doc = generateMonthlyPerformanceReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+        const name = (report.title || 'monthly-performance-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+        doc.save(`${name}-${report.submitted_date || 'report'}.pdf`);
+      } catch (e) { setError(e?.message || 'PDF failed'); }
+      setMonthlyPerfPdfDownloading(false);
+    };
+    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (!blob) { run(null); return; }
+        const reader = new FileReader();
+        reader.onload = () => run(reader.result);
+        reader.onerror = () => run(null);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => run(null));
+  };
+
+  const downloadActionPlanPdf = (plan) => {
+    if (!plan) return;
+    setActionPlanPdfDownloading(true);
+    const run = (logoDataUrl) => {
+      try {
+        const doc = generateActionPlanPdf(plan, logoDataUrl ? { logoDataUrl } : {});
+        const name = (plan.title || 'action-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+        doc.save(`${name}-${plan.document_date || 'plan'}.pdf`);
+      } catch (e) { setError(e?.message || 'PDF failed'); }
+      setActionPlanPdfDownloading(false);
+    };
+    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (!blob) { run(null); return; }
+        const reader = new FileReader();
+        reader.onload = () => run(reader.result);
+        reader.onerror = () => run(null);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => run(null));
+  };
 
   const suspendedTruckIds = new Set((suspensions || []).filter((s) => String(s.entity_type).toLowerCase() === 'truck').map((s) => String(s.entity_id)));
   const suspendedDriverIds = new Set((suspensions || []).filter((s) => String(s.entity_type).toLowerCase() === 'driver').map((s) => String(s.entity_id)));
@@ -455,6 +584,29 @@ export default function Rector() {
       doc.save(`investigation-report-${report.case_number || report.id || 'download'}.pdf`);
     } catch (e) { setError(e?.message || 'PDF failed'); }
     setPdfDownloading(null);
+  };
+
+  const downloadProgressReportPdf = (report) => {
+    if (!report) return;
+    setProgressReportPdfDownloading(true);
+    const run = (logoDataUrl) => {
+      try {
+        const doc = generateProgressReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+        const name = (report.title || 'progress-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+        doc.save(`${name}-${report.report_date || 'download'}.pdf`);
+      } catch (e) { setError(e?.message || 'PDF failed'); }
+      setProgressReportPdfDownloading(false);
+    };
+    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (!blob) { run(null); return; }
+        const reader = new FileReader();
+        reader.onload = () => run(reader.result);
+        reader.onerror = () => run(null);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => run(null));
   };
 
   const filteredShiftReports = shiftReports.filter((r) => {
@@ -997,6 +1149,646 @@ export default function Rector() {
                       </>
                     )}
                   </dl>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'progress-reports' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-semibold text-surface-900 tracking-tight">Progress reports</h3>
+                  <p className="text-sm text-surface-500 mt-1">Click a row to open the report. Project phases and integration status per company.</p>
+                </div>
+              </div>
+
+              {progressReportsLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm text-surface-500">Loading reports…</p>
+                  </div>
+                </div>
+              ) : progressReportsList.length === 0 ? (
+                <div className="rounded-2xl border border-surface-200 bg-gradient-to-b from-surface-50 to-white p-12 text-center">
+                  <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-surface-100 text-surface-400 mb-4">
+                    <TabIcon name="chart" className="w-7 h-7" />
+                  </div>
+                  <p className="text-surface-600 font-medium">No progress reports yet</p>
+                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Project progress report creation.</p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-surface-200 bg-surface-50/80">
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Report</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Date</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Status</th>
+                          <th className="w-12 py-4 px-5 text-surface-400" aria-hidden="true">
+                            <span className="sr-only">View</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {progressReportsList.map((r) => (
+                          <tr
+                            key={r.id}
+                            onClick={() => setSelectedProgressReportId(r.id)}
+                            className={`border-b border-surface-100 transition-colors cursor-pointer group hover:bg-brand-50/50 ${selectedProgressReportId === r.id ? 'bg-brand-50/70' : ''}`}
+                          >
+                            <td className="py-4 px-5">
+                              <span className="font-medium text-surface-900 group-hover:text-brand-700">{r.title || 'Untitled report'}</span>
+                            </td>
+                            <td className="py-4 px-5 text-surface-600">{r.report_date ? formatDate(r.report_date) : '—'}</td>
+                            <td className="py-4 px-5 text-surface-600">{r.reporting_status || '—'}</td>
+                            <td className="py-4 px-5 text-surface-400 group-hover:text-brand-500">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Report view modal: open when a row is selected */}
+              {selectedProgressReportId && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+                  onClick={() => { setSelectedProgressReportId(null); setProgressReportDetail(null); }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="progress-report-modal-title"
+                >
+                  <div
+                    className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Header with TIHLO logo */}
+                    <div className="shrink-0 flex items-center justify-between gap-4 px-6 py-4 border-b border-surface-200 bg-gradient-to-r from-surface-50 to-white">
+                      <div className="flex items-center gap-4">
+                        <img src="/logos/tihlo-logo.png" alt="TIHLO" className="h-10 w-auto object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                        <div className="h-8 w-px bg-surface-200" />
+                        <h2 id="progress-report-modal-title" className="text-lg font-semibold text-surface-900">
+                          {progressReportDetail ? (progressReportDetail.title || 'Progress report') : 'Loading…'}
+                        </h2>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {progressReportDetail && (
+                          <button
+                            type="button"
+                            onClick={() => downloadProgressReportPdf(progressReportDetail)}
+                            disabled={progressReportPdfDownloading}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-900 text-white text-sm font-medium hover:bg-surface-800 disabled:opacity-60 transition-colors"
+                          >
+                            {progressReportPdfDownloading ? (
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            )}
+                            Download PDF
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setSelectedProgressReportId(null); setProgressReportDetail(null); }}
+                          className="p-2 rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700 transition-colors"
+                          aria-label="Close"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Body: loading or report content */}
+                    <div className="flex-1 overflow-y-auto min-h-0">
+                      {!progressReportDetail ? (
+                        <div className="flex items-center justify-center py-20">
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                            <p className="text-sm text-surface-500">Loading report…</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-6 space-y-8">
+                          <div className="flex flex-wrap items-baseline gap-3 text-sm text-surface-600">
+                            {progressReportDetail.report_date && <span>{formatDate(progressReportDetail.report_date)}</span>}
+                            {progressReportDetail.reporting_status && (
+                              <>
+                                <span className="text-surface-300">·</span>
+                                <span className="font-medium text-surface-700">{progressReportDetail.reporting_status}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {progressReportDetail.narrative_updates && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-2">Executive Summary</h4>
+                              <div className="text-surface-700 whitespace-pre-wrap leading-relaxed">{progressReportDetail.narrative_updates}</div>
+                            </section>
+                          )}
+
+                          {Array.isArray(progressReportDetail.phases) && progressReportDetail.phases.length > 0 && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">Project phases</h4>
+                              <ul className="space-y-4">
+                                {progressReportDetail.phases.map((p, i) => (
+                                  <li key={i} className="pl-4 border-l-2 border-brand-200">
+                                    <span className="font-semibold text-surface-900">{p.name || `Phase ${i + 1}`}</span>
+                                    {p.description && <p className="text-sm text-surface-600 mt-1 leading-relaxed">{p.description}</p>}
+                                  </li>
+                                ))}
+                              </ul>
+                            </section>
+                          )}
+
+                          {Array.isArray(progressReportDetail.contractor_status) && progressReportDetail.contractor_status.length > 0 && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">Integration status per company</h4>
+                              <div className="rounded-xl border border-surface-200 overflow-hidden">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-surface-50 border-b border-surface-200">
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Haulier / Company</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Oper. total</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Integrated (1)</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Integrated (2)</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">% Increase</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Notes</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {progressReportDetail.contractor_status.map((c, i) => (
+                                      <tr key={i} className="border-b border-surface-100 last:border-0">
+                                        <td className="py-3 px-4 font-medium text-surface-900">{c.contractor_name || c.haulier || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{c.operational_total ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{c.integrated_count_1 != null ? `${c.integrated_count_1}${c.integrated_date_1 ? ` (${c.integrated_date_1})` : ''}` : '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{c.integrated_count_2 != null ? `${c.integrated_count_2}${c.integrated_date_2 ? ` (${c.integrated_date_2})` : ''}` : '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{c.percent_increase != null ? `${c.percent_increase}%` : '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{c.narrative || c.note || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </section>
+                          )}
+
+                          {progressReportDetail.conclusion_text && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-2">Conclusion</h4>
+                              <div className="text-surface-700 whitespace-pre-wrap leading-relaxed">{progressReportDetail.conclusion_text}</div>
+                            </section>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {activeTab === 'action-plan-timelines' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-semibold text-surface-900 tracking-tight">View Project timelines and action plan</h3>
+                  <p className="text-sm text-surface-500 mt-1">Click a row to open the full action plan and project timelines.</p>
+                </div>
+              </div>
+
+              {actionPlansLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm text-surface-500">Loading action plans…</p>
+                  </div>
+                </div>
+              ) : actionPlansList.length === 0 ? (
+                <div className="rounded-2xl border border-surface-200 bg-gradient-to-b from-surface-50 to-white p-12 text-center">
+                  <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-surface-100 text-surface-400 mb-4">
+                    <TabIcon name="calendar" className="w-7 h-7" />
+                  </div>
+                  <p className="text-surface-600 font-medium">No action plans yet</p>
+                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Action plan and Project timelines.</p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-surface-200 bg-surface-50/80">
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Title</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Project</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Document date</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Document ID</th>
+                          <th className="w-12 py-4 px-5 text-surface-400" aria-hidden="true">
+                            <span className="sr-only">View</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {actionPlansList.map((p) => (
+                          <tr
+                            key={p.id}
+                            onClick={() => setSelectedActionPlanId(p.id)}
+                            className={`border-b border-surface-100 transition-colors cursor-pointer group hover:bg-brand-50/50 ${selectedActionPlanId === p.id ? 'bg-brand-50/70' : ''}`}
+                          >
+                            <td className="py-4 px-5">
+                              <span className="font-medium text-surface-900 group-hover:text-brand-700">{p.title || 'Action Plan'}</span>
+                            </td>
+                            <td className="py-4 px-5 text-surface-600">{p.project_name || '—'}</td>
+                            <td className="py-4 px-5 text-surface-600">{p.document_date ? formatDate(p.document_date) : '—'}</td>
+                            <td className="py-4 px-5 text-surface-600">{p.document_id || '—'}</td>
+                            <td className="py-4 px-5 text-surface-400 group-hover:text-brand-500">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Action plan / timelines view modal */}
+              {selectedActionPlanId && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+                  onClick={() => { setSelectedActionPlanId(null); setActionPlanDetail(null); }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="action-plan-modal-title"
+                >
+                  <div
+                    className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="shrink-0 flex items-center justify-between gap-4 px-6 py-4 border-b border-surface-200 bg-gradient-to-r from-surface-50 to-white">
+                      <div className="flex items-center gap-4">
+                        <img src="/logos/tihlo-logo.png" alt="TIHLO" className="h-10 w-auto object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                        <div className="h-8 w-px bg-surface-200" />
+                        <h2 id="action-plan-modal-title" className="text-lg font-semibold text-surface-900">
+                          {actionPlanDetail ? (actionPlanDetail.title || 'Action Plan') : 'Loading…'}
+                        </h2>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {actionPlanDetail && (
+                          <button
+                            type="button"
+                            onClick={() => downloadActionPlanPdf(actionPlanDetail)}
+                            disabled={actionPlanPdfDownloading}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-900 text-white text-sm font-medium hover:bg-surface-800 disabled:opacity-60 transition-colors"
+                          >
+                            {actionPlanPdfDownloading ? (
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            )}
+                            Download PDF
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setSelectedActionPlanId(null); setActionPlanDetail(null); }}
+                          className="p-2 rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700 transition-colors"
+                          aria-label="Close"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto min-h-0">
+                      {!actionPlanDetail ? (
+                        <div className="flex items-center justify-center py-20">
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                            <p className="text-sm text-surface-500">Loading action plan…</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-6 space-y-6">
+                          <div className="text-center space-y-1">
+                            <h3 className="text-xl font-bold text-surface-900">{actionPlanDetail.title || 'Action Plan'}</h3>
+                            {actionPlanDetail.project_name && <p className="text-base font-semibold text-surface-700">{actionPlanDetail.project_name}</p>}
+                            <div className="flex flex-wrap items-center justify-center gap-3 text-sm text-surface-500">
+                              {actionPlanDetail.document_date && <span>{formatDate(actionPlanDetail.document_date)}</span>}
+                              {actionPlanDetail.document_id && <><span className="text-surface-300">·</span><span>Doc. {actionPlanDetail.document_id}</span></>}
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-surface-500 text-center italic border-y border-surface-100 py-3">
+                            This document is the exclusive property of Thinkers Afrika (Pty) Ltd. and contains confidential information. It may not be reproduced, shared, or disclosed without express written consent.
+                          </p>
+
+                          <section>
+                            <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">Action plan structure</h4>
+                            <div className="rounded-xl border border-surface-200 overflow-hidden">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="bg-surface-50 border-b border-surface-200">
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Phase</th>
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Start date</th>
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Action type/description</th>
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Participants</th>
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Due date</th>
+                                    <th className="text-left py-3 px-4 font-semibold text-surface-700">Action status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Array.isArray(actionPlanDetail.items) && actionPlanDetail.items.length > 0 ? (
+                                    actionPlanDetail.items.map((it, i) => (
+                                      <tr key={i} className="border-b border-surface-100 last:border-0">
+                                        <td className="py-3 px-4 font-medium text-surface-900">{it.phase || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{it.start_date ? formatDate(it.start_date) : '—'}</td>
+                                        <td className="py-3 px-4 text-surface-700">{it.action_description || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{it.participants || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{it.due_date ? formatDate(it.due_date) : '—'}</td>
+                                        <td className="py-3 px-4">
+                                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                            (it.status || '').toLowerCase() === 'completed' ? 'bg-emerald-100 text-emerald-800' :
+                                            (it.status || '').toLowerCase() === 'in progress' ? 'bg-amber-100 text-amber-800' :
+                                            'bg-surface-100 text-surface-600'
+                                          }`}>
+                                            {it.status || 'not started'}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  ) : (
+                                    <tr><td colSpan={6} className="py-6 px-4 text-center text-surface-500">No action items.</td></tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </section>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'monthly-performance-reports' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-semibold text-surface-900 tracking-tight">Monthly Performance reports</h3>
+                  <p className="text-sm text-surface-500 mt-1">Click a row to open the full report.</p>
+                </div>
+              </div>
+
+              {monthlyPerfLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm text-surface-500">Loading reports…</p>
+                  </div>
+                </div>
+              ) : monthlyPerfList.length === 0 ? (
+                <div className="rounded-2xl border border-surface-200 bg-gradient-to-b from-surface-50 to-white p-12 text-center">
+                  <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-surface-100 text-surface-400 mb-4">
+                    <TabIcon name="chart" className="w-7 h-7" />
+                  </div>
+                  <p className="text-surface-600 font-medium">No monthly performance reports yet</p>
+                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Monthly performance reports.</p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-surface-200 bg-surface-50/80">
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Report</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Reporting period</th>
+                          <th className="text-left py-4 px-5 font-semibold text-surface-700">Submitted</th>
+                          <th className="w-12 py-4 px-5 text-surface-400" aria-hidden="true"><span className="sr-only">View</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthlyPerfList.map((r) => (
+                          <tr
+                            key={r.id}
+                            onClick={() => setSelectedMonthlyPerfId(r.id)}
+                            className={`border-b border-surface-100 transition-colors cursor-pointer group hover:bg-brand-50/50 ${selectedMonthlyPerfId === r.id ? 'bg-brand-50/70' : ''}`}
+                          >
+                            <td className="py-4 px-5"><span className="font-medium text-surface-900 group-hover:text-brand-700">{r.title || 'Monthly Performance Report'}</span></td>
+                            <td className="py-4 px-5 text-surface-600">{r.reporting_period_start && r.reporting_period_end ? `${formatDate(r.reporting_period_start)} – ${formatDate(r.reporting_period_end)}` : '—'}</td>
+                            <td className="py-4 px-5 text-surface-600">{r.submitted_date ? formatDate(r.submitted_date) : '—'}</td>
+                            <td className="py-4 px-5 text-surface-400 group-hover:text-brand-500">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {selectedMonthlyPerfId && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => { setSelectedMonthlyPerfId(null); setMonthlyPerfDetail(null); }} role="dialog" aria-modal="true" aria-labelledby="monthly-perf-modal-title">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                    <div className="shrink-0 flex items-center justify-between gap-4 px-6 py-4 border-b border-surface-200 bg-gradient-to-r from-surface-50 to-white">
+                      <div className="flex items-center gap-4">
+                        <img src="/logos/tihlo-logo.png" alt="Tihlo" className="h-10 w-auto object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                        <h2 id="monthly-perf-modal-title" className="text-lg font-semibold text-surface-900">
+                          {monthlyPerfDetail ? (monthlyPerfDetail.title || 'Monthly Performance Report') : 'Loading…'}
+                        </h2>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {monthlyPerfDetail && (
+                          <button type="button" onClick={() => downloadMonthlyPerfPdf(monthlyPerfDetail)} disabled={monthlyPerfPdfDownloading} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-900 text-white text-sm font-medium hover:bg-surface-800 disabled:opacity-60">
+                            {monthlyPerfPdfDownloading ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>}
+                            Download PDF
+                          </button>
+                        )}
+                        <button type="button" onClick={() => { setSelectedMonthlyPerfId(null); setMonthlyPerfDetail(null); }} className="p-2 rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Close">
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto min-h-0">
+                      {!monthlyPerfDetail ? (
+                        <div className="flex items-center justify-center py-20">
+                          <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                          <p className="text-sm text-surface-500 ml-3">Loading report…</p>
+                        </div>
+                      ) : (
+                        <div className="p-6 space-y-6">
+                          <div className="text-center space-y-1">
+                            <h3 className="text-xl font-bold text-surface-900">{monthlyPerfDetail.title || 'Monthly Performance Report'}</h3>
+                            {monthlyPerfDetail.prepared_by && <p className="text-sm text-surface-600">Prepared by: {monthlyPerfDetail.prepared_by}</p>}
+                            <div className="flex flex-wrap items-center justify-center gap-3 text-sm text-surface-500">
+                              {monthlyPerfDetail.reporting_period_start && monthlyPerfDetail.reporting_period_end && <span>Reporting period: {formatDate(monthlyPerfDetail.reporting_period_start)} – {formatDate(monthlyPerfDetail.reporting_period_end)}</span>}
+                              {monthlyPerfDetail.submitted_date && <><span className="text-surface-300">·</span><span>Submitted: {formatDate(monthlyPerfDetail.submitted_date)}</span></>}
+                            </div>
+                          </div>
+                          <p className="text-xs text-surface-500 text-center italic border-y border-surface-100 py-3">This report contains proprietary and confidential information intended solely for use by Tihlo and parties duly authorised by Thinkers Afrika. Unauthorised distribution or disclosure is strictly prohibited.</p>
+
+                          {monthlyPerfDetail.executive_summary && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-2">1. Executive Summary</h4>
+                              <div className="text-surface-700 whitespace-pre-wrap leading-relaxed text-sm">{monthlyPerfDetail.executive_summary}</div>
+                            </section>
+                          )}
+
+                          {Array.isArray(monthlyPerfDetail.key_metrics) && monthlyPerfDetail.key_metrics.length > 0 && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">2. Key Performance Metrics</h4>
+                              <div className="rounded-xl border border-surface-200 overflow-hidden">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-surface-50 border-b border-surface-200">
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Metric</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Value</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Commentary</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {monthlyPerfDetail.key_metrics.map((m, i) => (
+                                      <tr key={i} className="border-b border-surface-100 last:border-0">
+                                        <td className="py-3 px-4 font-medium text-surface-900">{m.metric || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{m.value ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{m.commentary || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </section>
+                          )}
+
+                          {Array.isArray(monthlyPerfDetail.sections) && monthlyPerfDetail.sections.length > 0 && monthlyPerfDetail.sections.map((s, i) => {
+                            const hasSubsections = Array.isArray(s.subsections) && s.subsections.length > 0;
+                            const legacyBody = !hasSubsections && (s.heading || s.body);
+                            if (legacyBody) {
+                              return (
+                                <section key={i}>
+                                  <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-2">{i + 3}. {s.heading || `Section ${i + 1}`}</h4>
+                                  <div className="text-surface-700 whitespace-pre-wrap leading-relaxed text-sm">{s.body || '—'}</div>
+                                </section>
+                              );
+                            }
+                            if (!hasSubsections) return null;
+                            return (
+                              <section key={i}>
+                                <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">{i + 3}. {s.heading || `Section ${i + 1}`}</h4>
+                                <div className="space-y-4">
+                                  {s.subsections.map((sub, subIdx) => (
+                                    <div key={subIdx} className="pl-3 border-l-2 border-surface-200">
+                                      {sub.subheading && <h5 className="text-sm font-semibold text-surface-800 mb-2">{sub.subheading}</h5>}
+                                      <div className="space-y-3">
+                                        {(sub.blocks || []).map((b, bi) => {
+                                          if (b.type === 'text') return <div key={bi} className="text-surface-700 whitespace-pre-wrap leading-relaxed text-sm">{b.text || '—'}</div>;
+                                          if (b.type === 'image' && b.base64) return <div key={bi} className="my-2"><img src={b.base64.startsWith('data:') ? b.base64 : `data:image/png;base64,${b.base64}`} alt={b.alt || ''} className="max-w-full max-h-80 object-contain rounded-lg border border-surface-200" /></div>;
+                                          if (b.type === 'table' && Array.isArray(b.rows) && b.rows.length > 0) return (
+                                            <div key={bi} className="rounded-xl border border-surface-200 overflow-hidden my-2">
+                                              <table className="w-full text-sm">
+                                                <tbody>
+                                                  {b.rows.map((row, ri) => (
+                                                    <tr key={ri} className="border-b border-surface-100 last:border-0">
+                                                      {(Array.isArray(row) ? row : []).map((cell, ci) => (
+                                                        <td key={ci} className="py-2 px-3 text-surface-700">{ri === 0 ? <span className="font-semibold text-surface-800">{cell}</span> : cell}</td>
+                                                      ))}
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          );
+                                          return null;
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+                            );
+                          })}
+
+                          {Array.isArray(monthlyPerfDetail.breakdowns) && monthlyPerfDetail.breakdowns.length > 0 && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">Breakdowns (incidents)</h4>
+                              <div className="rounded-xl border border-surface-200 overflow-hidden">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-surface-50 border-b border-surface-200">
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Date</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Time</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Route</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Truck reg</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Description</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Company</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {monthlyPerfDetail.breakdowns.map((b, i) => (
+                                      <tr key={i} className="border-b border-surface-100 last:border-0">
+                                        <td className="py-3 px-4 text-surface-600">{b.date ? formatDate(b.date) : '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{b.time || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{b.route || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{b.truck_reg || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{b.description || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{b.company || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </section>
+                          )}
+
+                          {Array.isArray(monthlyPerfDetail.fleet_performance) && monthlyPerfDetail.fleet_performance.length > 0 && (
+                            <section>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-3">Fleet performance by haulier</h4>
+                              <div className="rounded-xl border border-surface-200 overflow-hidden">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-surface-50 border-b border-surface-200">
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Haulier</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Trips</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">% Trips</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Tonnage</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">% Tonnage</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Avg t/Trip</th>
+                                      <th className="text-left py-3 px-4 font-semibold text-surface-700">Trucks</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {monthlyPerfDetail.fleet_performance.map((f, i) => (
+                                      <tr key={i} className="border-b border-surface-100 last:border-0">
+                                        <td className="py-3 px-4 font-medium text-surface-900">{f.haulier || '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.trips ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.pct_trips ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.tonnage ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.pct_tonnage ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.avg_t_per_trip ?? '—'}</td>
+                                        <td className="py-3 px-4 text-surface-600">{f.trucks_deployed ?? '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </section>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

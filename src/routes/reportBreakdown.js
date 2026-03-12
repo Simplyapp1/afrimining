@@ -5,7 +5,7 @@ import fs from 'fs';
 import { query } from '../db.js';
 import { getCommandCentreAndRectorEmailsForRoute } from '../lib/emailRecipients.js';
 import { breakdownReportHtml, breakdownConfirmationToDriverHtml } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -232,7 +232,7 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
         );
         const row = detailResult.recordset?.[0];
         const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || report.driverName : report.driverName;
-        const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
+        const reportedAtStr = row?.reported_at ? formatDateForEmail(row.reported_at) : formatDateForEmail(new Date());
         let routeId = row?.route_id ?? row?.route_Id ?? null;
         if (!routeId && (row?.truck_id || row?.driver_id)) {
           if (row.truck_id) {

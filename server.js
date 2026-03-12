@@ -16,6 +16,9 @@ import testEmailRoutes from './src/routes/testEmail.js';
 import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
 import profileManagementRoutes from './src/routes/profileManagement.js';
 import transportOperationsRoutes from './src/routes/transportOperations.js';
+import progressReportsRoutes from './src/routes/progressReports.js';
+import actionPlansRoutes from './src/routes/actionPlans.js';
+import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 
@@ -23,7 +26,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173', credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // allow large payloads e.g. progress report PDF send-email
 app.use(
   session({
     name: 'thinkers.sid',
@@ -46,6 +49,9 @@ app.use('/api/test-email', testEmailRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/profile-management', profileManagementRoutes);
 app.use('/api/transport-operations', transportOperationsRoutes);
+app.use('/api/progress-reports', progressReportsRoutes);
+app.use('/api/action-plans', actionPlansRoutes);
+app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 
 // Serve frontend (Vite build) when both run on same host (e.g. Render, Railway)
 const clientDist = path.join(__dirname, 'client', 'dist');

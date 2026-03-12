@@ -7,7 +7,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { applicationApprovedHtml, applicationBulkApprovedHtml, applicationApprovedToRectorHtml, applicationBulkApprovedToRectorHtml, breakdownReportHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -1138,9 +1138,14 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     );
     const row = detailResult.recordset?.[0];
     const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
-    const resolvedAtStr = row?.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
+    const resolvedAtStr = row?.resolved_at ? formatDateForEmail(row.resolved_at) : formatDateForEmail(new Date());
     const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
-    const incidentContractorId = row?.contractor_id ?? row?.contractor_Id ?? null;
+    let incidentContractorId = row?.contractor_id ?? row?.contractor_Id ?? null;
+    if (!incidentContractorId && row?.truck_id) {
+      const tr = await query(`SELECT contractor_id FROM contractor_trucks WHERE id = @truckId`, { truckId: row.truck_id });
+      const t0 = tr.recordset?.[0];
+      incidentContractorId = t0?.contractor_id ?? t0?.contractor_Id ?? null;
+    }
     let routeId = row?.route_id ?? row?.route_Id ?? null;
     if (!routeId && (row?.truck_id || row?.driver_id)) {
       if (row.truck_id) {
@@ -1160,7 +1165,7 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
         const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const tenantId = row?.tenant_id || updated.tenant_id;
-        const contractorEmails = tenantId ? (incidentContractorId ? await getContractorUserEmails(query, tenantId, incidentContractorId) : await getTenantUserEmails(query, tenantId)) : [];
+        const contractorEmails = tenantId && incidentContractorId ? await getContractorUserEmails(query, tenantId, incidentContractorId) : [];
         const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
         const mask = (e) => (e && e.includes('@') ? e.slice(0, 2) + '***@' + e.split('@')[1] : e);
         console.log('[commandCentre] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor=', contractorEmails.length, 'total=', allTo.length);
@@ -1225,7 +1230,7 @@ router.post('/breakdowns/:id/notify-rector', async (req, res, next) => {
     const toEmails = (userRows.recordset || []).map((r) => (r.email || r.Email || '').trim()).filter((e) => e && e.includes('@'));
     if (toEmails.length === 0) return res.status(400).json({ error: 'No valid rector emails found for the selected users.' });
     const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
-    const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
+    const reportedAtStr = row?.reported_at ? formatDateForEmail(row.reported_at) : formatDateForEmail(new Date());
     const html = breakdownReportHtml({
       driverName,
       truckRegistration: row?.truck_reg || '—',

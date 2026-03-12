@@ -8,7 +8,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -875,7 +875,7 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
         );
         const row = detailResult.recordset?.[0];
         const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
-        const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
+        const reportedAtStr = row?.reported_at ? formatDateForEmail(row.reported_at) : formatDateForEmail(new Date());
         const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
         const tenantName = row?.tenant_name ?? row?.tenant_name ?? null;
         let routeId = row?.route_id ?? row?.route_Id ?? null;
@@ -969,7 +969,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
     // Notify Command Centre, rectors, driver, and contractor (tenant users) that breakdown was resolved
     (async () => {
       try {
-        if (!isEmailConfigured() || !getCommandCentreAndRectorEmailsForRoute || !getTenantUserEmails) return;
+        if (!isEmailConfigured() || !getCommandCentreAndRectorEmailsForRoute) return;
         const detailResult = await query(
           `SELECT i.id, i.route_id, i.truck_id, i.driver_id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
                   tr.registration AS truck_registration, r.name AS route_name,
@@ -986,9 +986,14 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         const row = detailResult.recordset?.[0];
         if (!row) return;
         const driverName = [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver';
-        const resolvedAtStr = row.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
+        const resolvedAtStr = row.resolved_at ? formatDateForEmail(row.resolved_at) : formatDateForEmail(new Date());
         const contractorName = row.contractor_name ?? row.contractor_Name ?? null;
-        const incidentContractorId = row.contractor_id ?? row.contractor_Id ?? null;
+        let incidentContractorId = row.contractor_id ?? row.contractor_Id ?? null;
+        if (!incidentContractorId && row.truck_id) {
+          const tr = await query(`SELECT contractor_id FROM contractor_trucks WHERE id = @truckId`, { truckId: row.truck_id });
+          const t0 = tr.recordset?.[0];
+          incidentContractorId = t0?.contractor_id ?? t0?.contractor_Id ?? null;
+        }
         let routeId = row.route_id ?? row.route_Id ?? null;
         if (!routeId && (row.truck_id || row.driver_id)) {
           if (row.truck_id) {
@@ -1004,10 +1009,10 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         }
         const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row.driver_email || '').trim();
-        const contractorEmails = row.tenant_id ? (incidentContractorId ? await getContractorUserEmails(query, row.tenant_id, incidentContractorId) : await getTenantUserEmails(query, row.tenant_id)) : [];
+        const contractorEmails = row.tenant_id && incidentContractorId ? await getContractorUserEmails(query, row.tenant_id, incidentContractorId) : [];
         const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
         const mask = (e) => (e && e.includes('@') ? e.slice(0, 2) + '***@' + e.split('@')[1] : e);
-        console.log('[contractor/incidents] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor(tenant)=', contractorEmails.length, 'total=', allTo.length);
+        console.log('[contractor/incidents] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor=', contractorEmails.length, 'total=', allTo.length);
         if (allTo.length === 0) return;
         const html = breakdownResolvedHtml({
           ref: `INC-${String(row.id).replace(/-/g, '').slice(0, 8).toUpperCase()}`,

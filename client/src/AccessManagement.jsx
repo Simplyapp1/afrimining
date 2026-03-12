@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from './AuthContext';
-import { contractor as contractorApi, users as usersApi } from './api';
+import { contractor as contractorApi, users as usersApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
+import { generateProgressReportPdf } from './lib/progressReportPdf.js';
+import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
+import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', section: 'Overview' },
@@ -9,6 +12,9 @@ const TABS = [
   { id: 'reinstatement', label: 'Reinstatement requests', icon: 'reinstatement', section: 'Routes' },
   { id: 'distribution', label: 'List distribution', icon: 'share', section: 'Distribution' },
   { id: 'distribution-history', label: 'Distribution history', icon: 'history', section: 'Distribution' },
+  { id: 'progress-report-creation', label: 'Project progress report creation', icon: 'file', section: 'Reports' },
+  { id: 'action-plan-timelines', label: 'Action plan and Project timelines', icon: 'calendar', section: 'Reports' },
+  { id: 'monthly-performance-reports', label: 'Monthly performance reports', icon: 'chart', section: 'Reports' },
 ];
 const SECTIONS = [...new Set(TABS.map((t) => t.section))];
 
@@ -78,6 +84,24 @@ function TabIcon({ name, className }) {
       return (
         <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      );
+    case 'file':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      );
+    case 'calendar':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      );
+    case 'chart':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
         </svg>
       );
     default:
@@ -156,7 +180,116 @@ export default function AccessManagement() {
   const [reinstatementHistory, setReinstatementHistory] = useState([]);
   const [reinstatementHistoryLoading, setReinstatementHistoryLoading] = useState(false);
 
+  // Project progress report creation tab
+  const [progressReportsList, setProgressReportsList] = useState([]);
+  const [progressReportForm, setProgressReportForm] = useState({
+    title: '',
+    report_date: new Date().toISOString().slice(0, 10),
+    reporting_status: '',
+    narrative_updates: '',
+    phases: [{ name: '', description: '' }],
+    contractor_status: [{ contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }],
+    conclusion_text: '',
+  });
+  const [editingProgressReportId, setEditingProgressReportId] = useState(null);
+  const [progressReportSaving, setProgressReportSaving] = useState(false);
+  const [progressReportsListLoading, setProgressReportsListLoading] = useState(false);
+  const [progressReportSubTab, setProgressReportSubTab] = useState('creation'); // 'creation' | 'published'
+  const [shareEmailOpen, setShareEmailOpen] = useState(false);
+  const [shareEmailReport, setShareEmailReport] = useState(null); // full report for PDF + email
+  const [shareEmailRecipients, setShareEmailRecipients] = useState([]);
+  const [shareEmailToIds, setShareEmailToIds] = useState([]);
+  const [shareEmailCcIds, setShareEmailCcIds] = useState([]); // users to CC (from same list)
+  const [shareEmailCc, setShareEmailCc] = useState(''); // additional CC emails (free text)
+  const [shareEmailMessage, setShareEmailMessage] = useState('');
+  const [shareEmailSending, setShareEmailSending] = useState(false);
+  const [shareEmailError, setShareEmailError] = useState('');
+
+  // Action plan and Project timelines tab
+  const [actionPlansList, setActionPlansList] = useState([]);
+  const [actionPlansListLoading, setActionPlansListLoading] = useState(false);
+  const [actionPlanForm, setActionPlanForm] = useState({
+    title: 'Action Plan',
+    project_name: '',
+    document_date: new Date().toISOString().slice(0, 10),
+    document_id: '',
+    items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
+  });
+  const [editingActionPlanId, setEditingActionPlanId] = useState(null);
+  const [actionPlanSaving, setActionPlanSaving] = useState(false);
+  const [actionPlanSubTab, setActionPlanSubTab] = useState('creation'); // 'creation' | 'published'
+  const [shareActionPlanEmailOpen, setShareActionPlanEmailOpen] = useState(false);
+  const [shareActionPlanEmailPlan, setShareActionPlanEmailPlan] = useState(null);
+  const [shareActionPlanEmailRecipients, setShareActionPlanEmailRecipients] = useState([]);
+  const [shareActionPlanEmailToIds, setShareActionPlanEmailToIds] = useState([]);
+  const [shareActionPlanEmailCcIds, setShareActionPlanEmailCcIds] = useState([]);
+  const [shareActionPlanEmailCc, setShareActionPlanEmailCc] = useState('');
+  const [shareActionPlanEmailMessage, setShareActionPlanEmailMessage] = useState('');
+  const [shareActionPlanEmailSending, setShareActionPlanEmailSending] = useState(false);
+  const [shareActionPlanEmailError, setShareActionPlanEmailError] = useState('');
+
+  // Monthly performance reports
+  const [monthlyPerfList, setMonthlyPerfList] = useState([]);
+  const [monthlyPerfListLoading, setMonthlyPerfListLoading] = useState(false);
+  const [monthlyPerfForm, setMonthlyPerfForm] = useState({
+    title: '',
+    reporting_period_start: '',
+    reporting_period_end: '',
+    submitted_date: new Date().toISOString().slice(0, 10),
+    prepared_by: 'Tihlo (Thinkers Afrika)',
+    executive_summary: '',
+    key_metrics: [{ metric: '', value: '', commentary: '' }],
+    sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }],
+    breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }],
+    fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }],
+  });
+  const [editingMonthlyPerfId, setEditingMonthlyPerfId] = useState(null);
+  const [monthlyPerfSaving, setMonthlyPerfSaving] = useState(false);
+  const [monthlyPerfSubTab, setMonthlyPerfSubTab] = useState('creation');
+  const monthlyPerfExecSummaryRef = useRef(null);
+  const monthlyPerfBlockRefs = useRef({});
+  const [monthlyPerfCursor, setMonthlyPerfCursor] = useState(null); // { type: 'executive'|'block', sectionIdx?, subIdx?, blockIdx?, start, end }
+
   const hasTenant = user?.tenant_id;
+
+  const insertAtFocusedMonthlyPerfText = (prefix) => {
+    const cur = monthlyPerfCursor;
+    if (!cur) return;
+    let text = '';
+    if (cur.type === 'executive') {
+      text = monthlyPerfForm.executive_summary || '';
+    } else if (cur.type === 'block' && cur.sectionIdx != null && cur.subIdx != null && cur.blockIdx != null) {
+      const sub = monthlyPerfForm.sections[cur.sectionIdx]?.subsections?.[cur.subIdx];
+      const block = sub?.blocks?.[cur.blockIdx];
+      text = (block?.type === 'text' && block?.text) ? block.text : '';
+    }
+    const start = typeof cur.start === 'number' ? cur.start : 0;
+    const end = typeof cur.end === 'number' ? cur.end : start;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const insert = start === 0 ? prefix : `\n${prefix}`;
+    const newText = before + insert + after;
+    const newCursor = start + insert.length;
+    if (cur.type === 'executive') {
+      setMonthlyPerfForm((f) => ({ ...f, executive_summary: newText }));
+    } else if (cur.type === 'block' && cur.sectionIdx != null && cur.subIdx != null && cur.blockIdx != null) {
+      const i = cur.sectionIdx, subIdx = cur.subIdx, blockIdx = cur.blockIdx;
+      setMonthlyPerfForm((f) => ({
+        ...f,
+        sections: f.sections.map((s, j) => j !== i ? s : {
+          ...s,
+          subsections: (s.subsections || []).map((sb, k) => k !== subIdx ? sb : {
+            ...sb,
+            blocks: (sb.blocks || []).map((b, bi) => bi !== blockIdx ? b : { ...b, text: newText }),
+          }),
+        }),
+      }));
+    }
+    setTimeout(() => {
+      const el = cur.type === 'executive' ? monthlyPerfExecSummaryRef.current : monthlyPerfBlockRefs.current[`${cur.sectionIdx}-${cur.subIdx}-${cur.blockIdx}`];
+      if (el && el.focus) { el.focus(); el.setSelectionRange(newCursor, newCursor); }
+    }, 0);
+  };
 
   function load() {
     if (!hasTenant) return;
@@ -217,6 +350,186 @@ export default function AccessManagement() {
       .finally(() => { if (!cancelled) setDistLoadingDetails(false); });
     return () => { cancelled = true; };
   }, [activeTab, routes]);
+
+  // Load progress reports list when Project progress report tab is active
+  useEffect(() => {
+    if (activeTab !== 'progress-report-creation' || !hasTenant) return;
+    setProgressReportsListLoading(true);
+    progressReportsApi.list()
+      .then((r) => setProgressReportsList(r.reports || []))
+      .catch(() => setProgressReportsList([]))
+      .finally(() => setProgressReportsListLoading(false));
+  }, [activeTab, hasTenant]);
+
+  // Load action plans list when Action plan and Project timelines tab is active
+  useEffect(() => {
+    if (activeTab !== 'action-plan-timelines' || !hasTenant) return;
+    setActionPlansListLoading(true);
+    actionPlansApi.list()
+      .then((r) => setActionPlansList(r.plans || []))
+      .catch(() => setActionPlansList([]))
+      .finally(() => setActionPlansListLoading(false));
+  }, [activeTab, hasTenant]);
+
+  // Load monthly performance reports when tab is active
+  useEffect(() => {
+    if (activeTab !== 'monthly-performance-reports' || !hasTenant) return;
+    setMonthlyPerfListLoading(true);
+    monthlyPerformanceReportsApi.list()
+      .then((r) => setMonthlyPerfList(r.reports || []))
+      .catch(() => setMonthlyPerfList([]))
+      .finally(() => setMonthlyPerfListLoading(false));
+  }, [activeTab, hasTenant]);
+
+  const getProgressReportPdfAsBase64 = (report) => {
+    return new Promise((resolve, reject) => {
+      const run = (logoDataUrl) => {
+        try {
+          const doc = generateProgressReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+          const name = (report.title || 'progress-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+          const filename = `${name}-${report.report_date || 'report'}.pdf`;
+          const blob = doc.output('blob');
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:') ? dataUrl.split(',')[1] : '';
+            resolve({ base64, filename });
+          };
+          reader.onerror = () => reject(new Error('PDF encoding failed'));
+          reader.readAsDataURL(blob);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      fetch('/logos/tihlo-logo.png', { credentials: 'include' })
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((blob) => {
+          if (!blob) { run(null); return; }
+          const reader = new FileReader();
+          reader.onload = () => run(reader.result);
+          reader.onerror = () => run(null);
+          reader.readAsDataURL(blob);
+        })
+        .catch(() => run(null));
+    });
+  };
+
+  const openShareEmailModal = (reportFromList) => {
+    setShareEmailError('');
+    setShareEmailToIds([]);
+    setShareEmailCcIds([]);
+    setShareEmailCc('');
+    setShareEmailMessage('');
+    setShareEmailReport(null);
+    setShareEmailOpen(true);
+    progressReportsApi.recipients()
+      .then((r) => setShareEmailRecipients(r.users || []))
+      .catch(() => setShareEmailRecipients([]));
+    progressReportsApi.get(reportFromList.id)
+      .then((res) => setShareEmailReport(res.report || null))
+      .catch(() => setShareEmailError('Failed to load report'));
+  };
+
+  const sendProgressReportEmail = () => {
+    if (!shareEmailReport || !shareEmailReport.id) return;
+    if (shareEmailToIds.length === 0) {
+      setShareEmailError('Select at least one recipient.');
+      return;
+    }
+    setShareEmailError('');
+    setShareEmailSending(true);
+    getProgressReportPdfAsBase64(shareEmailReport)
+      .then(({ base64, filename }) => {
+        const ccFromUsers = shareEmailCcIds.map((id) => shareEmailRecipients.find((u) => u.id === id)?.email).filter((e) => e && e.includes('@'));
+        const ccFromText = shareEmailCc.split(/[\s,;]+/).map((e) => e.trim()).filter((e) => e && e.includes('@'));
+        const ccList = [...new Set([...ccFromUsers, ...ccFromText])];
+        return progressReportsApi.sendEmail(shareEmailReport.id, {
+          to_user_ids: shareEmailToIds,
+          cc_emails: ccList,
+          message: shareEmailMessage.trim() || undefined,
+          pdf_base64: base64,
+          pdf_filename: filename,
+        });
+      })
+      .then(() => setShareEmailOpen(false))
+      .catch((e) => setShareEmailError(e?.message || 'Failed to send email'))
+      .finally(() => setShareEmailSending(false));
+  };
+
+  const getActionPlanPdfAsBase64 = (plan) => {
+    return new Promise((resolve, reject) => {
+      const run = (logoDataUrl) => {
+        try {
+          const doc = generateActionPlanPdf(plan, logoDataUrl ? { logoDataUrl } : {});
+          const name = (plan.title || 'action-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+          const filename = `${name}-${plan.document_date || 'plan'}.pdf`;
+          const blob = doc.output('blob');
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:') ? dataUrl.split(',')[1] : '';
+            resolve({ base64, filename });
+          };
+          reader.onerror = () => reject(new Error('PDF encoding failed'));
+          reader.readAsDataURL(blob);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      fetch('/logos/tihlo-logo.png', { credentials: 'include' })
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((blob) => {
+          if (!blob) { run(null); return; }
+          const reader = new FileReader();
+          reader.onload = () => run(reader.result);
+          reader.onerror = () => run(null);
+          reader.readAsDataURL(blob);
+        })
+        .catch(() => run(null));
+    });
+  };
+
+  const openShareActionPlanEmailModal = (planFromList) => {
+    setShareActionPlanEmailError('');
+    setShareActionPlanEmailToIds([]);
+    setShareActionPlanEmailCcIds([]);
+    setShareActionPlanEmailCc('');
+    setShareActionPlanEmailMessage('');
+    setShareActionPlanEmailPlan(null);
+    setShareActionPlanEmailOpen(true);
+    actionPlansApi.recipients()
+      .then((r) => setShareActionPlanEmailRecipients(r.users || []))
+      .catch(() => setShareActionPlanEmailRecipients([]));
+    actionPlansApi.get(planFromList.id)
+      .then((res) => setShareActionPlanEmailPlan(res.plan || null))
+      .catch(() => setShareActionPlanEmailError('Failed to load action plan'));
+  };
+
+  const sendActionPlanEmail = () => {
+    if (!shareActionPlanEmailPlan || !shareActionPlanEmailPlan.id) return;
+    if (shareActionPlanEmailToIds.length === 0) {
+      setShareActionPlanEmailError('Select at least one recipient.');
+      return;
+    }
+    setShareActionPlanEmailError('');
+    setShareActionPlanEmailSending(true);
+    getActionPlanPdfAsBase64(shareActionPlanEmailPlan)
+      .then(({ base64, filename }) => {
+        const ccFromUsers = shareActionPlanEmailCcIds.map((id) => shareActionPlanEmailRecipients.find((u) => u.id === id)?.email).filter((e) => e && e.includes('@'));
+        const ccFromText = shareActionPlanEmailCc.split(/[\s,;]+/).map((e) => e.trim()).filter((e) => e && e.includes('@'));
+        const ccList = [...new Set([...ccFromUsers, ...ccFromText])];
+        return actionPlansApi.sendEmail(shareActionPlanEmailPlan.id, {
+          to_user_ids: shareActionPlanEmailToIds,
+          cc_emails: ccList,
+          message: shareActionPlanEmailMessage.trim() || undefined,
+          pdf_base64: base64,
+          pdf_filename: filename,
+        });
+      })
+      .then(() => setShareActionPlanEmailOpen(false))
+      .catch((e) => setShareActionPlanEmailError(e?.message || 'Failed to send email'))
+      .finally(() => setShareActionPlanEmailSending(false));
+  };
 
   // Load distribution history when tab is active
   useEffect(() => {
@@ -1646,6 +1959,1018 @@ export default function AccessManagement() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeTab === 'progress-report-creation' && (
+        <div className="space-y-6">
+          <h2 className="text-lg font-semibold text-surface-900">Project progress reports</h2>
+          <p className="text-sm text-surface-500">Create or edit the project progress report. Rectors will see it under the Progress reports tab. Include project phases, integration status per company (contractor), and conclusion.</p>
+
+          <div className="flex gap-1 border-b border-surface-200">
+            <button
+              type="button"
+              onClick={() => setProgressReportSubTab('creation')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${progressReportSubTab === 'creation' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}
+            >
+              Create / Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => setProgressReportSubTab('published')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${progressReportSubTab === 'published' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}
+            >
+              Published reports
+            </button>
+          </div>
+
+          {progressReportSubTab === 'published' && (
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="text-base font-semibold text-surface-800 mb-4">Published reports</h3>
+              {progressReportsListLoading ? (
+                <p className="text-surface-500">Loading…</p>
+              ) : progressReportsList.length === 0 ? (
+                <p className="text-surface-500">No reports yet. Create one in the Create / Edit tab.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b border-surface-200 bg-surface-50">
+                        <th className="text-left p-3 font-medium text-surface-700">Title</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Report date</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Reporting status</th>
+                        <th className="p-3 font-medium text-surface-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {progressReportsList.map((r) => (
+                        <tr key={r.id} className="border-b border-surface-100 hover:bg-surface-50">
+                          <td className="p-3 text-surface-800">{r.title || 'Untitled report'}</td>
+                          <td className="p-3 text-surface-600">{r.report_date ? formatDate(r.report_date) : '—'}</td>
+                          <td className="p-3 text-surface-600">{r.reporting_status || '—'}</td>
+                          <td className="p-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openShareEmailModal(r)}
+                              className="text-surface-600 hover:text-brand-600 text-sm font-medium"
+                            >
+                              Share via email
+                            </button>
+                            <span className="text-surface-300">|</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setProgressReportSubTab('creation');
+                                setEditingProgressReportId(r.id);
+                                progressReportsApi.get(r.id).then((res) => {
+                                  const rep = res.report || {};
+                                  setProgressReportForm({
+                                    title: rep.title || '',
+                                    report_date: rep.report_date ? rep.report_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+                                    reporting_status: rep.reporting_status || '',
+                                    narrative_updates: rep.narrative_updates || '',
+                                    phases: Array.isArray(rep.phases) && rep.phases.length ? rep.phases.map((p) => ({ name: p.name || '', description: p.description || '' })) : [{ name: '', description: '' }],
+                                    contractor_status: Array.isArray(rep.contractor_status) && rep.contractor_status.length ? rep.contractor_status.map((c) => ({
+                                      contractor_name: c.contractor_name || c.haulier || '',
+                                      operational_total: c.operational_total ?? '',
+                                      integrated_count_1: c.integrated_count_1 ?? '',
+                                      integrated_date_1: c.integrated_date_1 || '',
+                                      integrated_count_2: c.integrated_count_2 ?? '',
+                                      integrated_date_2: c.integrated_date_2 || '',
+                                      percent_increase: c.percent_increase ?? '',
+                                      narrative: c.narrative || c.note || '',
+                                    })) : [{ contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }],
+                                    conclusion_text: rep.conclusion_text || '',
+                                  });
+                                }).catch(() => setError('Failed to load report'));
+                              }}
+                              className="text-brand-600 hover:text-brand-800 text-sm font-medium"
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Share via email modal */}
+              {shareEmailOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => !shareEmailSending && setShareEmailOpen(false)} role="dialog" aria-modal="true" aria-labelledby="share-email-title">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                    <div className="shrink-0 px-6 py-4 border-b border-surface-200">
+                      <h3 id="share-email-title" className="text-lg font-semibold text-surface-900">Share report via email</h3>
+                      <p className="text-sm text-surface-500 mt-1">Select recipients and add an optional message. The report PDF will be attached.</p>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                      {shareEmailError && (
+                        <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm px-3 py-2">{shareEmailError}</div>
+                      )}
+                      {!shareEmailReport && (
+                        <p className="text-sm text-surface-500">Loading report…</p>
+                      )}
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-2">To (select one or more)</label>
+                        <div className="border border-surface-200 rounded-lg max-h-40 overflow-y-auto p-2 space-y-1.5">
+                          {shareEmailRecipients.length === 0 ? (
+                            <p className="text-sm text-surface-500 py-2">Loading users…</p>
+                          ) : (
+                            shareEmailRecipients.map((u) => (
+                              <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-surface-50 rounded px-2 py-1.5">
+                                <input type="checkbox" checked={shareEmailToIds.includes(u.id)} onChange={(e) => setShareEmailToIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id))} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                                <span className="text-sm text-surface-800">{u.full_name || '—'}</span>
+                                <span className="text-xs text-surface-500 truncate">{u.email}</span>
+                              </label>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-2">CC (optional – select users or type emails)</label>
+                        <div className="border border-surface-200 rounded-lg max-h-32 overflow-y-auto p-2 space-y-1.5 mb-2">
+                          {shareEmailRecipients.length === 0 ? (
+                            <p className="text-sm text-surface-500 py-2">Loading users…</p>
+                          ) : (
+                            shareEmailRecipients.map((u) => (
+                              <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-surface-50 rounded px-2 py-1.5">
+                                <input type="checkbox" checked={shareEmailCcIds.includes(u.id)} onChange={(e) => setShareEmailCcIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id))} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                                <span className="text-sm text-surface-800">{u.full_name || '—'}</span>
+                                <span className="text-xs text-surface-500 truncate">{u.email}</span>
+                              </label>
+                            ))
+                          )}
+                        </div>
+                        <input type="text" value={shareEmailCc} onChange={(e) => setShareEmailCc(e.target.value)} placeholder="Or add other emails: email@example.com, another@example.com" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm" />
+                        <p className="text-xs text-surface-500 mt-1">Separate multiple emails with commas or spaces.</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Message (optional)</label>
+                        <textarea value={shareEmailMessage} onChange={(e) => setShareEmailMessage(e.target.value)} rows={3} placeholder="Add a short note to include in the email…" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm resize-y" />
+                      </div>
+                    </div>
+                    <div className="shrink-0 flex justify-end gap-2 px-6 py-4 border-t border-surface-200 bg-surface-50">
+                      <button type="button" onClick={() => setShareEmailOpen(false)} disabled={shareEmailSending} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-100 disabled:opacity-50">Cancel</button>
+                      <button type="button" onClick={sendProgressReportEmail} disabled={shareEmailSending || shareEmailToIds.length === 0 || !shareEmailReport} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                        {shareEmailSending ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>}
+                        {shareEmailSending ? 'Sending…' : 'Send email'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {progressReportSubTab === 'creation' && (
+            <>
+          {progressReportsListLoading ? (
+            <p className="text-surface-500">Loading…</p>
+          ) : (
+            <>
+            <div className="flex flex-wrap gap-2 mb-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingProgressReportId(null);
+                  setProgressReportForm({
+                    title: '',
+                    report_date: new Date().toISOString().slice(0, 10),
+                    reporting_status: '',
+                    narrative_updates: '',
+                    phases: [{ name: '', description: '' }],
+                    contractor_status: [{ contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }],
+                    conclusion_text: '',
+                  });
+                }}
+                className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50"
+              >
+                New report
+              </button>
+              <span className="text-sm text-surface-500 self-center">To edit an existing report, go to the Published reports tab and click Edit.</span>
+            </div>
+
+          <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Report title *</label>
+              <input type="text" value={progressReportForm.title} onChange={(e) => setProgressReportForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Ntshovelo Fleet Monitoring Project: Updated Progress Summary Report" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Report date *</label>
+                <input type="date" value={progressReportForm.report_date} onChange={(e) => setProgressReportForm((f) => ({ ...f, report_date: e.target.value }))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Reporting status (e.g. Phase 4 & Phase 5)</label>
+                <input type="text" value={progressReportForm.reporting_status} onChange={(e) => setProgressReportForm((f) => ({ ...f, reporting_status: e.target.value }))} placeholder="Phase 4 (Continuous Monitoring) & Phase 5 (Feedback)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Executive Summary</label>
+              <textarea value={progressReportForm.narrative_updates} onChange={(e) => setProgressReportForm((f) => ({ ...f, narrative_updates: e.target.value }))} rows={4} placeholder="Per-haulier updates, standard procedure notes…" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+
+            <div>
+              <h4 className="text-sm font-semibold text-surface-800 mb-2">Project phases</h4>
+              <p className="text-xs text-surface-500 mb-3">Add phase name and a full description (paragraphs supported).</p>
+              {progressReportForm.phases.map((p, i) => (
+                <div key={i} className="mb-5 p-4 rounded-xl bg-surface-50 border border-surface-200 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-surface-500 uppercase tracking-wider">Phase {i + 1}</label>
+                    {progressReportForm.phases.length > 1 && (
+                      <button type="button" onClick={() => setProgressReportForm((f) => ({ ...f, phases: f.phases.filter((_, j) => j !== i) }))} className="text-red-600 text-sm hover:underline">Remove phase</button>
+                    )}
+                  </div>
+                  <input type="text" value={p.name} onChange={(e) => setProgressReportForm((f) => ({ ...f, phases: f.phases.map((ph, j) => j === i ? { ...ph, name: e.target.value } : ph) }))} placeholder="Phase name (e.g. Phase 4: Continuous Monitoring)" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm font-medium" />
+                  <textarea value={p.description} onChange={(e) => setProgressReportForm((f) => ({ ...f, phases: f.phases.map((ph, j) => j === i ? { ...ph, description: e.target.value } : ph) }))} placeholder="Full description (you can type one or more paragraphs here)…" rows={6} className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm resize-y min-h-[120px]" />
+                </div>
+              ))}
+              <button type="button" onClick={() => setProgressReportForm((f) => ({ ...f, phases: [...f.phases, { name: '', description: '' }] }))} className="text-sm text-brand-600 font-medium">+ Add phase</button>
+            </div>
+
+            <div>
+              <h4 className="text-sm font-semibold text-surface-800 mb-2">Integration status per company (contractor)</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b border-surface-200 bg-surface-50">
+                      <th className="text-left p-2 font-medium">Haulier / Company</th>
+                      <th className="text-left p-2 font-medium">Oper. total</th>
+                      <th className="text-left p-2 font-medium">Integrated 1</th>
+                      <th className="text-left p-2 font-medium">Date 1</th>
+                      <th className="text-left p-2 font-medium">Integrated 2</th>
+                      <th className="text-left p-2 font-medium">Date 2</th>
+                      <th className="text-left p-2 font-medium">% Increase</th>
+                      <th className="text-left p-2 font-medium">Narrative / note</th>
+                      <th className="p-2 w-16"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {progressReportForm.contractor_status.map((c, i) => (
+                      <tr key={i} className="border-b border-surface-100">
+                        <td className="p-2"><input type="text" value={c.contractor_name} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, contractor_name: e.target.value } : cs) }))} placeholder="Company name" className="w-full rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.operational_total} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, operational_total: e.target.value } : cs) }))} placeholder="e.g. 141" className="w-16 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.integrated_count_1} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, integrated_count_1: e.target.value } : cs) }))} placeholder="124" className="w-14 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.integrated_date_1} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, integrated_date_1: e.target.value } : cs) }))} placeholder="Feb 23" className="w-20 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.integrated_count_2} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, integrated_count_2: e.target.value } : cs) }))} placeholder="126" className="w-14 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.integrated_date_2} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, integrated_date_2: e.target.value } : cs) }))} placeholder="Mar 2" className="w-20 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.percent_increase} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, percent_increase: e.target.value } : cs) }))} placeholder="+1.61%" className="w-20 rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2"><input type="text" value={c.narrative} onChange={(e) => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.map((cs, j) => j === i ? { ...cs, narrative: e.target.value } : cs) }))} placeholder="Note" className="min-w-[120px] rounded border px-2 py-1 text-sm" /></td>
+                        <td className="p-2">{progressReportForm.contractor_status.length > 1 ? <button type="button" onClick={() => setProgressReportForm((f) => ({ ...f, contractor_status: f.contractor_status.filter((_, j) => j !== i) }))} className="text-red-600 text-xs">Remove</button> : null}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button type="button" onClick={() => setProgressReportForm((f) => ({ ...f, contractor_status: [...f.contractor_status, { contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }] }))} className="mt-2 text-sm text-brand-600 font-medium">+ Add row</button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Conclusion</label>
+              <textarea value={progressReportForm.conclusion_text} onChange={(e) => setProgressReportForm((f) => ({ ...f, conclusion_text: e.target.value }))} rows={4} placeholder="The project has reached a turning point…" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                disabled={!progressReportForm.title.trim() || progressReportSaving}
+                onClick={() => {
+                  setProgressReportSaving(true);
+                  const payload = {
+                    title: progressReportForm.title.trim(),
+                    report_date: progressReportForm.report_date,
+                    reporting_status: progressReportForm.reporting_status.trim() || null,
+                    narrative_updates: progressReportForm.narrative_updates.trim() || null,
+                    phases: progressReportForm.phases.filter((p) => p.name || p.description).map((p) => ({ name: p.name || '', description: p.description || '' })),
+                    contractor_status: progressReportForm.contractor_status.map((c) => ({
+                      contractor_name: c.contractor_name || '',
+                      operational_total: c.operational_total,
+                      integrated_count_1: c.integrated_count_1,
+                      integrated_date_1: c.integrated_date_1 || null,
+                      integrated_count_2: c.integrated_count_2,
+                      integrated_date_2: c.integrated_date_2 || null,
+                      percent_increase: c.percent_increase,
+                      narrative: c.narrative || null,
+                    })),
+                    conclusion_text: progressReportForm.conclusion_text.trim() || null,
+                  };
+                  (editingProgressReportId ? progressReportsApi.update(editingProgressReportId, payload) : progressReportsApi.create(payload))
+                    .then((res) => {
+                      setEditingProgressReportId(res.report?.id || editingProgressReportId);
+                      return progressReportsApi.list();
+                    })
+                    .then((r) => setProgressReportsList(r.reports || []))
+                    .catch((e) => setError(e?.message || 'Save failed'))
+                    .finally(() => setProgressReportSaving(false));
+                }}
+                className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+              >
+                {progressReportSaving ? 'Saving…' : editingProgressReportId ? 'Update report' : 'Create report'}
+              </button>
+            </div>
+          </div>
+            </>)}
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'action-plan-timelines' && (
+        <div className="space-y-6">
+          <h2 className="text-lg font-semibold text-surface-900">Action plan and Project timelines</h2>
+          <p className="text-sm text-surface-500">Plan how you will execute the project: phases, start and due dates, action descriptions, participants, and status. Rectors can view these under &quot;View Project timelines and action plan&quot;.</p>
+
+          <div className="flex gap-1 border-b border-surface-200">
+            <button
+              type="button"
+              onClick={() => setActionPlanSubTab('creation')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${actionPlanSubTab === 'creation' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}
+            >
+              Create / Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => setActionPlanSubTab('published')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${actionPlanSubTab === 'published' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}
+            >
+              Published plans
+            </button>
+          </div>
+
+          {actionPlanSubTab === 'published' && (
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="text-base font-semibold text-surface-800 mb-4">Published action plans</h3>
+              {actionPlansListLoading ? (
+                <p className="text-surface-500">Loading…</p>
+              ) : actionPlansList.length === 0 ? (
+                <p className="text-surface-500">No action plans yet. Create one in the Create / Edit tab.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b border-surface-200 bg-surface-50">
+                        <th className="text-left p-3 font-medium text-surface-700">Title</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Project name</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Document date</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Document ID</th>
+                        <th className="p-3 font-medium text-surface-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {actionPlansList.map((p) => (
+                        <tr key={p.id} className="border-b border-surface-100 hover:bg-surface-50">
+                          <td className="p-3 text-surface-800">{p.title || 'Action Plan'}</td>
+                          <td className="p-3 text-surface-600">{p.project_name || '—'}</td>
+                          <td className="p-3 text-surface-600">{p.document_date ? formatDate(p.document_date) : '—'}</td>
+                          <td className="p-3 text-surface-600">{p.document_id || '—'}</td>
+                          <td className="p-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openShareActionPlanEmailModal(p)}
+                              className="text-surface-600 hover:text-brand-600 text-sm font-medium"
+                            >
+                              Share via email
+                            </button>
+                            <span className="text-surface-300">|</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActionPlanSubTab('creation');
+                                setEditingActionPlanId(p.id);
+                                actionPlansApi.get(p.id).then((res) => {
+                                  const plan = res.plan || {};
+                                  setActionPlanForm({
+                                    title: plan.title || 'Action Plan',
+                                    project_name: plan.project_name || '',
+                                    document_date: plan.document_date ? plan.document_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+                                    document_id: plan.document_id || '',
+                                    items: Array.isArray(plan.items) && plan.items.length
+                                      ? plan.items.map((it) => ({
+                                          phase: it.phase ?? '',
+                                          start_date: it.start_date ? (typeof it.start_date === 'string' ? it.start_date.slice(0, 10) : '') : '',
+                                          action_description: it.action_description ?? '',
+                                          participants: it.participants ?? '',
+                                          due_date: it.due_date ? (typeof it.due_date === 'string' ? it.due_date.slice(0, 10) : '') : '',
+                                          status: it.status ?? 'not started',
+                                        }))
+                                      : [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
+                                  });
+                                }).catch(() => setError('Failed to load action plan'));
+                              }}
+                              className="text-brand-600 hover:text-brand-800 text-sm font-medium"
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Share action plan via email modal */}
+              {shareActionPlanEmailOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => !shareActionPlanEmailSending && setShareActionPlanEmailOpen(false)} role="dialog" aria-modal="true" aria-labelledby="share-action-plan-email-title">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                    <div className="shrink-0 px-6 py-4 border-b border-surface-200">
+                      <h3 id="share-action-plan-email-title" className="text-lg font-semibold text-surface-900">Share action plan via email</h3>
+                      <p className="text-sm text-surface-500 mt-1">Select recipients and add an optional message. The action plan PDF will be attached.</p>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                      {shareActionPlanEmailError && (
+                        <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm px-3 py-2">{shareActionPlanEmailError}</div>
+                      )}
+                      {!shareActionPlanEmailPlan && (
+                        <p className="text-sm text-surface-500">Loading action plan…</p>
+                      )}
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-2">To (select one or more)</label>
+                        <div className="border border-surface-200 rounded-lg max-h-40 overflow-y-auto p-2 space-y-1.5">
+                          {shareActionPlanEmailRecipients.length === 0 ? (
+                            <p className="text-sm text-surface-500 py-2">Loading users…</p>
+                          ) : (
+                            shareActionPlanEmailRecipients.map((u) => (
+                              <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-surface-50 rounded px-2 py-1.5">
+                                <input type="checkbox" checked={shareActionPlanEmailToIds.includes(u.id)} onChange={(e) => setShareActionPlanEmailToIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id))} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                                <span className="text-sm text-surface-800">{u.full_name || '—'}</span>
+                                <span className="text-xs text-surface-500 truncate">{u.email}</span>
+                              </label>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-2">CC (optional – select users or type emails)</label>
+                        <div className="border border-surface-200 rounded-lg max-h-32 overflow-y-auto p-2 space-y-1.5 mb-2">
+                          {shareActionPlanEmailRecipients.length === 0 ? (
+                            <p className="text-sm text-surface-500 py-2">Loading users…</p>
+                          ) : (
+                            shareActionPlanEmailRecipients.map((u) => (
+                              <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-surface-50 rounded px-2 py-1.5">
+                                <input type="checkbox" checked={shareActionPlanEmailCcIds.includes(u.id)} onChange={(e) => setShareActionPlanEmailCcIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id))} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                                <span className="text-sm text-surface-800">{u.full_name || '—'}</span>
+                                <span className="text-xs text-surface-500 truncate">{u.email}</span>
+                              </label>
+                            ))
+                          )}
+                        </div>
+                        <input type="text" value={shareActionPlanEmailCc} onChange={(e) => setShareActionPlanEmailCc(e.target.value)} placeholder="Or add other emails: email@example.com, another@example.com" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm" />
+                        <p className="text-xs text-surface-500 mt-1">Separate multiple emails with commas or spaces.</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Message (optional)</label>
+                        <textarea value={shareActionPlanEmailMessage} onChange={(e) => setShareActionPlanEmailMessage(e.target.value)} rows={3} placeholder="Add a short note to include in the email…" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm resize-y" />
+                      </div>
+                    </div>
+                    <div className="shrink-0 flex justify-end gap-2 px-6 py-4 border-t border-surface-200 bg-surface-50">
+                      <button type="button" onClick={() => setShareActionPlanEmailOpen(false)} disabled={shareActionPlanEmailSending} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-100 disabled:opacity-50">Cancel</button>
+                      <button type="button" onClick={sendActionPlanEmail} disabled={shareActionPlanEmailSending || shareActionPlanEmailToIds.length === 0 || !shareActionPlanEmailPlan} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                        {shareActionPlanEmailSending ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>}
+                        {shareActionPlanEmailSending ? 'Sending…' : 'Send email'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {actionPlanSubTab === 'creation' && (
+            <>
+              {actionPlansListLoading ? (
+                <p className="text-surface-500">Loading…</p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingActionPlanId(null);
+                        setActionPlanForm({
+                          title: 'Action Plan',
+                          project_name: '',
+                          document_date: new Date().toISOString().slice(0, 10),
+                          document_id: '',
+                          items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
+                        });
+                      }}
+                      className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50"
+                    >
+                      New plan
+                    </button>
+                    <span className="text-sm text-surface-500 self-center">To edit an existing plan, go to Published plans and click Edit.</span>
+                  </div>
+
+                  <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Title *</label>
+                        <input type="text" value={actionPlanForm.title} onChange={(e) => setActionPlanForm((f) => ({ ...f, title: e.target.value }))} placeholder="Action Plan" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Project name *</label>
+                        <input type="text" value={actionPlanForm.project_name} onChange={(e) => setActionPlanForm((f) => ({ ...f, project_name: e.target.value }))} placeholder="e.g. Ntshovelo Colliery Fleet Monitoring Project" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Document date</label>
+                        <input type="date" value={actionPlanForm.document_date} onChange={(e) => setActionPlanForm((f) => ({ ...f, document_date: e.target.value }))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Document ID</label>
+                        <input type="text" value={actionPlanForm.document_id} onChange={(e) => setActionPlanForm((f) => ({ ...f, document_id: e.target.value }))} placeholder="e.g. Doc-ASOP0024" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-semibold text-surface-800 mb-2">Action plan structure</h4>
+                      <p className="text-xs text-surface-500 mb-3">Add phases with start date, action description, participants, due date, and status.</p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-surface-200 bg-surface-50">
+                              <th className="text-left p-2 font-medium text-surface-700">Phase</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Start date</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Action type/description</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Participants</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Due date</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Action status</th>
+                              <th className="p-2 w-16"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {actionPlanForm.items.map((it, i) => (
+                              <tr key={i} className="border-b border-surface-100">
+                                <td className="p-2"><input type="text" value={it.phase} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, phase: e.target.value } : item) }))} placeholder="1" className="w-14 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="date" value={it.start_date} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, start_date: e.target.value } : item) }))} className="rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={it.action_description} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, action_description: e.target.value } : item) }))} placeholder="Work scope discussion; Communication channels…" className="min-w-[180px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={it.participants} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, participants: e.target.value } : item) }))} placeholder="Ntshovelo and Thinkers" className="min-w-[120px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="date" value={it.due_date} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, due_date: e.target.value } : item) }))} className="rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2">
+                                  <select value={it.status} onChange={(e) => setActionPlanForm((f) => ({ ...f, items: f.items.map((item, j) => j === i ? { ...item, status: e.target.value } : item) }))} className="rounded border border-surface-200 px-2 py-1 text-sm">
+                                    <option value="not started">not started</option>
+                                    <option value="in progress">in progress</option>
+                                    <option value="completed">completed</option>
+                                  </select>
+                                </td>
+                                <td className="p-2">{actionPlanForm.items.length > 1 ? <button type="button" onClick={() => setActionPlanForm((f) => ({ ...f, items: f.items.filter((_, j) => j !== i) }))} className="text-red-600 text-xs">Remove</button> : null}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button type="button" onClick={() => setActionPlanForm((f) => ({ ...f, items: [...f.items, { phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }] }))} className="mt-2 text-sm text-brand-600 font-medium">+ Add row</button>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="button"
+                        disabled={!actionPlanForm.title.trim() || !actionPlanForm.project_name.trim() || actionPlanSaving}
+                        onClick={() => {
+                          setActionPlanSaving(true);
+                          const payload = {
+                            title: actionPlanForm.title.trim(),
+                            project_name: actionPlanForm.project_name.trim(),
+                            document_date: actionPlanForm.document_date || new Date().toISOString().slice(0, 10),
+                            document_id: actionPlanForm.document_id.trim() || null,
+                            items: actionPlanForm.items.map((it) => ({
+                              phase: (it.phase || '').toString().trim(),
+                              start_date: it.start_date || null,
+                              action_description: (it.action_description || '').toString().trim(),
+                              participants: (it.participants || '').toString().trim(),
+                              due_date: it.due_date || null,
+                              status: (it.status || 'not started').toString().trim(),
+                            })),
+                          };
+                          (editingActionPlanId ? actionPlansApi.update(editingActionPlanId, payload) : actionPlansApi.create(payload))
+                            .then((res) => {
+                              setEditingActionPlanId(res.plan?.id ?? editingActionPlanId);
+                              return actionPlansApi.list();
+                            })
+                            .then((r) => setActionPlansList(r.plans || []))
+                            .catch((e) => setError(e?.message || 'Save failed'))
+                            .finally(() => setActionPlanSaving(false));
+                        }}
+                        className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                      >
+                        {actionPlanSaving ? 'Saving…' : editingActionPlanId ? 'Update plan' : 'Create plan'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'monthly-performance-reports' && (
+        <div className="space-y-6">
+          <h2 className="text-lg font-semibold text-surface-900">Monthly performance reports</h2>
+          <p className="text-sm text-surface-500">Compose monthly performance reports (e.g. Anthra Performance Report). Include executive summary, key metrics, sections, breakdowns, and fleet performance. Rectors can view them under Monthly Performance reports.</p>
+
+          <div className="flex gap-1 border-b border-surface-200">
+            <button type="button" onClick={() => setMonthlyPerfSubTab('creation')} className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${monthlyPerfSubTab === 'creation' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}>Create / Edit</button>
+            <button type="button" onClick={() => setMonthlyPerfSubTab('published')} className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${monthlyPerfSubTab === 'published' ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-transparent text-surface-600 hover:text-surface-800 hover:bg-surface-50'}`}>Published reports</button>
+          </div>
+
+          {monthlyPerfSubTab === 'published' && (
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="text-base font-semibold text-surface-800 mb-4">Published monthly performance reports</h3>
+              {monthlyPerfListLoading ? <p className="text-surface-500">Loading…</p> : monthlyPerfList.length === 0 ? <p className="text-surface-500">No reports yet. Create one in the Create / Edit tab.</p> : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b border-surface-200 bg-surface-50">
+                        <th className="text-left p-3 font-medium text-surface-700">Title</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Reporting period</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Submitted</th>
+                        <th className="p-3 font-medium text-surface-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyPerfList.map((r) => (
+                        <tr key={r.id} className="border-b border-surface-100 hover:bg-surface-50">
+                          <td className="p-3 text-surface-800">{r.title || 'Monthly Performance Report'}</td>
+                          <td className="p-3 text-surface-600">{r.reporting_period_start && r.reporting_period_end ? `${formatDate(r.reporting_period_start)} – ${formatDate(r.reporting_period_end)}` : '—'}</td>
+                          <td className="p-3 text-surface-600">{r.submitted_date ? formatDate(r.submitted_date) : '—'}</td>
+                          <td className="p-3">
+                            <button type="button" onClick={() => { setMonthlyPerfSubTab('creation'); setEditingMonthlyPerfId(r.id); monthlyPerformanceReportsApi.get(r.id).then((res) => { const rep = res.report || {}; setMonthlyPerfForm({ title: rep.title || '', reporting_period_start: rep.reporting_period_start ? rep.reporting_period_start.slice(0, 10) : '', reporting_period_end: rep.reporting_period_end ? rep.reporting_period_end.slice(0, 10) : '', submitted_date: rep.submitted_date ? rep.submitted_date.slice(0, 10) : new Date().toISOString().slice(0, 10), prepared_by: rep.prepared_by || '', executive_summary: rep.executive_summary || '', key_metrics: Array.isArray(rep.key_metrics) && rep.key_metrics.length ? rep.key_metrics.map((m) => ({ metric: m.metric ?? '', value: m.value ?? '', commentary: m.commentary ?? '' })) : [{ metric: '', value: '', commentary: '' }], sections: normalizeSectionsForForm(rep.sections || []), breakdowns: Array.isArray(rep.breakdowns) && rep.breakdowns.length ? rep.breakdowns.map((b) => ({ date: b.date ?? '', time: b.time ?? '', route: b.route ?? '', truck_reg: b.truck_reg ?? '', description: b.description ?? '', company: b.company ?? '' })) : [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: Array.isArray(rep.fleet_performance) && rep.fleet_performance.length ? rep.fleet_performance.map((f) => ({ haulier: f.haulier ?? '', trips: f.trips ?? '', pct_trips: f.pct_trips ?? '', tonnage: f.tonnage ?? '', pct_tonnage: f.pct_tonnage ?? '', avg_t_per_trip: f.avg_t_per_trip ?? '', trucks_deployed: f.trucks_deployed ?? '' })) : [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }).catch(() => setError('Failed to load report')); }} className="text-brand-600 hover:text-brand-800 text-sm font-medium">Edit</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {monthlyPerfSubTab === 'creation' && (
+            <>
+              {monthlyPerfListLoading ? <p className="text-surface-500">Loading…</p> : (
+                <>
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    <button type="button" onClick={() => { setEditingMonthlyPerfId(null); setMonthlyPerfForm({ title: '', reporting_period_start: '', reporting_period_end: '', submitted_date: new Date().toISOString().slice(0, 10), prepared_by: 'Tihlo (Thinkers Afrika)', executive_summary: '', key_metrics: [{ metric: '', value: '', commentary: '' }], sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }], breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }} className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50">New report</button>
+                    <span className="text-sm text-surface-500 self-center">To edit an existing report, go to Published reports and click Edit.</span>
+                  </div>
+
+                  <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="sm:col-span-2">
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Report title *</label>
+                        <input type="text" value={monthlyPerfForm.title} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Anthra Performance Report" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Reporting period start *</label>
+                        <input type="date" value={monthlyPerfForm.reporting_period_start} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, reporting_period_start: e.target.value }))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Reporting period end *</label>
+                        <input type="date" value={monthlyPerfForm.reporting_period_end} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, reporting_period_end: e.target.value }))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Submitted date *</label>
+                        <input type="date" value={monthlyPerfForm.submitted_date} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, submitted_date: e.target.value }))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-surface-700 mb-1">Prepared by</label>
+                        <input type="text" value={monthlyPerfForm.prepared_by} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, prepared_by: e.target.value }))} placeholder="e.g. Tihlo (Thinkers Afrika)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-surface-700 mb-1">Executive summary</label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        <span className="text-xs text-surface-500 self-center">Format:</span>
+                        <button type="button" onClick={() => insertAtFocusedMonthlyPerfText('- ')} className="px-3 py-1.5 rounded-lg border border-surface-200 text-sm font-medium text-surface-700 hover:bg-surface-50" title="Insert bullet">• Bullet</button>
+                        <button type="button" onClick={() => insertAtFocusedMonthlyPerfText('1. ')} className="px-3 py-1.5 rounded-lg border border-surface-200 text-sm font-medium text-surface-700 hover:bg-surface-50" title="Insert number">1. Number</button>
+                      </div>
+                      <textarea
+                        ref={monthlyPerfExecSummaryRef}
+                        onFocus={(e) => { const t = e.target; setMonthlyPerfCursor({ type: 'executive', start: t.selectionStart, end: t.selectionEnd }); }}
+                        onBlur={(e) => setMonthlyPerfCursor({ type: 'executive', start: e.target.selectionStart, end: e.target.selectionEnd })}
+                        value={monthlyPerfForm.executive_summary}
+                        onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, executive_summary: e.target.value }))}
+                        rows={24}
+                        placeholder={'Comprehensive analysis of operations for the period… Use the Bullet / Number buttons or type "- " for bullets, "1. " for numbered lists.'}
+                        className="w-full min-h-[420px] rounded-lg border border-surface-300 px-3 py-2 text-sm resize-y"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <h4 className="text-sm font-semibold text-surface-800">Key performance metrics</h4>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => navigator.clipboard.readText().then((t) => { const rows = parseTsvFromClipboard(t); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, key_metrics: tsvToKeyMetrics(rows) })); }).catch(() => setError('Paste failed. Allow clipboard access or copy from Excel first.'))} className="text-xs text-brand-600 hover:text-brand-800 font-medium">Paste from Excel</button>
+                          <label className="text-xs text-brand-600 hover:text-brand-800 font-medium cursor-pointer">Import CSV<input type="file" accept=".csv,.txt" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = () => { const rows = parseTsvFromClipboard(r.result); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, key_metrics: tsvToKeyMetrics(rows) })); }; r.readAsText(file); e.target.value = ''; }} /></label>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-surface-200 bg-surface-50">
+                              <th className="text-left p-2 font-medium text-surface-700">Metric</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Value</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Commentary</th>
+                              <th className="p-2 w-16"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthlyPerfForm.key_metrics.map((m, i) => (
+                              <tr key={i} className="border-b border-surface-100">
+                                <td className="p-2"><input type="text" value={m.metric} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, key_metrics: f.key_metrics.map((km, j) => j === i ? { ...km, metric: e.target.value } : km) }))} placeholder="e.g. Total Loads Delivered" className="w-full rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={m.value} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, key_metrics: f.key_metrics.map((km, j) => j === i ? { ...km, value: e.target.value } : km) }))} placeholder="240" className="w-24 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={m.commentary} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, key_metrics: f.key_metrics.map((km, j) => j === i ? { ...km, commentary: e.target.value } : km) }))} placeholder="Commentary" className="min-w-[160px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2">{monthlyPerfForm.key_metrics.length > 1 ? <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, key_metrics: f.key_metrics.filter((_, j) => j !== i) }))} className="text-red-600 text-xs">Remove</button> : null}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, key_metrics: [...f.key_metrics, { metric: '', value: '', commentary: '' }] }))} className="mt-2 text-sm text-brand-600 font-medium">+ Add row</button>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-semibold text-surface-800 mb-2">Additional sections</h4>
+                      <p className="text-xs text-surface-500 mb-2">Sections with subheadings. Each subsection can have text, images (paste or upload), or tables (paste from Excel). Content appears in form and in PDF.</p>
+                      {monthlyPerfForm.sections.map((sec, i) => (
+                        <div key={i} className="mb-6 p-4 rounded-xl bg-surface-50 border border-surface-200 space-y-4">
+                          <div className="flex justify-between items-center">
+                            <label className="text-xs font-medium text-surface-500">Section {i + 1}</label>
+                            {monthlyPerfForm.sections.length > 1 && <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.filter((_, j) => j !== i) }))} className="text-red-600 text-sm">Remove section</button>}
+                          </div>
+                          <input type="text" value={sec.heading} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, heading: e.target.value } : s) }))} placeholder="Section heading" className="w-full rounded-lg border border-surface-200 px-3 py-2 text-sm font-medium" />
+                          {(sec.subsections || []).map((sub, subIdx) => (
+                            <div key={subIdx} className="pl-4 border-l-2 border-brand-200 space-y-3">
+                              <input type="text" value={sub.subheading} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, subheading: e.target.value } : sb) } : s) }))} placeholder="Subheading (optional)" className="w-full rounded-lg border border-surface-200 px-3 py-1.5 text-sm" />
+                              <div
+                                tabIndex={0}
+                                role="button"
+                                onPaste={(e) => {
+                                  const file = e.clipboardData?.files?.[0] || Array.from(e.clipboardData?.items || []).find((item) => item.type.startsWith('image/'))?.getAsFile?.();
+                                  if (file && file.type.startsWith('image/')) {
+                                    e.preventDefault();
+                                    const reader = new FileReader();
+                                    reader.onload = () => setMonthlyPerfForm((f) => ({
+                                      ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []), { type: 'image', base64: (reader.result || '').replace(/^data:[^;]+;base64,/, ''), alt: '' }] } : sb) } : s)
+                                    }));
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                                className="rounded border border-dashed border-surface-300 bg-surface-50/50 px-3 py-2 text-xs text-surface-500 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                              >
+                                Paste image (Ctrl+V) here to add a graph or picture
+                              </div>
+                              {(sub.blocks || []).map((block, blockIdx) => (
+                                <div key={blockIdx} className="rounded-lg border border-surface-200 bg-white p-3">
+                                  {block.type === 'text' && (
+                                    <>
+                                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                        <div className="flex flex-wrap gap-2">
+                                          <button type="button" onClick={() => insertAtFocusedMonthlyPerfText('- ')} className="px-2 py-1 rounded border border-surface-200 text-xs font-medium text-surface-700 hover:bg-surface-50" title="Insert bullet">• Bullet</button>
+                                          <button type="button" onClick={() => insertAtFocusedMonthlyPerfText('1. ')} className="px-2 py-1 rounded border border-surface-200 text-xs font-medium text-surface-700 hover:bg-surface-50" title="Insert number">1. Number</button>
+                                          <span className="text-xs text-surface-500 self-center">Paste image (Ctrl+V) or Excel table here to add below</span>
+                                        </div>
+                                        <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).filter((_, b) => b !== blockIdx) } : sb) } : s) }))} className="text-red-600 text-xs">Remove block</button>
+                                      </div>
+                                      <textarea
+                                        ref={(el) => { monthlyPerfBlockRefs.current[`${i}-${subIdx}-${blockIdx}`] = el; }}
+                                        onFocus={(e) => { const t = e.target; setMonthlyPerfCursor({ type: 'block', sectionIdx: i, subIdx, blockIdx, start: t.selectionStart, end: t.selectionEnd }); }}
+                                        onBlur={(e) => setMonthlyPerfCursor({ type: 'block', sectionIdx: i, subIdx, blockIdx, start: e.target.selectionStart, end: e.target.selectionEnd })}
+                                        value={block.text}
+                                        onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).map((b, bi) => bi === blockIdx ? { ...b, text: e.target.value } : b) } : sb) } : s) }))}
+                                        onPaste={(e) => {
+                                          const pastedText = (e.clipboardData?.getData?.('text/plain') || '').trim();
+                                          if (pastedText) {
+                                            if (pastedText.includes('\t') || (pastedText.includes(',') && pastedText.includes('\n'))) {
+                                              const rows = parseTsvFromClipboard(pastedText);
+                                              if (rows.length > 0) {
+                                                e.preventDefault();
+                                                setMonthlyPerfForm((f) => ({
+                                                  ...f,
+                                                  sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []).slice(0, blockIdx + 1), { type: 'table', rows }, ...(sb.blocks || []).slice(blockIdx + 1)] } : sb) } : s)
+                                                }));
+                                              }
+                                            }
+                                            return;
+                                          }
+                                          const file = e.clipboardData?.files?.[0] || Array.from(e.clipboardData?.items || []).find((item) => item.kind === 'file' && item.type.startsWith('image/'))?.getAsFile?.();
+                                          if (file && file.type.startsWith('image/')) {
+                                            e.preventDefault();
+                                            const reader = new FileReader();
+                                            reader.onload = () => {
+                                              const base64 = (reader.result || '').replace(/^data:[^;]+;base64,/, '');
+                                              setMonthlyPerfForm((f) => ({
+                                                ...f,
+                                                sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []).slice(0, blockIdx + 1), { type: 'image', base64, alt: '' }, ...(sb.blocks || []).slice(blockIdx + 1)] } : sb) } : s)
+                                              }));
+                                            };
+                                            reader.readAsDataURL(file);
+                                          }
+                                        }}
+                                        rows={14}
+                                        placeholder="Type or paste text. Use Bullet/Number for lists. Paste an image or Excel/CSV table to insert a new block below."
+                                        className="w-full min-h-[280px] rounded border border-surface-200 px-2 py-1 text-sm resize-y"
+                                      />
+                                      <p className="text-xs text-surface-500 mt-1">Preview:</p>
+                                      <div className="mt-1 p-2 bg-surface-50 rounded text-sm text-surface-700 whitespace-pre-wrap min-h-[2rem] max-h-32 overflow-y-auto">{block.text || '—'}</div>
+                                    </>
+                                  )}
+                                  {block.type === 'image' && (
+                                    <>
+                                      <div className="flex justify-end"><button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).filter((_, b) => b !== blockIdx) } : sb) } : s) }))} className="text-red-600 text-xs">Remove image</button></div>
+                                      {block.base64 ? <img src={block.base64.startsWith('data:') ? block.base64 : `data:image/png;base64,${block.base64}`} alt={block.alt || ''} className="max-w-full max-h-48 object-contain rounded border border-surface-200" /> : (
+                                        <div className="flex flex-wrap gap-2 items-center">
+                                          <label className="px-3 py-2 rounded-lg border border-surface-200 text-sm font-medium text-surface-700 hover:bg-surface-50 cursor-pointer">Upload image</label>
+                                          <input
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={(ev) => {
+                                              const file = ev.target.files?.[0];
+                                              if (!file) return;
+                                              const reader = new FileReader();
+                                              reader.onload = () => {
+                                                const dataUrl = reader.result;
+                                                const base64 = (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) ? dataUrl.replace(/^data:[^;]+;base64,/, '') : '';
+                                                setMonthlyPerfForm((f) => ({
+                                                  ...f,
+                                                  sections: f.sections.map((s, j) => j === i ? {
+                                                    ...s,
+                                                    subsections: (s.subsections || []).map((sb, k) => k === subIdx ? {
+                                                      ...sb,
+                                                      blocks: (sb.blocks || []).map((b, bi) => bi === blockIdx ? { ...b, base64 } : b),
+                                                    } : sb),
+                                                  } : s),
+                                                }));
+                                              };
+                                              reader.readAsDataURL(file);
+                                              ev.target.value = '';
+                                            }}
+                                          />
+                                          <span className="text-xs text-surface-500">or paste image (Ctrl+V) in the subsection area</span>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                  {block.type === 'table' && (
+                                    <>
+                                      <div className="flex justify-end gap-2">
+                                        <button type="button" onClick={() => navigator.clipboard.readText().then((t) => { const rows = parseTsvFromClipboard(t); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).map((b, bi) => bi === blockIdx ? { ...b, rows } : b) } : sb) } : s) })); }).catch(() => {})} className="text-brand-600 text-xs">Paste from Excel</button>
+                                        <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).filter((_, b) => b !== blockIdx) } : sb) } : s) }))} className="text-red-600 text-xs">Remove table</button>
+                                      </div>
+                                      <div className="overflow-x-auto mt-2 rounded border border-surface-200">
+                                        <table className="w-full text-sm border-collapse">
+                                          <tbody>
+                                            {(block.rows || [['']]).map((row, ri) => (
+                                              <tr key={ri}>
+                                                {((row || ['']).length ? row : ['']).map((cell, ci) => (
+                                                  <td key={ci} className="border border-surface-200 p-1">
+                                                    <input type="text" value={cell} onChange={(e) => setMonthlyPerfForm((f) => ({
+                                                      ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: (sb.blocks || []).map((b, bi) => bi === blockIdx ? { ...b, rows: (b.rows || []).map((r, rj) => rj === ri ? ((Array.isArray(r) && r.length ? r : ['']).map((c, cj) => cj === ci ? e.target.value : c)) : r) } : b) } : sb) } : s)
+                                                    }))} className="w-full min-w-[60px] rounded px-1 py-0.5 text-sm" />
+                                                  </td>
+                                                ))}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              ))}
+                              <div className="flex flex-wrap gap-2">
+                                <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []), { type: 'text', text: '' }] } : sb) } : s) }))} className="text-xs text-brand-600 font-medium">+ Text</button>
+                                <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []), { type: 'image', base64: '', alt: '' }] } : sb) } : s) }))} className="text-xs text-brand-600 font-medium">+ Image</button>
+                                <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: (s.subsections || []).map((sb, k) => k === subIdx ? { ...sb, blocks: [...(sb.blocks || []), { type: 'table', rows: [['']] }] } : sb) } : s) }))} className="text-xs text-brand-600 font-medium">+ Table (paste from Excel)</button>
+                              </div>
+                            </div>
+                          ))}
+                              <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: f.sections.map((s, j) => j === i ? { ...s, subsections: [...(s.subsections || []), { subheading: '', blocks: [{ type: 'text', text: '' }] }] } : s) }))} className="text-sm text-brand-600 font-medium">+ Add subsection</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, sections: [...f.sections, { heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }] }))} className="text-sm text-brand-600 font-medium">+ Add section</button>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <h4 className="text-sm font-semibold text-surface-800">Breakdowns (incidents)</h4>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => navigator.clipboard.readText().then((t) => { const rows = parseTsvFromClipboard(t); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, breakdowns: tsvToBreakdowns(rows) })); }).catch(() => setError('Paste failed. Allow clipboard access or copy from Excel first.'))} className="text-xs text-brand-600 hover:text-brand-800 font-medium">Paste from Excel</button>
+                          <label className="text-xs text-brand-600 hover:text-brand-800 font-medium cursor-pointer">Import CSV<input type="file" accept=".csv,.txt" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = () => { const rows = parseTsvFromClipboard(r.result); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, breakdowns: tsvToBreakdowns(rows) })); }; r.readAsText(file); e.target.value = ''; }} /></label>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-surface-200 bg-surface-50">
+                              <th className="text-left p-2 font-medium text-surface-700">Date</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Time</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Route</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Truck reg</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Description</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Company</th>
+                              <th className="p-2 w-16"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthlyPerfForm.breakdowns.map((b, i) => (
+                              <tr key={i} className="border-b border-surface-100">
+                                <td className="p-2"><input type="date" value={b.date} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, date: e.target.value } : br) }))} className="rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={b.time} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, time: e.target.value } : br) }))} placeholder="15:45" className="w-20 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={b.route} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, route: e.target.value } : br) }))} placeholder="Route" className="min-w-[100px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={b.truck_reg} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, truck_reg: e.target.value } : br) }))} placeholder="Reg" className="w-24 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={b.description} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, description: e.target.value } : br) }))} placeholder="Description" className="min-w-[120px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={b.company} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.map((br, j) => j === i ? { ...br, company: e.target.value } : br) }))} placeholder="Company" className="w-28 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2">{monthlyPerfForm.breakdowns.length > 1 ? <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, breakdowns: f.breakdowns.filter((_, j) => j !== i) }))} className="text-red-600 text-xs">Remove</button> : null}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, breakdowns: [...f.breakdowns, { date: '', time: '', route: '', truck_reg: '', description: '', company: '' }] }))} className="mt-2 text-sm text-brand-600 font-medium">+ Add row</button>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <h4 className="text-sm font-semibold text-surface-800">Fleet performance by haulier</h4>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => navigator.clipboard.readText().then((t) => { const rows = parseTsvFromClipboard(t); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, fleet_performance: tsvToFleetPerformance(rows) })); }).catch(() => setError('Paste failed. Allow clipboard access or copy from Excel first.'))} className="text-xs text-brand-600 hover:text-brand-800 font-medium">Paste from Excel</button>
+                          <label className="text-xs text-brand-600 hover:text-brand-800 font-medium cursor-pointer">Import CSV<input type="file" accept=".csv,.txt" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = () => { const rows = parseTsvFromClipboard(r.result); if (rows.length) setMonthlyPerfForm((f) => ({ ...f, fleet_performance: tsvToFleetPerformance(rows) })); }; r.readAsText(file); e.target.value = ''; }} /></label>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-surface-200 bg-surface-50">
+                              <th className="text-left p-2 font-medium text-surface-700">Haulier</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Trips</th>
+                              <th className="text-left p-2 font-medium text-surface-700">% Trips</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Tonnage</th>
+                              <th className="text-left p-2 font-medium text-surface-700">% Tonnage</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Avg t/Trip</th>
+                              <th className="text-left p-2 font-medium text-surface-700">Trucks</th>
+                              <th className="p-2 w-16"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthlyPerfForm.fleet_performance.map((fp, i) => (
+                              <tr key={i} className="border-b border-surface-100">
+                                <td className="p-2"><input type="text" value={fp.haulier} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, haulier: e.target.value } : x) }))} placeholder="Haulier" className="min-w-[100px] rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.trips} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, trips: e.target.value } : x) }))} className="w-16 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.pct_trips} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, pct_trips: e.target.value } : x) }))} placeholder="%" className="w-16 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.tonnage} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, tonnage: e.target.value } : x) }))} className="w-20 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.pct_tonnage} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, pct_tonnage: e.target.value } : x) }))} placeholder="%" className="w-16 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.avg_t_per_trip} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, avg_t_per_trip: e.target.value } : x) }))} placeholder="t" className="w-16 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2"><input type="text" value={fp.trucks_deployed} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.map((x, j) => j === i ? { ...x, trucks_deployed: e.target.value } : x) }))} className="w-16 rounded border border-surface-200 px-2 py-1 text-sm" /></td>
+                                <td className="p-2">{monthlyPerfForm.fleet_performance.length > 1 ? <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: f.fleet_performance.filter((_, j) => j !== i) }))} className="text-red-600 text-xs">Remove</button> : null}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button type="button" onClick={() => setMonthlyPerfForm((f) => ({ ...f, fleet_performance: [...f.fleet_performance, { haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }] }))} className="mt-2 text-sm text-brand-600 font-medium">+ Add row</button>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="button"
+                        disabled={!monthlyPerfForm.title.trim() || !monthlyPerfForm.reporting_period_start || !monthlyPerfForm.reporting_period_end || !monthlyPerfForm.submitted_date || monthlyPerfSaving}
+                        onClick={() => {
+                          setMonthlyPerfSaving(true);
+                          const payload = {
+                            title: monthlyPerfForm.title.trim(),
+                            reporting_period_start: monthlyPerfForm.reporting_period_start,
+                            reporting_period_end: monthlyPerfForm.reporting_period_end,
+                            submitted_date: monthlyPerfForm.submitted_date,
+                            prepared_by: monthlyPerfForm.prepared_by.trim() || null,
+                            executive_summary: monthlyPerfForm.executive_summary.trim() || null,
+                            key_metrics: monthlyPerfForm.key_metrics.map((m) => ({ metric: (m.metric || '').toString().trim(), value: (m.value || '').toString().trim(), commentary: (m.commentary || '').toString().trim() })),
+                            sections: serializeSectionsForApi(monthlyPerfForm.sections),
+                            breakdowns: monthlyPerfForm.breakdowns.map((b) => ({ date: b.date || null, time: (b.time || '').toString().trim(), route: (b.route || '').toString().trim(), truck_reg: (b.truck_reg || '').toString().trim(), description: (b.description || '').toString().trim(), company: (b.company || '').toString().trim() })),
+                            fleet_performance: monthlyPerfForm.fleet_performance.map((f) => ({ haulier: (f.haulier || '').toString().trim(), trips: (f.trips || '').toString().trim(), pct_trips: (f.pct_trips || '').toString().trim(), tonnage: (f.tonnage || '').toString().trim(), pct_tonnage: (f.pct_tonnage || '').toString().trim(), avg_t_per_trip: (f.avg_t_per_trip || '').toString().trim(), trucks_deployed: (f.trucks_deployed || '').toString().trim() })),
+                          };
+                          (editingMonthlyPerfId ? monthlyPerformanceReportsApi.update(editingMonthlyPerfId, payload) : monthlyPerformanceReportsApi.create(payload))
+                            .then((res) => { setEditingMonthlyPerfId(res.report?.id ?? editingMonthlyPerfId); return monthlyPerformanceReportsApi.list(); })
+                            .then((r) => setMonthlyPerfList(r.reports || []))
+                            .catch((e) => setError(e?.message || 'Save failed'))
+                            .finally(() => setMonthlyPerfSaving(false));
+                        }}
+                        className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                      >
+                        {monthlyPerfSaving ? 'Saving…' : editingMonthlyPerfId ? 'Update report' : 'Create report'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
         </div>

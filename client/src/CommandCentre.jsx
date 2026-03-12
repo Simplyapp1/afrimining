@@ -1000,10 +1000,16 @@ function TabBreakdowns() {
                   <div><p className="text-xs font-medium text-surface-400 uppercase tracking-wider">Description</p><p className="text-surface-700 text-sm mt-0.5 whitespace-pre-wrap">{selectedBreakdown.description || '—'}</p></div>
                   <div><p className="text-xs font-medium text-surface-400 uppercase tracking-wider">Actions taken</p><p className="text-surface-700 text-sm mt-0.5 whitespace-pre-wrap">{selectedBreakdown.actions_taken || '—'}</p></div>
 
-                  {selectedBreakdown.rector_was_notified === false && (
+                  {(selectedBreakdown.rector_was_notified === false || !selectedBreakdown.route_id) && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 space-y-2">
-                      <p className="text-sm font-medium text-amber-800">The rector was not notified</p>
-                      <p className="text-xs text-amber-700">Would you like to notify the rector? Select the correct rector below and send them the same breakdown report by email.</p>
+                      <p className="text-sm font-medium text-amber-800">
+                        {selectedBreakdown.route_id ? 'The rector was not notified' : 'No route linked to this breakdown'}
+                      </p>
+                      <p className="text-xs text-amber-700">
+                        {selectedBreakdown.route_id
+                          ? 'Only rectors for this route are notified when reporting or resolving. Would you like to notify the rector? Select the correct rector below and send them the breakdown report by email.'
+                          : 'Rectors are only notified when a breakdown is linked to a route. Select the relevant rector(s) below to send them the breakdown report by email.'}
+                      </p>
                       <button type="button" onClick={openNotifyRectorModal} className="mt-1 px-3 py-2 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700">Notify rector</button>
                     </div>
                   )}
@@ -1059,7 +1065,7 @@ function TabBreakdowns() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setResolveModal(null)}>
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-semibold text-surface-900 mb-2">Resolve breakdown</h3>
-            <p className="text-sm text-surface-600 mb-3">{breakdownRef(resolveModal.breakdown?.id)} – {resolveModal.breakdown?.title || 'Incident'}. Resolution notes are required. Rector, driver and contractor will be notified by email.</p>
+            <p className="text-sm text-surface-600 mb-3">{breakdownRef(resolveModal.breakdown?.id)} – {resolveModal.breakdown?.title || 'Incident'}. Resolution notes are required. Only rectors for this breakdown’s route (if any), plus driver and contractor, will be notified by email. If no route is linked, use “Notify rector” after saving to select who to notify.</p>
             <label className="block text-sm font-medium text-surface-700 mb-1">Resolution notes *</label>
             <textarea value={resolveModal.resolutionNote} onChange={(e) => setResolveModal((m) => ({ ...m, resolutionNote: e.target.value }))} placeholder="Enter resolution details…" rows={4} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             <div className="flex gap-2 mt-4">

@@ -468,6 +468,38 @@ export const commandCentre = {
   rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
 };
 
+export const progressReports = {
+  list: () => request('/progress-reports'),
+  get: (id) => request(`/progress-reports/${id}`),
+  /** Users in same tenant for email recipient selection (id, full_name, email) */
+  recipients: () => request('/progress-reports/users'),
+  /** Send report by email. body: { to_user_ids: [], cc_emails: [], message?: string, pdf_base64, pdf_filename } */
+  sendEmail: (id, body) => request(`/progress-reports/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+  create: (body) => request('/progress-reports', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => request(`/progress-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id) => request(`/progress-reports/${id}`, { method: 'DELETE' }),
+};
+
+export const actionPlans = {
+  list: () => request('/action-plans'),
+  get: (id) => request(`/action-plans/${id}`),
+  /** Users in same tenant for email recipient selection (id, full_name, email) */
+  recipients: () => request('/action-plans/users'),
+  /** Send plan by email. body: { to_user_ids: [], cc_emails: [], message?: string, pdf_base64, pdf_filename } */
+  sendEmail: (id, body) => request(`/action-plans/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+  create: (body) => request('/action-plans', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => request(`/action-plans/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id) => request(`/action-plans/${id}`, { method: 'DELETE' }),
+};
+
+export const monthlyPerformanceReports = {
+  list: () => request('/monthly-performance-reports'),
+  get: (id) => request(`/monthly-performance-reports/${id}`),
+  create: (body) => request('/monthly-performance-reports', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => request(`/monthly-performance-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id) => request(`/monthly-performance-reports/${id}`, { method: 'DELETE' }),
+};
+
 export const tasks = {
   list: (params = {}) => {
     const q = new URLSearchParams(params).toString();

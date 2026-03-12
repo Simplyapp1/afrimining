@@ -182,7 +182,8 @@ export async function getCommandCentreAndRectorEmailsForRoute(query, routeId) {
     const factorsResult = await query(
       `SELECT DISTINCT u.email FROM access_route_factors f
        INNER JOIN users u ON u.id = f.user_id
-       WHERE f.route_id = @routeId AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+       WHERE f.route_id = @routeId AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+      { routeId }
     );
     for (const row of factorsResult?.recordset ?? []) {
       const e = getRowEmail(row);

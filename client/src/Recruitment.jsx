@@ -380,6 +380,8 @@ function TabCvLibrary({ setError }) {
   const [uploading, setUploading] = useState(false);
   const [viewingCv, setViewingCv] = useState(null);
   const [viewLoading, setViewLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const loadFolders = () => recruitmentApi.folders.list().then((r) => setFolders(r.folders || []));
   const loadCvs = () => recruitmentApi.cvs.list(selectedFolderId || undefined).then((r) => setCvs(r.cvs || []));
@@ -411,8 +413,15 @@ function TabCvLibrary({ setError }) {
     setViewingCv(null);
     setViewLoading(true);
     fetch(recruitmentApi.cvs.downloadUrl(cv.id), { credentials: 'include' })
-      .then((res) => {
-        if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not load CV');
+      .then(async (res) => {
+        if (!res.ok) {
+          let msg = res.status === 401 ? 'Please sign in again' : 'Could not load CV';
+          try {
+            const data = await res.json();
+            if (data?.error) msg = data.hint ? `${data.error}. ${data.hint}` : data.error;
+          } catch (_) {}
+          throw new Error(msg);
+        }
         return res.blob();
       })
       .then((blob) => {
@@ -431,6 +440,34 @@ function TabCvLibrary({ setError }) {
   const deleteCv = (id) => {
     if (!window.confirm('Delete this CV?')) return;
     recruitmentApi.cvs.delete(id).then(loadCvs).catch((e) => setError(e?.message));
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selectedIds.size === cvs.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(cvs.map((c) => c.id)));
+  };
+
+  const bulkDelete = () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.size} selected CV(s)?`)) return;
+    setBulkDeleting(true);
+    recruitmentApi.cvs.bulkDelete([...selectedIds])
+      .then((r) => {
+        setSelectedIds(new Set());
+        loadCvs();
+        if (r?.errors?.length) setError(`Deleted ${r.deleted?.length ?? 0}; some failed: ${r.errors.map((e) => e.message).join(', ')}`);
+      })
+      .catch((e) => setError(e?.message))
+      .finally(() => setBulkDeleting(false));
   };
 
   return (
@@ -456,11 +493,31 @@ function TabCvLibrary({ setError }) {
           ))}
         </div>
         <div className="flex-1 rounded-xl border border-surface-200 bg-white p-4">
-          <p className="text-sm text-surface-600 mb-2">CVs ({cvs.length})</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <p className="text-sm text-surface-600">CVs ({cvs.length})</p>
+            <div className="flex items-center gap-2">
+              {cvs.length > 0 && (
+                <>
+                  <label className="inline-flex items-center gap-1.5 text-sm text-surface-600 cursor-pointer">
+                    <input type="checkbox" checked={selectedIds.size === cvs.length && cvs.length > 0} onChange={selectAll} className="rounded border-surface-300" />
+                    Select all
+                  </label>
+                  {selectedIds.size > 0 && (
+                    <button type="button" onClick={bulkDelete} disabled={bulkDeleting} className="px-3 py-1.5 rounded-lg border border-red-200 text-red-700 text-sm font-medium hover:bg-red-50 disabled:opacity-50">
+                      {bulkDeleting ? 'Deleting…' : `Delete selected (${selectedIds.size})`}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
           <ul className="space-y-2">
             {cvs.map((cv) => (
-              <li key={cv.id} className="flex justify-between items-center gap-2 p-2 rounded border border-surface-100">
-                <span className="text-sm text-surface-800 truncate min-w-0 flex-1" title={cv.file_name}>{cv.file_name}</span>
+              <li key={cv.id} className={`flex justify-between items-center gap-2 p-2 rounded border ${selectedIds.has(cv.id) ? 'border-brand-300 bg-brand-50' : 'border-surface-100'}`}>
+                <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                  <input type="checkbox" checked={selectedIds.has(cv.id)} onChange={() => toggleSelect(cv.id)} className="rounded border-surface-300 shrink-0" />
+                  <span className="text-sm text-surface-800 truncate" title={cv.file_name}>{cv.file_name}</span>
+                </label>
                 <span className="text-xs text-surface-500 shrink-0">{cv.applicant_name || cv.applicant_email || '—'}</span>
                 <div className="flex gap-1 shrink-0">
                   <button type="button" onClick={() => viewCv(cv)} className="px-2 py-1 rounded border border-brand-300 text-brand-700 text-xs font-medium hover:bg-brand-50">View</button>
@@ -891,8 +948,15 @@ function TabPanel({ vacancies, setError }) {
     setViewingCv(null);
     setViewLoading(true);
     fetch(recruitmentApi.cvs.downloadUrl(cvId), { credentials: 'include' })
-      .then((res) => {
-        if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not load CV');
+      .then(async (res) => {
+        if (!res.ok) {
+          let msg = res.status === 401 ? 'Please sign in again' : 'Could not load CV';
+          try {
+            const data = await res.json();
+            if (data?.error) msg = data.hint ? `${data.error}. ${data.hint}` : data.error;
+          } catch (_) {}
+          throw new Error(msg);
+        }
         return res.blob();
       })
       .then((blob) => {

@@ -1273,7 +1273,20 @@ router.post('/breakdowns/:id/notify-rector', async (req, res, next) => {
 
 const BREAKDOWN_ATTACHMENT_TYPES = ['loading_slip', 'seal_1', 'seal_2', 'picture_problem', 'offloading_slip'];
 const BREAKDOWN_ATTACHMENT_COL = { loading_slip: 'loading_slip_path', seal_1: 'seal_1_path', seal_2: 'seal_2_path', picture_problem: 'picture_problem_path', offloading_slip: 'offloading_slip_path' };
-/** GET breakdown attachment file (for PDF generation) */
+
+function getBreakdownAttachmentPath(row, type) {
+  if (!row || !BREAKDOWN_ATTACHMENT_COL[type]) return null;
+  const col = BREAKDOWN_ATTACHMENT_COL[type];
+  let val = row[col];
+  if (val != null && val !== '') return val;
+  const colLower = col.toLowerCase();
+  for (const [k, v] of Object.entries(row)) {
+    if (k && k.toLowerCase() === colLower && v != null && v !== '') return v;
+  }
+  return null;
+}
+
+/** GET breakdown attachment file (view in browser / PDF generation). Works for open and resolved breakdowns. */
 router.get('/breakdowns/:id/attachments/:type', async (req, res, next) => {
   try {
     const { id, type } = req.params;
@@ -1284,10 +1297,11 @@ router.get('/breakdowns/:id/attachments/:type', async (req, res, next) => {
     );
     const row = result.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-    const filePath = row[BREAKDOWN_ATTACHMENT_COL[type]];
-    if (!filePath) return res.status(404).json({ error: 'Attachment not found' });
-    const fullPath = path.join(process.cwd(), 'uploads', filePath);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    const filePath = getBreakdownAttachmentPath(row, type);
+    if (!filePath || typeof filePath !== 'string') return res.status(404).json({ error: 'Attachment not found' });
+    const relativePath = String(filePath).replace(/^[/\\]+/, '').replace(/\\/g, path.sep);
+    const fullPath = path.join(process.cwd(), 'uploads', relativePath);
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on server', code: 'FILE_NOT_ON_SERVER' });
     res.sendFile(fullPath, { headers: { 'Content-Disposition': 'inline' } });
   } catch (err) {
     next(err);

@@ -389,9 +389,17 @@ router.get('/cvs/:id/download', async (req, res, next) => {
     const { id } = req.params;
     const result = await query(`SELECT file_name, file_path FROM recruitment_cvs WHERE id = @id`, { id });
     const row = result.recordset?.[0];
-    if (!row) return res.status(404).json({ error: 'CV not found' });
-    const fullPath = path.join(process.cwd(), 'uploads', (row.file_path || '').replace(/^\//, ''));
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on server' });
+    if (!row) return res.status(404).json({ error: 'CV not found', code: 'CV_NOT_FOUND' });
+    const relativePath = (row.file_path || '').replace(/^\//, '').replace(/\\/g, path.sep);
+    if (!relativePath.trim()) return res.status(404).json({ error: 'CV file path is missing', code: 'FILE_NOT_ON_SERVER' });
+    const fullPath = path.join(process.cwd(), 'uploads', relativePath);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({
+        error: 'File not found on server',
+        code: 'FILE_NOT_ON_SERVER',
+        hint: 'The CV record exists but the file is missing on this server. Ensure the uploads directory is persistent in production, or re-upload the CV.',
+      });
+    }
     res.download(fullPath, row.file_name || 'cv.pdf');
   } catch (err) {
     next(err);
@@ -409,6 +417,34 @@ router.delete('/cvs/:id', async (req, res, next) => {
     }
     await query(`DELETE FROM recruitment_cvs WHERE id = @id`, { id });
     res.json({ deleted: id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /cvs/bulk-delete — delete multiple CVs by id. Body: { ids: string[] } */
+router.post('/cvs/bulk-delete', async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id) => id != null && String(id).trim()) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'ids array is required and must not be empty' });
+    const deleted = [];
+    const errors = [];
+    for (const id of ids) {
+      try {
+        const result = await query(`SELECT file_path FROM recruitment_cvs WHERE id = @id`, { id });
+        const row = result.recordset?.[0];
+        if (row?.file_path) {
+          const relativePath = (row.file_path || '').replace(/^\//, '').replace(/\\/g, path.sep);
+          const fullPath = path.join(process.cwd(), 'uploads', relativePath);
+          if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+        }
+        await query(`DELETE FROM recruitment_cvs WHERE id = @id`, { id });
+        deleted.push(id);
+      } catch (err) {
+        errors.push({ id, message: err?.message || 'Failed to delete' });
+      }
+    }
+    res.json({ deleted, errors: errors.length ? errors : undefined });
   } catch (err) {
     next(err);
   }

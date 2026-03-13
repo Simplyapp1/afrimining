@@ -529,6 +529,7 @@ export const recruitment = {
     },
     downloadUrl: (id) => `${API}/recruitment/cvs/${id}/download`,
     delete: (id) => rec(`/cvs/${id}`, { method: 'DELETE' }),
+    bulkDelete: (ids) => rec('/cvs/bulk-delete', { method: 'POST', body: { ids } }),
   },
   applicants: {
     list: (vacancyIdOrParams) => {

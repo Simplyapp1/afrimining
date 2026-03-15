@@ -2,7 +2,7 @@ import { Router } from 'express';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess, requireSuperAdmin } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
@@ -38,9 +38,10 @@ function dateStringForFilter(val) {
 
 /** Recruitment tab IDs (must match client TABS) */
 export const RECRUITMENT_TAB_IDS = [
-  'dashboard', 'recruit-registration', 'cv-library', 'screening', 'interview', 'panel', 'results', 'appointments', 'panel-members', 'access',
+  'dashboard', 'recruit-registration', 'cv-library', 'applicant-invitation', 'screening', 'interview', 'panel', 'results', 'appointments', 'panel-members', 'access',
 ];
 const uploadsDir = path.join(process.cwd(), 'uploads', 'recruitment', 'cvs');
+const externalUploadsDir = path.join(process.cwd(), 'uploads', 'recruitment', 'external');
 const cvUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -55,6 +56,26 @@ const cvUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
 }).single('file');
 
+const externalApplyUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      if (!fs.existsSync(externalUploadsDir)) fs.mkdirSync(externalUploadsDir, { recursive: true });
+      cb(null, externalUploadsDir);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '').replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 15 * 1024 * 1024 },
+}).fields([
+  { name: 'cv', maxCount: 1 },
+  { name: 'cover_letter', maxCount: 1 },
+  { name: 'qualifications', maxCount: 1 },
+  { name: 'id_document', maxCount: 1 },
+  { name: 'academic_record', maxCount: 1 },
+]);
+
 function getRow(row, ...keys) {
   if (!row) return undefined;
   for (const k of keys) if (row[k] !== undefined && row[k] !== null) return row[k];
@@ -62,6 +83,86 @@ function getRow(row, ...keys) {
   const entry = Object.entries(row).find(([key]) => key && String(key).toLowerCase() === lower);
   return entry ? entry[1] : undefined;
 }
+
+// --- Public apply routes (no auth): external applicants use link with token ---
+router.get('/apply/:token', async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const result = await query(
+      `SELECT i.id AS invite_id, i.vacancy_id, i.token, i.expires_at, v.id AS v_id, v.title AS vacancy_title, v.role_title, v.description, v.requirements
+       FROM recruitment_applicant_invites i
+       JOIN recruitment_vacancies v ON v.id = i.vacancy_id
+       WHERE i.token = @token`,
+      { token: (token || '').toString().trim() }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Invalid or expired application link' });
+    const expiresAt = row.expires_at ? new Date(row.expires_at).getTime() : null;
+    if (expiresAt != null && Date.now() > expiresAt) return res.status(404).json({ error: 'This application link has expired' });
+    res.json({
+      invite: { id: row.invite_id, vacancy_id: row.vacancy_id, token: row.token },
+      vacancy: { id: row.v_id, title: row.vacancy_title, role_title: row.role_title, description: row.description, requirements: row.requirements },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/apply/:token', externalApplyUpload, async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const result = await query(
+      `SELECT id, vacancy_id FROM recruitment_applicant_invites WHERE token = @token`,
+      { token: (token || '').toString().trim() }
+    );
+    const invite = result.recordset?.[0];
+    if (!invite) return res.status(404).json({ error: 'Invalid or expired application link' });
+    const expiresAtResult = await query(`SELECT expires_at FROM recruitment_applicant_invites WHERE id = @id`, { id: invite.id });
+    const exp = expiresAtResult.recordset?.[0]?.expires_at;
+    if (exp && new Date(exp).getTime() < Date.now()) return res.status(404).json({ error: 'This application link has expired' });
+
+    const body = req.body || {};
+    const name = (body.name || '').toString().trim();
+    const email = (body.email || '').toString().trim();
+    if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
+
+    const files = req.files || {};
+    const rel = (p) => (p ? path.relative(path.join(process.cwd(), 'uploads'), p).replace(/\\/g, '/') : null);
+    const cvPath = files.cv?.[0]?.path ? rel(files.cv[0].path) : null;
+    const coverLetterPath = files.cover_letter?.[0]?.path ? rel(files.cover_letter[0].path) : null;
+    const qualificationsPath = files.qualifications?.[0]?.path ? rel(files.qualifications[0].path) : null;
+    const idDocumentPath = files.id_document?.[0]?.path ? rel(files.id_document[0].path) : null;
+    const academicRecordPath = files.academic_record?.[0]?.path ? rel(files.academic_record[0].path) : null;
+
+    const id = randomUUID();
+    await query(
+      `INSERT INTO recruitment_external_applications (id, invite_id, vacancy_id, name, email, phone, id_number, address, cv_file_path, cover_letter_path, qualifications_path, id_document_path, academic_record_path, status)
+       VALUES (@id, @invite_id, @vacancy_id, @name, @email, @phone, @id_number, @address, @cv_file_path, @cover_letter_path, @qualifications_path, @id_document_path, @academic_record_path, 'submitted')`,
+      {
+        id,
+        invite_id: invite.id,
+        vacancy_id: invite.vacancy_id,
+        name,
+        email,
+        phone: (body.phone || '').toString().trim() || null,
+        id_number: (body.id_number || '').toString().trim() || null,
+        address: (body.address || '').toString().trim() || null,
+        cv_file_path: cvPath,
+        cover_letter_path: coverLetterPath,
+        qualifications_path: qualificationsPath,
+        id_document_path: idDocumentPath,
+        academic_record_path: academicRecordPath,
+      }
+    );
+    const row = await query(
+      `SELECT e.id, e.name, e.email, e.status, e.created_at, v.title AS vacancy_title FROM recruitment_external_applications e LEFT JOIN recruitment_vacancies v ON v.id = e.vacancy_id WHERE e.id = @id`,
+      { id }
+    );
+    res.status(201).json({ application: row.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.use(requireAuth);
 router.use(loadUser);
@@ -72,8 +173,13 @@ router.get('/my-tabs', async (req, res, next) => {
   try {
     if (req.user?.role === 'super_admin') return res.json({ tabs: RECRUITMENT_TAB_IDS });
     const result = await query(`SELECT tab_id FROM recruitment_tab_grants WHERE user_id = @userId`, { userId: req.user.id });
-    const tabs = (result.recordset || []).map((r) => getRow(r, 'tab_id')).filter((id) => RECRUITMENT_TAB_IDS.includes(id));
-    res.json({ tabs: tabs.length > 0 ? tabs : RECRUITMENT_TAB_IDS });
+    let tabs = (result.recordset || []).map((r) => getRow(r, 'tab_id')).filter((id) => RECRUITMENT_TAB_IDS.includes(id));
+    if (tabs.length === 0) tabs = [...RECRUITMENT_TAB_IDS];
+    // Ensure 'applicant-invitation' is visible to everyone with recruitment access (new tab may not be in DB yet)
+    if (!tabs.includes('applicant-invitation') && RECRUITMENT_TAB_IDS.includes('applicant-invitation')) {
+      tabs = [...tabs, 'applicant-invitation'].sort((a, b) => RECRUITMENT_TAB_IDS.indexOf(a) - RECRUITMENT_TAB_IDS.indexOf(b));
+    }
+    res.json({ tabs });
   } catch (err) {
     next(err);
   }
@@ -926,6 +1032,189 @@ router.post('/appointments/:id/send-regret', async (req, res, next) => {
     }
     const updated = await query(`SELECT o.*, a.name AS applicant_name, a.email AS applicant_email, v.title AS vacancy_title FROM recruitment_appointments o LEFT JOIN recruitment_applicants a ON a.id = o.applicant_id LEFT JOIN recruitment_vacancies v ON v.id = o.vacancy_id WHERE o.id = @id`, { id });
     res.json({ appointment: updated.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Applicant invites (create/copy link for external job application) ---
+router.get('/invites', async (req, res, next) => {
+  try {
+    const { vacancy_id } = req.query || {};
+    let sql = `SELECT i.id, i.vacancy_id, i.token, i.label, i.created_at, i.expires_at, v.title AS vacancy_title
+      FROM recruitment_applicant_invites i
+      LEFT JOIN recruitment_vacancies v ON v.id = i.vacancy_id
+      WHERE 1=1`;
+    const params = {};
+    if (vacancy_id) { sql += ` AND i.vacancy_id = @vacancy_id`; params.vacancy_id = vacancy_id; }
+    sql += ` ORDER BY i.created_at DESC`;
+    const result = await query(sql, params);
+    res.json({ invites: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/invites', async (req, res, next) => {
+  try {
+    const { vacancy_id, label } = req.body || {};
+    if (!vacancy_id) return res.status(400).json({ error: 'vacancy_id is required' });
+    const token = randomBytes(24).toString('hex');
+    const id = randomUUID();
+    await query(
+      `INSERT INTO recruitment_applicant_invites (id, vacancy_id, token, label, created_by_user_id) VALUES (@id, @vacancy_id, @token, @label, @created_by)`,
+      { id, vacancy_id, token, label: (label || '').toString().trim() || null, created_by: req.user?.id || null }
+    );
+    const row = await query(
+      `SELECT i.id, i.vacancy_id, i.token, i.label, i.created_at, v.title AS vacancy_title FROM recruitment_applicant_invites i LEFT JOIN recruitment_vacancies v ON v.id = i.vacancy_id WHERE i.id = @id`,
+      { id }
+    );
+    res.status(201).json({ invite: row.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- External applications (list, get, update, AI score, accept to screening) ---
+router.get('/external-applications', async (req, res, next) => {
+  try {
+    const { vacancy_id, status } = req.query || {};
+    let sql = `SELECT e.id, e.invite_id, e.vacancy_id, e.name, e.email, e.phone, e.status, e.reviewer_score, e.reviewer_notes, e.ai_score, e.ai_notes, e.created_at, e.applicant_id,
+      v.title AS vacancy_title
+      FROM recruitment_external_applications e
+      LEFT JOIN recruitment_vacancies v ON v.id = e.vacancy_id
+      WHERE 1=1`;
+    const params = {};
+    if (vacancy_id) { sql += ` AND e.vacancy_id = @vacancy_id`; params.vacancy_id = vacancy_id; }
+    if (status) { sql += ` AND e.status = @status`; params.status = status; }
+    sql += ` ORDER BY e.created_at DESC`;
+    const result = await query(sql, params);
+    res.json({ applications: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/external-applications/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT e.*, v.title AS vacancy_title, v.role_title FROM recruitment_external_applications e LEFT JOIN recruitment_vacancies v ON v.id = e.vacancy_id WHERE e.id = @id`,
+      { id }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'External application not found' });
+    res.json({ application: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/external-applications/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const updates = [];
+    const params = { id };
+    ['status', 'reviewer_score', 'reviewer_notes'].forEach((key) => {
+      if (body[key] === undefined) return;
+      if (key === 'reviewer_score') {
+        const v = body[key];
+        updates.push('reviewer_score = @reviewer_score');
+        params.reviewer_score = v == null || v === '' ? null : Number(v);
+        return;
+      }
+      updates.push(`${key} = @${key}`);
+      params[key] = (body[key] || '').toString().trim() || null;
+    });
+    if (updates.length === 0) {
+      const r = await query(`SELECT e.*, v.title AS vacancy_title FROM recruitment_external_applications e LEFT JOIN recruitment_vacancies v ON v.id = e.vacancy_id WHERE e.id = @id`, { id });
+      return res.json({ application: r.recordset?.[0] });
+    }
+    updates.push('updated_at = SYSUTCDATETIME()');
+    await query(`UPDATE recruitment_external_applications SET ${updates.join(', ')} WHERE id = @id`, params);
+    const row = await query(`SELECT e.*, v.title AS vacancy_title FROM recruitment_external_applications e LEFT JOIN recruitment_vacancies v ON v.id = e.vacancy_id WHERE e.id = @id`, { id });
+    res.json({ application: row.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Download an attachment for an external application (cv, cover_letter, qualifications, id_document, academic_record). */
+router.get('/external-applications/:id/download/:field', async (req, res, next) => {
+  try {
+    const { id, field } = req.params;
+    const allowed = ['cv', 'cover_letter', 'qualifications', 'id_document', 'academic_record'];
+    const col = field === 'cv' ? 'cv_file_path' : field === 'cover_letter' ? 'cover_letter_path' : field === 'qualifications' ? 'qualifications_path' : field === 'id_document' ? 'id_document_path' : field === 'academic_record' ? 'academic_record_path' : null;
+    if (!col || !allowed.includes(field)) return res.status(400).json({ error: 'Invalid field' });
+    const result = await query(`SELECT ${col} AS file_path FROM recruitment_external_applications WHERE id = @id`, { id });
+    const row = result.recordset?.[0];
+    const filePath = row?.file_path;
+    if (!filePath) return res.status(404).json({ error: 'File not found' });
+    const fullPath = path.join(process.cwd(), 'uploads', filePath.replace(/^\//, '').replace(/\\/g, path.sep));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    res.sendFile(fullPath, { headers: { 'Content-Disposition': 'attachment' } }, (err) => { if (err && !res.headersSent) next(err); });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** AI/automated scan: score the application (rule-based placeholder – completeness, keyword presence). */
+router.post('/external-applications/:id/score', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT id, name, email, cv_file_path, cover_letter_path, qualifications_path, id_document_path, academic_record_path FROM recruitment_external_applications WHERE id = @id`,
+      { id }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'External application not found' });
+    let score = 50;
+    const notes = [];
+    if (row.cv_file_path) { score += 10; notes.push('CV attached'); } else notes.push('No CV');
+    if (row.cover_letter_path) { score += 10; notes.push('Cover letter attached'); } else notes.push('No cover letter');
+    if (row.qualifications_path) { score += 5; notes.push('Qualifications attached'); }
+    if (row.id_document_path) { score += 5; notes.push('ID document attached'); }
+    if (row.academic_record_path) { score += 5; notes.push('Academic record attached'); }
+    if (row.name && row.name.trim().length >= 2) score += 5;
+    if (row.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email)) score += 5;
+    score = Math.min(100, Math.max(0, Math.round(score)));
+    await query(
+      `UPDATE recruitment_external_applications SET ai_score = @score, ai_notes = @notes, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id, score, notes: notes.join('; ') }
+    );
+    const updated = await query(`SELECT id, ai_score, ai_notes FROM recruitment_external_applications WHERE id = @id`, { id });
+    res.json({ application: updated.recordset?.[0], score, notes: notes.join('; ') });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Move external application to screening: create recruitment_applicant and optionally link CV in library. */
+router.post('/external-applications/:id/accept-to-screening', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT e.id, e.vacancy_id, e.name, e.email, e.phone, e.cv_file_path, e.applicant_id FROM recruitment_external_applications e WHERE e.id = @id`,
+      { id }
+    );
+    const ext = result.recordset?.[0];
+    if (!ext) return res.status(404).json({ error: 'External application not found' });
+    if (ext.applicant_id) return res.status(400).json({ error: 'Already accepted to screening' });
+    const applicantId = randomUUID();
+    await query(
+      `INSERT INTO recruitment_applicants (id, vacancy_id, cv_id, name, email, phone) VALUES (@applicantId, @vacancy_id, NULL, @name, @email, @phone)`,
+      { applicantId, vacancy_id: ext.vacancy_id, name: ext.name, email: ext.email, phone: ext.phone || null }
+    );
+    await query(
+      `UPDATE recruitment_external_applications SET applicant_id = @applicantId, status = 'accepted', updated_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id, applicantId }
+    );
+    const applicant = await query(
+      `SELECT a.id, a.vacancy_id, a.name, a.email, a.phone, a.screening_verdict, v.title AS vacancy_title FROM recruitment_applicants a LEFT JOIN recruitment_vacancies v ON v.id = a.vacancy_id WHERE a.id = @applicantId`,
+      { applicantId }
+    );
+    res.json({ applicant: applicant.recordset?.[0], external_application_id: id });
   } catch (err) {
     next(err);
   }

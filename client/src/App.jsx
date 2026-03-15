@@ -17,6 +17,7 @@ import Management from './Management';
 import ReportBreakdown from './ReportBreakdown';
 import TransportOperations from './TransportOperations';
 import Recruitment from './Recruitment';
+import JobApplication from './JobApplication';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
 
 function ProtectedRoute({ children }) {
@@ -41,6 +42,7 @@ function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/signup" element={<SignUp />} />
+      <Route path="/apply/:token" element={<JobApplication />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<FirstAllowedRedirect />} />
         <Route path="users" element={<UserManagement />} />

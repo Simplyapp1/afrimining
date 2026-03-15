@@ -7,6 +7,7 @@ const ALL_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'recruit-registration', label: 'Recruit registration' },
   { id: 'cv-library', label: 'CV library' },
+  { id: 'applicant-invitation', label: 'Applicant invitation' },
   { id: 'screening', label: 'Screening' },
   { id: 'interview', label: 'Interview' },
   { id: 'panel', label: 'Panel' },
@@ -125,6 +126,7 @@ export default function Recruitment() {
             <TabRecruitRegistration vacancies={vacancies} setVacancies={setVacancies} setError={setError} />
           )}
           {allowedTabIdSet.has(activeTab) && activeTab === 'cv-library' && <TabCvLibrary setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'applicant-invitation' && <TabApplicantInvitation vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'screening' && <TabScreening vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'interview' && <TabInterview vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'panel' && <TabPanel vacancies={vacancies} setError={setError} />}
@@ -404,6 +406,98 @@ function TabRecruitRegistration({ vacancies, setVacancies, setError }) {
   );
 }
 
+function TabApplicantInvitation({ vacancies, setError }) {
+  const [invites, setInvites] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [createVacancyId, setCreateVacancyId] = useState('');
+  const [createLabel, setCreateLabel] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
+
+  const loadInvites = () => {
+    setLoading(true);
+    recruitmentApi.invites.list()
+      .then((r) => setInvites(r.invites || []))
+      .catch((e) => setError(e?.message || 'Failed to load invites'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { loadInvites(); }, []);
+
+  const getApplyUrl = (token) => {
+    const base = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${base}/apply/${token}`;
+  };
+
+  const createInvite = () => {
+    if (!createVacancyId) { setError('Select a vacancy'); return; }
+    setCreating(true);
+    recruitmentApi.invites.create({ vacancy_id: createVacancyId, label: createLabel || undefined })
+      .then((r) => {
+        setInvites((prev) => [r.invite, ...prev]);
+        setCreateVacancyId('');
+        setCreateLabel('');
+        const url = getApplyUrl(r.invite.token);
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url);
+        setCopiedId(r.invite.id);
+        setTimeout(() => setCopiedId(null), 2000);
+      })
+      .catch((e) => setError(e?.message || 'Failed to create invite'))
+      .finally(() => setCreating(false));
+  };
+
+  const copyLink = (invite) => {
+    const url = getApplyUrl(invite.token);
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(() => { setCopiedId(invite.id); setTimeout(() => setCopiedId(null), 2000); });
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-lg font-semibold text-surface-800">Applicant invitation</h2>
+      <p className="text-sm text-surface-600">Create a shareable link for a vacancy. Applicants open the link to complete the job application (particulars and uploads).</p>
+      <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
+        <h3 className="font-medium text-surface-800">Create application link</h3>
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-surface-500">Vacancy</span>
+            <select value={createVacancyId} onChange={(e) => setCreateVacancyId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[220px]">
+              <option value="">Select vacancy</option>
+              {vacancies.filter((v) => (v.status || '').toLowerCase() !== 'closed').map((v) => <option key={v.id} value={v.id}>{v.title}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-surface-500">Label (optional)</span>
+            <input type="text" value={createLabel} onChange={(e) => setCreateLabel(e.target.value)} placeholder="e.g. Campaign Q1" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-40" />
+          </label>
+          <button type="button" onClick={createInvite} disabled={creating || !createVacancyId} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium disabled:opacity-50">Create link</button>
+        </div>
+      </div>
+      <div className="rounded-xl border border-surface-200 bg-white p-4">
+        <h3 className="font-medium text-surface-800 mb-3">Application links</h3>
+        {loading ? (
+          <p className="text-surface-500 text-sm">Loading…</p>
+        ) : invites.length === 0 ? (
+          <p className="text-surface-500 text-sm">No links yet. Create one above.</p>
+        ) : (
+          <ul className="space-y-2">
+            {invites.map((inv) => (
+              <li key={inv.id} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-surface-100 bg-surface-50/50">
+                <span className="font-medium text-surface-800">{inv.vacancy_title || 'Vacancy'}</span>
+                {inv.label && <span className="text-xs text-surface-500">({inv.label})</span>}
+                <span className="text-xs text-surface-500">{formatDateTime(inv.created_at)}</span>
+                <button type="button" onClick={() => copyLink(inv)} className="ml-auto px-3 py-1.5 rounded-lg border border-surface-300 text-sm text-surface-700 hover:bg-white">
+                  {copiedId === inv.id ? 'Copied' : 'Copy link'}
+                </button>
+                <code className="text-xs text-surface-600 bg-white px-2 py-1 rounded border border-surface-200 truncate max-w-xs">{getApplyUrl(inv.token)}</code>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TabCvLibrary({ setError }) {
   const [folders, setFolders] = useState([]);
   const [cvs, setCvs] = useState([]);
@@ -642,6 +736,7 @@ function TabCvLibrary({ setError }) {
 }
 
 function TabScreening({ vacancies, setError }) {
+  const [screeningSubTab, setScreeningSubTab] = useState('applicants'); // 'applicants' | 'external'
   const [applicants, setApplicants] = useState([]);
   const [vacancyId, setVacancyId] = useState('');
   const [selected, setSelected] = useState(null);
@@ -727,6 +822,15 @@ function TabScreening({ vacancies, setError }) {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-800">Screening</h2>
       <p className="text-sm text-surface-600">Review CVs, grade, add comments, document calls and applicant response, make a verdict. Send interview invite or regret email.</p>
+      <div className="flex gap-2 border-b border-surface-200">
+        <button type="button" onClick={() => setScreeningSubTab('applicants')} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${screeningSubTab === 'applicants' ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'}`}>Applicants</button>
+        <button type="button" onClick={() => setScreeningSubTab('external')} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${screeningSubTab === 'external' ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'}`}>External applications review</button>
+      </div>
+      {screeningSubTab === 'external' && (
+        <TabExternalApplicationsReview vacancies={vacancies} setError={setError} />
+      )}
+      {screeningSubTab === 'applicants' && (
+        <>
       <div className="flex gap-4 flex-wrap">
         <select value={vacancyId} onChange={(e) => setVacancyId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
           <option value="">All vacancies</option>
@@ -831,6 +935,135 @@ function TabScreening({ vacancies, setError }) {
           </div>
         </div>
       )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TabExternalApplicationsReview({ vacancies, setError }) {
+  const [applications, setApplications] = useState([]);
+  const [vacancyFilter, setVacancyFilter] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [scoring, setScoring] = useState(false);
+  const [form, setForm] = useState({ reviewer_score: '', reviewer_notes: '' });
+
+  const loadApplications = () => {
+    setLoading(true);
+    const params = vacancyFilter ? { vacancy_id: vacancyFilter } : {};
+    recruitmentApi.externalApplications.list(params)
+      .then((r) => setApplications(r.applications || []))
+      .catch((e) => setError(e?.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { loadApplications(); }, [vacancyFilter]);
+
+  useEffect(() => {
+    if (selected) {
+      setForm({ reviewer_score: selected.reviewer_score != null ? String(selected.reviewer_score) : '', reviewer_notes: selected.reviewer_notes || '' });
+    }
+  }, [selected]);
+
+  const saveReview = () => {
+    if (!selected) return;
+    setSaving(true);
+    recruitmentApi.externalApplications.update(selected.id, { reviewer_score: form.reviewer_score ? Number(form.reviewer_score) : null, reviewer_notes: form.reviewer_notes || null })
+      .then((r) => { setSelected(r.application); setApplications((prev) => prev.map((a) => a.id === r.application.id ? r.application : a)); })
+      .catch((e) => setError(e?.message))
+      .finally(() => setSaving(false));
+  };
+
+  const runAiScore = () => {
+    if (!selected) return;
+    setScoring(true);
+    recruitmentApi.externalApplications.score(selected.id)
+      .then((r) => { setSelected((s) => s ? { ...s, ai_score: r.application?.ai_score ?? r.score, ai_notes: r.application?.ai_notes ?? r.notes } : null); loadApplications(); })
+      .catch((e) => setError(e?.message))
+      .finally(() => setScoring(false));
+  };
+
+  const acceptToScreening = () => {
+    if (!selected || selected.applicant_id) return;
+    if (!window.confirm(`Add ${selected.name} to Screening as an applicant?`)) return;
+    setSaving(true);
+    recruitmentApi.externalApplications.acceptToScreening(selected.id)
+      .then((r) => { setSelected((s) => s ? { ...s, applicant_id: r.applicant?.id, status: 'accepted' } : null); loadApplications(); })
+      .catch((e) => setError(e?.message))
+      .finally(() => setSaving(false));
+  };
+
+  const openDownload = (field) => {
+    if (!selected) return;
+    const url = recruitmentApi.externalApplications.downloadUrl(selected.id, field);
+    window.open(url, '_blank');
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-3 items-center">
+        <select value={vacancyFilter} onChange={(e) => setVacancyFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+          <option value="">All vacancies</option>
+          {vacancies.map((v) => <option key={v.id} value={v.id}>{v.title}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="rounded-xl border border-surface-200 bg-white p-4">
+          <h3 className="font-medium text-surface-800 mb-2">External applications</h3>
+          {loading ? (
+            <p className="text-surface-500 text-sm">Loading…</p>
+          ) : applications.length === 0 ? (
+            <p className="text-surface-500 text-sm">No external applications yet.</p>
+          ) : (
+            <ul className="space-y-1 max-h-96 overflow-y-auto">
+              {applications.map((a) => (
+                <li key={a.id} className={`p-2 rounded cursor-pointer ${selected?.id === a.id ? 'bg-brand-50 border border-brand-200' : 'hover:bg-surface-50 border border-transparent'}`} onClick={() => setSelected(a)}>
+                  <p className="font-medium text-surface-800">{a.name}</p>
+                  <p className="text-xs text-surface-500">{a.email} · {a.vacancy_title || '—'} · {a.status}</p>
+                  {a.ai_score != null && <span className="text-xs text-surface-500">AI: {a.ai_score}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+          {selected ? (
+            <>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <h3 className="font-medium text-surface-800">{selected.name}</h3>
+                {selected.applicant_id && <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">In screening</span>}
+              </div>
+              <p className="text-xs text-surface-500">{selected.email}{selected.phone ? ` · ${selected.phone}` : ''}</p>
+              <p className="text-xs text-surface-500">{selected.vacancy_title} · {formatDateTime(selected.created_at)}</p>
+              {selected.id_number && <p className="text-xs text-surface-500">ID: {selected.id_number}</p>}
+              {selected.address && <p className="text-xs text-surface-500">{selected.address}</p>}
+              <div className="flex flex-wrap gap-2">
+                {selected.cv_file_path && <button type="button" onClick={() => openDownload('cv')} className="px-2 py-1 rounded border border-surface-300 text-xs">Download CV</button>}
+                {selected.cover_letter_path && <button type="button" onClick={() => openDownload('cover_letter')} className="px-2 py-1 rounded border border-surface-300 text-xs">Cover letter</button>}
+                {selected.qualifications_path && <button type="button" onClick={() => openDownload('qualifications')} className="px-2 py-1 rounded border border-surface-300 text-xs">Qualifications</button>}
+                {selected.id_document_path && <button type="button" onClick={() => openDownload('id_document')} className="px-2 py-1 rounded border border-surface-300 text-xs">ID document</button>}
+                {selected.academic_record_path && <button type="button" onClick={() => openDownload('academic_record')} className="px-2 py-1 rounded border border-surface-300 text-xs">Academic record</button>}
+              </div>
+              {selected.ai_score != null && <p className="text-sm text-surface-600">AI score: <strong>{selected.ai_score}</strong> {selected.ai_notes && ` – ${selected.ai_notes}`}</p>}
+              <button type="button" onClick={runAiScore} disabled={scoring} className="px-3 py-2 rounded-lg border border-surface-300 text-sm">{(selected.ai_score != null ? 'Re-run' : 'Run')} AI scan / score</button>
+              <hr className="border-surface-100" />
+              <label className="block">
+                <span className="text-xs font-medium text-surface-500">Reviewer score</span>
+                <input type="number" min={0} max={100} value={form.reviewer_score} onChange={(e) => setForm((f) => ({ ...f, reviewer_score: e.target.value }))} className="mt-1 w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" placeholder="0–100" />
+              </label>
+              <textarea value={form.reviewer_notes} onChange={(e) => setForm((f) => ({ ...f, reviewer_notes: e.target.value }))} placeholder="Reviewer notes" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={saveReview} disabled={saving} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm">Save review</button>
+                {!selected.applicant_id && <button type="button" onClick={acceptToScreening} disabled={saving} className="px-3 py-2 rounded-lg border border-brand-300 text-brand-700 text-sm">Accept to screening</button>}
+              </div>
+            </>
+          ) : (
+            <p className="text-surface-500 text-sm">Select an application</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

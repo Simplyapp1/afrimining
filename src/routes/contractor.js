@@ -2574,14 +2574,16 @@ function sanitizeFilename(s) {
     .slice(0, 80) || 'list';
 }
 
+/** Filename for distribution attachments: Company name, Route name, Date and time. Optional suffix (e.g. fleet, driver) when sending separate files. */
 function distributionFilename(routeName, contractorName, ext, listKind = '') {
   const now = new Date();
   const datePart = now.toISOString().slice(0, 10);
   const timePart = now.toTimeString().slice(0, 5).replace(':', '-');
+  const company = sanitizeFilename(contractorName);
   const route = sanitizeFilename(routeName);
-  const contractor = sanitizeFilename(contractorName);
-  const prefix = listKind ? `${listKind}-` : '';
-  return `${prefix}${route}_${contractor}_${datePart}_${timePart}.${ext}`;
+  const base = `${company}_${route}_${datePart}_${timePart}`;
+  const suffix = listKind && listKind !== 'lists' ? `_${listKind}` : '';
+  return `${base}${suffix}.${ext}`;
 }
 
 /** Build fleet list CSV; optional columns = array of keys to include (default all). opts.contractorId / opts.contractorIds = filter by company. */
@@ -2619,15 +2621,17 @@ const EXCEL_TEMPLATE = {
   footerFont: { size: 9, color: { argb: 'FF64748b' }, italic: true },
 };
 
-/** Apply professional template to distribution sheet: title, header row, data borders, footer. */
+/** Apply professional template: only style header cells that have content (1..numCols), auto column width, data borders. */
 function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
   const headerRowIndex = opts.headerRowIndex ?? 1;
   const hasTitle = opts.hasTitle === true;
+  const hasInfoBlock = opts.hasInfoBlock === true;
   const footerRowIndex = opts.footerRowIndex;
+  const dataRowCount = opts.dataRowCount ?? 0;
 
   if (numCols >= 1) {
     const lastColLetter = worksheet.getColumn(numCols).letter;
-    if (hasTitle) {
+    if (hasTitle && !hasInfoBlock) {
       worksheet.mergeCells(`A1:${lastColLetter}1`);
       const titleRow = worksheet.getRow(1);
       titleRow.height = 28;
@@ -2643,15 +2647,27 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
     }
 
     const headerRow = worksheet.getRow(headerRowIndex);
-    headerRow.font = EXCEL_TEMPLATE.headerFont;
-    headerRow.fill = EXCEL_TEMPLATE.headerFill;
-    headerRow.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
-    headerRow.border = { top: EXCEL_TEMPLATE.borderThin, left: EXCEL_TEMPLATE.borderThin, bottom: EXCEL_TEMPLATE.borderThin, right: EXCEL_TEMPLATE.borderThin };
     headerRow.height = 22;
-
+    for (let c = 1; c <= numCols; c++) {
+      const cell = headerRow.getCell(c);
+      cell.font = EXCEL_TEMPLATE.headerFont;
+      cell.fill = EXCEL_TEMPLATE.headerFill;
+      cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      cell.border = { top: EXCEL_TEMPLATE.borderThin, left: EXCEL_TEMPLATE.borderThin, bottom: EXCEL_TEMPLATE.borderThin, right: EXCEL_TEMPLATE.borderThin };
+    }
     for (let c = 1; c <= numCols; c++) {
       const label = (headerLabels && headerLabels[c - 1]) ? String(headerLabels[c - 1]) : '';
-      worksheet.getColumn(c).width = Math.min(28, Math.max(12, label.length + 2));
+      let maxLen = label.length;
+      if (dataRowCount > 0) {
+        for (let r = headerRowIndex + 1; r <= headerRowIndex + dataRowCount; r++) {
+          try {
+            const cell = worksheet.getRow(r).getCell(c);
+            const val = cell && cell.value != null ? String(cell.value) : '';
+            if (val.length > maxLen) maxLen = val.length;
+          } catch (_) { /* ignore */ }
+        }
+      }
+      worksheet.getColumn(c).width = Math.min(40, Math.max(10, maxLen + 2));
     }
   }
 
@@ -2660,8 +2676,11 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
   const borderStyle = EXCEL_TEMPLATE.borderThin;
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber > headerRowIndex && rowNumber !== footerRowIndex) {
-      row.alignment = { vertical: 'middle', wrapText: false };
-      row.eachCell((cell) => { cell.border = { top: borderStyle, left: borderStyle, bottom: borderStyle, right: borderStyle }; });
+      row.alignment = { vertical: 'middle', wrapText: true };
+      for (let c = 1; c <= numCols; c++) {
+        const cell = row.getCell(c);
+        if (cell) cell.border = { top: borderStyle, left: borderStyle, bottom: borderStyle, right: borderStyle };
+      }
     }
   });
 
@@ -2674,70 +2693,149 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
   }
 }
 
-/** Build fleet list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle, contractorId, contractorIds }. */
+const EXCEL_INFO_FONT = { size: 11, color: { argb: 'FF334155' } };
+const EXCEL_INFO_LABEL_FONT = { size: 11, color: { argb: 'FF64748b' }, bold: true };
+
+/** Write Company, Route, Date & time block at top of sheet (rows 1–3). Returns header row index (5). */
+function writeDistributionInfoBlock(sheet, opts) {
+  const companyName = opts.companyName != null ? String(opts.companyName).trim() : '';
+  const routeName = opts.routeName != null ? String(opts.routeName).trim() : '';
+  const generated = opts.generated instanceof Date ? opts.generated : (opts.generated != null ? new Date(opts.generated) : new Date());
+  const dateTimeStr = generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' });
+  sheet.getRow(1).getCell(1).value = 'Company:';
+  sheet.getRow(1).getCell(1).font = EXCEL_INFO_LABEL_FONT;
+  sheet.getRow(1).getCell(2).value = companyName || '—';
+  sheet.getRow(1).getCell(2).font = EXCEL_INFO_FONT;
+  sheet.getRow(2).getCell(1).value = 'Route:';
+  sheet.getRow(2).getCell(1).font = EXCEL_INFO_LABEL_FONT;
+  sheet.getRow(2).getCell(2).value = routeName || '—';
+  sheet.getRow(2).getCell(2).font = EXCEL_INFO_FONT;
+  sheet.getRow(3).getCell(1).value = 'Date & time:';
+  sheet.getRow(3).getCell(1).font = EXCEL_INFO_LABEL_FONT;
+  sheet.getRow(3).getCell(2).value = dateTimeStr;
+  sheet.getRow(3).getCell(2).font = EXCEL_INFO_FONT;
+  sheet.getRow(1).height = 20;
+  sheet.getRow(2).height = 20;
+  sheet.getRow(3).height = 20;
+  return 5;
+}
+
+/** Build fleet list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated }. */
 async function buildFleetListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
   const sheet = workbook.addWorksheet('Fleet list', { views: [{ showGridLines: true }] });
   const numCols = headers.length;
-  const TITLE_ROW = 1;
-  const SUBTITLE_ROW = 2;
-  const HEADER_ROW = 4;
+  let HEADER_ROW;
   if (numCols === 0) {
-    sheet.getRow(1).getCell(1).value = title;
+    if (hasInfoBlock) writeDistributionInfoBlock(sheet, opts);
+    else sheet.getRow(1).getCell(1).value = title;
     const buf = await workbook.xlsx.writeBuffer();
     return Buffer.from(buf);
   }
-  sheet.getRow(TITLE_ROW).getCell(1).value = title;
-  sheet.getRow(SUBTITLE_ROW).getCell(1).value = subtitle;
-  sheet.addRow([]);
+  if (hasInfoBlock) {
+    HEADER_ROW = writeDistributionInfoBlock(sheet, opts);
+    sheet.addRow([]);
+  } else {
+    HEADER_ROW = 4;
+    sheet.getRow(1).getCell(1).value = title;
+    sheet.getRow(2).getCell(1).value = subtitle;
+    sheet.addRow([]);
+  }
   const headerRow = sheet.getRow(HEADER_ROW);
   headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
   rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
   styleDistributionSheet(sheet, numCols, headers, {
     headerRowIndex: HEADER_ROW,
-    hasTitle: true,
-    subtitleRowIndex: SUBTITLE_ROW,
+    hasTitle: !hasInfoBlock,
+    subtitleRowIndex: hasInfoBlock ? undefined : 2,
+    hasInfoBlock,
+    dataRowCount: rows.length,
   });
   const buf = await workbook.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
 
-/** Build driver list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle, contractorId, contractorIds }. */
+/** Build driver list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated }. */
 async function buildDriverListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
   const sheet = workbook.addWorksheet('Driver list', { views: [{ showGridLines: true }] });
   const numCols = headers.length;
-  const TITLE_ROW = 1;
-  const SUBTITLE_ROW = 2;
-  const HEADER_ROW = 4;
+  let HEADER_ROW;
   if (numCols === 0) {
-    sheet.getRow(1).getCell(1).value = title;
+    if (hasInfoBlock) writeDistributionInfoBlock(sheet, opts);
+    else sheet.getRow(1).getCell(1).value = title;
     const buf = await workbook.xlsx.writeBuffer();
     return Buffer.from(buf);
   }
-  sheet.getRow(TITLE_ROW).getCell(1).value = title;
-  sheet.getRow(SUBTITLE_ROW).getCell(1).value = subtitle;
-  sheet.addRow([]);
+  if (hasInfoBlock) {
+    HEADER_ROW = writeDistributionInfoBlock(sheet, opts);
+    sheet.addRow([]);
+  } else {
+    HEADER_ROW = 4;
+    sheet.getRow(1).getCell(1).value = title;
+    sheet.getRow(2).getCell(1).value = subtitle;
+    sheet.addRow([]);
+  }
   const headerRow = sheet.getRow(HEADER_ROW);
   headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
   rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
   styleDistributionSheet(sheet, numCols, headers, {
     headerRowIndex: HEADER_ROW,
-    hasTitle: true,
-    subtitleRowIndex: SUBTITLE_ROW,
+    hasTitle: !hasInfoBlock,
+    subtitleRowIndex: hasInfoBlock ? undefined : 2,
+    hasInfoBlock,
+    dataRowCount: rows.length,
   });
+  const buf = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buf);
+}
+
+/** Build one Excel workbook with Fleet list on sheet 1 and Driver list on sheet 2. opts: { companyName, routeName, generated, subtitle, contractorId }. */
+async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, opts = {}) {
+  const [fleetData, driverData] = await Promise.all([
+    getFleetListData(query, tenantId, routeIds, fleetCols, opts.contractorId ?? null, opts.contractorIds ?? null),
+    getDriverListData(query, tenantId, routeIds, driverCols, opts.contractorId ?? null, opts.contractorIds ?? null),
+  ]);
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Thinkers';
+  const infoOpts = { companyName: opts.companyName, routeName: opts.routeName, generated: opts.generated };
+
+  function addListSheet(sheetName, headers, keys, rows) {
+    const sheet = workbook.addWorksheet(sheetName, { views: [{ showGridLines: true }] });
+    const numCols = headers.length;
+    if (numCols === 0) {
+      writeDistributionInfoBlock(sheet, infoOpts);
+      return;
+    }
+    const HEADER_ROW = writeDistributionInfoBlock(sheet, infoOpts);
+    sheet.addRow([]);
+    const headerRow = sheet.getRow(HEADER_ROW);
+    headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
+    rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
+    styleDistributionSheet(sheet, numCols, headers, {
+      headerRowIndex: HEADER_ROW,
+      hasTitle: false,
+      hasInfoBlock: true,
+      dataRowCount: rows.length,
+    });
+  }
+
+  addListSheet('Fleet list', fleetData.headers, fleetData.keys, fleetData.rows);
+  addListSheet('Driver list', driverData.headers, driverData.keys, driverData.rows);
   const buf = await workbook.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
@@ -2873,8 +2971,9 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-/** Email body for per-contractor distribution: list which contractors and routes are attached. */
-function distributionListEmailHtmlPerContractor(entries) {
+/** Email body for per-contractor distribution. titleOverride = route name (replaces "Thinkers" in header when provided). */
+function distributionListEmailHtmlPerContractor(entries, titleOverride = null) {
+  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Thinkers';
   const listItems = entries.map((e) => `${escapeHtml(e.contractorName)} – ${escapeHtml(e.routeName)}`).join('</li><li>');
   return `<!DOCTYPE html>
 <html>
@@ -2882,13 +2981,13 @@ function distributionListEmailHtmlPerContractor(entries) {
 <body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #e8f4fc;">
   <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
     <div style="background: linear-gradient(135deg, #1e5a8e 0%, #2563eb 50%, #1d4ed8 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Thinkers</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">Access management – List distribution (per contractor)</p>
+      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">${escapeHtml(title)}</h1>
+      <p style="margin: 0; font-size: 14px; opacity: 0.95;">List distribution (per company)</p>
     </div>
     <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0;">
-      <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155; line-height: 1.5;">Please find attached the following lists (one per contractor and route):</p>
+      <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155; line-height: 1.5;">Please find attached the following lists (one per company enrolled on this route):</p>
       <ul style="margin: 0 0 24px 0; padding-left: 20px; font-size: 14px; color: #334155; line-height: 1.6;"><li>${listItems}</li></ul>
-      <p style="margin: 0 0 24px 0; font-size: 14px; color: #64748b;">Generated from Thinkers Access management. File names: Route name, Contractor name, Date and time.</p>
+      <p style="margin: 0 0 24px 0; font-size: 14px; color: #64748b;">File names: Route name, Company name, Date and time.</p>
       <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px;">
         <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #1e40af;">Monitoring Team</p>
         <p style="margin: 0; font-size: 13px; color: #475569;">For further inquiries please contact: <a href="mailto:vincent@thinkersafrika.co.za" style="color: #2563eb; text-decoration: none;">vincent@thinkersafrika.co.za</a></p>
@@ -2900,16 +2999,17 @@ function distributionListEmailHtmlPerContractor(entries) {
 </html>`;
 }
 
-function distributionListEmailTextPerContractor(entries) {
+function distributionListEmailTextPerContractor(entries, titleOverride = null) {
+  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Thinkers';
   const lines = entries.map((e) => `• ${e.contractorName} – ${e.routeName}`);
   return [
-    'Thinkers',
-    'Access management – List distribution (per contractor)',
+    title,
+    'List distribution (per company)',
     '',
-    'Please find attached the following lists (one per contractor and route):',
+    'Please find attached the following lists (one per company enrolled on this route):',
     ...lines,
     '',
-    'File names: Route name, Contractor name, Date and time.',
+    'File names: Route name, Company name, Date and time.',
     '',
     'Monitoring Team',
     'For further inquiries please contact: vincent@thinkersafrika.co.za',
@@ -2937,7 +3037,8 @@ router.post('/distribution/send-email', async (req, res, next) => {
     } = req.body || {};
     if (!Array.isArray(recipients) || recipients.length === 0) return res.status(400).json({ error: 'recipients (array of emails) is required' });
     const listType = list_type === 'both' ? 'both' : list_type === 'driver' ? 'driver' : 'fleet';
-    const routeIds = Array.isArray(route_ids) ? route_ids.filter(Boolean) : (route_ids && typeof route_ids === 'string' ? route_ids.split(',').map((id) => id.trim()).filter(Boolean) : []);
+    const routeIdsRaw = Array.isArray(route_ids) ? route_ids : (route_ids && typeof route_ids === 'string' ? route_ids.split(',').map((id) => id.trim()) : []);
+    const routeIds = routeIdsRaw.map((id) => (id != null && typeof id !== 'object' ? String(id).trim() : '')).filter((id) => id.length > 0);
     const emails = [...new Set(recipients.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes('@')))];
     if (emails.length === 0) return res.status(400).json({ error: 'At least one valid recipient email is required' });
     const ccList = Array.isArray(rawCc) ? rawCc : (typeof rawCc === 'string' && rawCc.trim() ? rawCc.split(/[\s,;]+/).map((e) => e.trim()).filter((e) => e && e.includes('@')) : []);
@@ -2965,7 +3066,93 @@ router.post('/distribution/send-email', async (req, res, next) => {
     let routeIdsStr = routeIds.length > 0 ? routeIds.join(',') : null;
     const historyTenantId = tenantId;
 
-    if (perContractor && contractorIds.length > 0) {
+    // When the user selected specific route(s): one attachment set per company that has fleet/drivers on that route; subject and title use route name.
+    const hasSelectedRoutes = routeIds.length > 0;
+
+    if (hasSelectedRoutes) {
+      const placeholders = routeIds.map((_, i) => `@rid${i}`).join(',');
+      const routeParams = Object.fromEntries(routeIds.map((id, i) => [`rid${i}`, id]));
+      const routesResult = await query(
+        `SELECT id, name FROM contractor_routes WHERE tenant_id = @tenantId AND id IN (${placeholders}) ORDER BY [order], name`,
+        { tenantId, ...routeParams }
+      );
+      const routeRows = routesResult.recordset || [];
+      const routeNameForSubject = routeRows.length === 1 ? (routeRows[0].name || 'Route') : (routeRows.length > 1 ? 'Selected routes' : 'Route');
+      const routeNameForTitle = routeRows.length === 1 ? (routeRows[0].name || 'Route') : 'List distribution';
+
+      const contractorsOnRouteResult = await query(
+        `SELECT DISTINCT t.contractor_id AS cid FROM contractor_route_trucks rt
+         INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1
+         WHERE rt.route_id IN (${placeholders})
+         UNION
+         SELECT DISTINCT d.contractor_id AS cid FROM contractor_route_drivers rd
+         INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1
+         WHERE rd.route_id IN (${placeholders})`,
+        { tenantId, ...routeParams }
+      );
+      const contractorIdsOnRoute = (contractorsOnRouteResult.recordset || []).map((r) => r.cid ?? r.contractor_id).filter(Boolean);
+      if (contractorIdsOnRoute.length === 0) return res.status(400).json({ error: 'No companies have fleet or drivers enrolled on the selected route(s).' });
+
+      const contractorsResult = await query(
+        `SELECT id, name FROM contractors WHERE tenant_id = @tenantId AND id IN (${contractorIdsOnRoute.map((_, i) => `@c${i}`).join(',')}) ORDER BY name`,
+        { tenantId, ...Object.fromEntries(contractorIdsOnRoute.map((id, i) => [`c${i}`, id])) }
+      );
+      const contractorsList = contractorsResult.recordset || [];
+      const generated = new Date();
+      const subtitle = `List distribution · Generated ${generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+      const entries = [];
+
+      for (const row of contractorsList) {
+        const cid = row.id;
+        const contractorName = row.name || 'Contractor';
+        const listOpts = {
+          title: `${contractorName} – ${routeNameForTitle}`,
+          subtitle,
+          contractorId: cid,
+          companyName: contractorName,
+          routeName: routeNameForTitle,
+          generated,
+        };
+        if (listType === 'both' && useExcel) {
+          const buf = await buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, listOpts);
+          attachments.push({
+            filename: distributionFilename(routeNameForTitle, contractorName, ext, 'lists'),
+            content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+            encoding: 'base64',
+          });
+        } else {
+          if (listType === 'fleet' || listType === 'both') {
+            const buf = usePdf
+              ? await buildFleetListPdf(query, tenantId, routeIds, fleetCols, listOpts)
+              : useExcel
+                ? await buildFleetListExcel(query, tenantId, routeIds, fleetCols, listOpts)
+                : Buffer.from(await buildFleetListCsv(query, tenantId, routeIds, fleetCols, listOpts), 'utf8');
+            attachments.push({
+              filename: distributionFilename(routeNameForTitle, contractorName, ext, 'fleet'),
+              content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+              encoding: 'base64',
+            });
+          }
+          if (listType === 'driver' || listType === 'both') {
+            const buf = usePdf
+              ? await buildDriverListPdf(query, tenantId, routeIds, driverCols, listOpts)
+              : useExcel
+                ? await buildDriverListExcel(query, tenantId, routeIds, driverCols, listOpts)
+                : Buffer.from(await buildDriverListCsv(query, tenantId, routeIds, driverCols, listOpts), 'utf8');
+            attachments.push({
+              filename: distributionFilename(routeNameForTitle, contractorName, ext, 'driver'),
+              content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+              encoding: 'base64',
+            });
+          }
+        }
+        entries.push({ contractorName, routeName: routeNameForTitle });
+      }
+
+      subject = `${routeNameForSubject} lists publication`;
+      bodyHtml = distributionListEmailHtmlPerContractor(entries, routeNameForTitle);
+      bodyText = distributionListEmailTextPerContractor(entries, routeNameForTitle);
+    } else if (perContractor && contractorIds.length > 0) {
       const contractorsResult = await query(
         `SELECT id, name, tenant_id FROM contractors WHERE id IN (${contractorIds.map((_, i) => `@cid${i}`).join(',')})`,
         Object.fromEntries(contractorIds.map((id, i) => [`cid${i}`, id]))
@@ -2984,63 +3171,81 @@ router.post('/distribution/send-email', async (req, res, next) => {
           { tid }
         );
         const routes = routesResult.recordset || [];
-        const listOpts = { title: '', subtitle, contractorId: cid };
+        const baseOpts = { subtitle, contractorId: cid, companyName: contractorName, generated };
         if (routes.length === 0) {
           const routeLabel = 'All approved';
-          listOpts.title = `${contractorName} – ${routeLabel}`;
-          if (listType === 'fleet' || listType === 'both') {
-            const buf = usePdf
-              ? await buildFleetListPdf(query, tid, null, fleetCols, listOpts)
-              : useExcel
-                ? await buildFleetListExcel(query, tid, null, fleetCols, listOpts)
-                : Buffer.from(await buildFleetListCsv(query, tid, null, fleetCols, listOpts), 'utf8');
+          const listOpts = { ...baseOpts, title: `${contractorName} – ${routeLabel}`, routeName: routeLabel };
+          if (listType === 'both' && useExcel) {
+            const buf = await buildFleetAndDriverListExcel(query, tid, null, fleetCols, driverCols, listOpts);
             attachments.push({
-              filename: distributionFilename(routeLabel, contractorName, ext, 'fleet'),
+              filename: distributionFilename(routeLabel, contractorName, ext, 'lists'),
               content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
               encoding: 'base64',
             });
-          }
-          if (listType === 'driver' || listType === 'both') {
-            const buf = usePdf
-              ? await buildDriverListPdf(query, tid, null, driverCols, listOpts)
-              : useExcel
-                ? await buildDriverListExcel(query, tid, null, driverCols, listOpts)
-                : Buffer.from(await buildDriverListCsv(query, tid, null, driverCols, listOpts), 'utf8');
-            attachments.push({
-              filename: distributionFilename(routeLabel, contractorName, ext, 'driver'),
-              content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
-              encoding: 'base64',
-            });
-          }
-          entries.push({ contractorName, routeName: routeLabel });
-        } else {
-          for (const r of routes) {
-            const routeName = r.name || 'Route';
-            listOpts.title = `${contractorName} – ${routeName}`;
-            const singleRoute = [r.id];
+          } else {
             if (listType === 'fleet' || listType === 'both') {
               const buf = usePdf
-                ? await buildFleetListPdf(query, tid, singleRoute, fleetCols, listOpts)
+                ? await buildFleetListPdf(query, tid, null, fleetCols, listOpts)
                 : useExcel
-                  ? await buildFleetListExcel(query, tid, singleRoute, fleetCols, listOpts)
-                  : Buffer.from(await buildFleetListCsv(query, tid, singleRoute, fleetCols, listOpts), 'utf8');
+                  ? await buildFleetListExcel(query, tid, null, fleetCols, listOpts)
+                  : Buffer.from(await buildFleetListCsv(query, tid, null, fleetCols, listOpts), 'utf8');
               attachments.push({
-                filename: distributionFilename(routeName, contractorName, ext, 'fleet'),
+                filename: distributionFilename(routeLabel, contractorName, ext, 'fleet'),
                 content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
                 encoding: 'base64',
               });
             }
             if (listType === 'driver' || listType === 'both') {
               const buf = usePdf
-                ? await buildDriverListPdf(query, tid, singleRoute, driverCols, listOpts)
+                ? await buildDriverListPdf(query, tid, null, driverCols, listOpts)
                 : useExcel
-                  ? await buildDriverListExcel(query, tid, singleRoute, driverCols, listOpts)
-                  : Buffer.from(await buildDriverListCsv(query, tid, singleRoute, driverCols, listOpts), 'utf8');
+                  ? await buildDriverListExcel(query, tid, null, driverCols, listOpts)
+                  : Buffer.from(await buildDriverListCsv(query, tid, null, driverCols, listOpts), 'utf8');
               attachments.push({
-                filename: distributionFilename(routeName, contractorName, ext, 'driver'),
+                filename: distributionFilename(routeLabel, contractorName, ext, 'driver'),
                 content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
                 encoding: 'base64',
               });
+            }
+          }
+          entries.push({ contractorName, routeName: routeLabel });
+        } else {
+          for (const r of routes) {
+            const routeName = r.name || 'Route';
+            const singleRoute = [r.id];
+            const listOpts = { ...baseOpts, title: `${contractorName} – ${routeName}`, routeName };
+            if (listType === 'both' && useExcel) {
+              const buf = await buildFleetAndDriverListExcel(query, tid, singleRoute, fleetCols, driverCols, listOpts);
+              attachments.push({
+                filename: distributionFilename(routeName, contractorName, ext, 'lists'),
+                content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+                encoding: 'base64',
+              });
+            } else {
+              if (listType === 'fleet' || listType === 'both') {
+                const buf = usePdf
+                  ? await buildFleetListPdf(query, tid, singleRoute, fleetCols, listOpts)
+                  : useExcel
+                    ? await buildFleetListExcel(query, tid, singleRoute, fleetCols, listOpts)
+                    : Buffer.from(await buildFleetListCsv(query, tid, singleRoute, fleetCols, listOpts), 'utf8');
+                attachments.push({
+                  filename: distributionFilename(routeName, contractorName, ext, 'fleet'),
+                  content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+                  encoding: 'base64',
+                });
+              }
+              if (listType === 'driver' || listType === 'both') {
+                const buf = usePdf
+                  ? await buildDriverListPdf(query, tid, singleRoute, driverCols, listOpts)
+                  : useExcel
+                    ? await buildDriverListExcel(query, tid, singleRoute, driverCols, listOpts)
+                    : Buffer.from(await buildDriverListCsv(query, tid, singleRoute, driverCols, listOpts), 'utf8');
+                attachments.push({
+                  filename: distributionFilename(routeName, contractorName, ext, 'driver'),
+                  content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
+                  encoding: 'base64',
+                });
+              }
             }
             entries.push({ contractorName, routeName });
           }
@@ -3052,28 +3257,45 @@ router.post('/distribution/send-email', async (req, res, next) => {
       bodyHtml = distributionListEmailHtmlPerContractor(entries);
       bodyText = distributionListEmailTextPerContractor(entries);
     } else {
-      if (listType === 'fleet' || listType === 'both') {
-        if (usePdf) {
-          const fleetBuffer = await buildFleetListPdf(query, tenantId, routeIds.length > 0 ? routeIds : null, fleetCols);
-          attachments.push({ filename: 'fleet-list.pdf', content: fleetBuffer.toString('base64'), encoding: 'base64' });
-        } else if (useExcel) {
-          const fleetBuffer = await buildFleetListExcel(query, tenantId, routeIds.length > 0 ? routeIds : null, fleetCols);
-          attachments.push({ filename: 'fleet-list.xlsx', content: fleetBuffer.toString('base64'), encoding: 'base64' });
-        } else {
-          const fleetCsv = await buildFleetListCsv(query, tenantId, routeIds.length > 0 ? routeIds : null, fleetCols);
-          attachments.push({ filename: 'fleet-list.csv', content: Buffer.from(fleetCsv, 'utf8').toString('base64'), encoding: 'base64' });
+      const routeIdsForList = routeIds.length > 0 ? routeIds : null;
+      const listOptsAll = {
+        companyName: 'All companies',
+        routeName: routeIdsForList ? (routeIds.length === 1 ? 'Selected route' : 'Selected routes') : 'All routes',
+        generated: new Date(),
+      };
+      if (listType === 'both' && useExcel) {
+        const combinedBuffer = await buildFleetAndDriverListExcel(query, tenantId, routeIdsForList, fleetCols, driverCols, listOptsAll);
+        attachments.push({
+          filename: distributionFilename(listOptsAll.routeName, listOptsAll.companyName, ext),
+          content: (typeof combinedBuffer === 'object' && combinedBuffer instanceof Buffer ? combinedBuffer : Buffer.from(combinedBuffer)).toString('base64'),
+          encoding: 'base64',
+        });
+      } else {
+        if (listType === 'fleet' || listType === 'both') {
+          const fleetFilename = distributionFilename(listOptsAll.routeName, listOptsAll.companyName, ext, 'fleet');
+          if (usePdf) {
+            const fleetBuffer = await buildFleetListPdf(query, tenantId, routeIdsForList, fleetCols, listOptsAll);
+            attachments.push({ filename: fleetFilename, content: fleetBuffer.toString('base64'), encoding: 'base64' });
+          } else if (useExcel) {
+            const fleetBuffer = await buildFleetListExcel(query, tenantId, routeIdsForList, fleetCols, listOptsAll);
+            attachments.push({ filename: fleetFilename, content: fleetBuffer.toString('base64'), encoding: 'base64' });
+          } else {
+            const fleetCsv = await buildFleetListCsv(query, tenantId, routeIdsForList, fleetCols);
+            attachments.push({ filename: fleetFilename, content: Buffer.from(fleetCsv, 'utf8').toString('base64'), encoding: 'base64' });
+          }
         }
-      }
-      if (listType === 'driver' || listType === 'both') {
-        if (usePdf) {
-          const driverBuffer = await buildDriverListPdf(query, tenantId, routeIds.length > 0 ? routeIds : null, driverCols);
-          attachments.push({ filename: 'driver-list.pdf', content: driverBuffer.toString('base64'), encoding: 'base64' });
-        } else if (useExcel) {
-          const driverBuffer = await buildDriverListExcel(query, tenantId, routeIds.length > 0 ? routeIds : null, driverCols);
-          attachments.push({ filename: 'driver-list.xlsx', content: driverBuffer.toString('base64'), encoding: 'base64' });
-        } else {
-          const driverCsv = await buildDriverListCsv(query, tenantId, routeIds.length > 0 ? routeIds : null, driverCols);
-          attachments.push({ filename: 'driver-list.csv', content: Buffer.from(driverCsv, 'utf8').toString('base64'), encoding: 'base64' });
+        if (listType === 'driver' || listType === 'both') {
+          const driverFilename = distributionFilename(listOptsAll.routeName, listOptsAll.companyName, ext, 'driver');
+          if (usePdf) {
+            const driverBuffer = await buildDriverListPdf(query, tenantId, routeIdsForList, driverCols, listOptsAll);
+            attachments.push({ filename: driverFilename, content: driverBuffer.toString('base64'), encoding: 'base64' });
+          } else if (useExcel) {
+            const driverBuffer = await buildDriverListExcel(query, tenantId, routeIdsForList, driverCols, listOptsAll);
+            attachments.push({ filename: driverFilename, content: driverBuffer.toString('base64'), encoding: 'base64' });
+          } else {
+            const driverCsv = await buildDriverListCsv(query, tenantId, routeIdsForList, driverCols);
+            attachments.push({ filename: driverFilename, content: Buffer.from(driverCsv, 'utf8').toString('base64'), encoding: 'base64' });
+          }
         }
       }
       if (attachments.length === 0) return res.status(400).json({ error: 'list_type must be fleet, driver, or both' });

@@ -322,6 +322,16 @@ export default function AccessManagement() {
     else setLoading(false);
   }, [hasTenant]);
 
+  // When opening the rector form or switching to routes/rectors tab, refetch routes so the Route(s) dropdown includes newly created routes
+  useEffect(() => {
+    if (!hasTenant) return;
+    if (showRectorForm || activeTab === 'routes' || activeTab === 'rectors') {
+      contractorApi.routes.list()
+        .then((r) => setRoutes(r.routes || []))
+        .catch(() => {});
+    }
+  }, [showRectorForm, activeTab, hasTenant]);
+
   // Load contractors for "send per contractor" when List distribution tab is active
   useEffect(() => {
     if (activeTab !== 'distribution') return;
@@ -604,15 +614,22 @@ export default function AccessManagement() {
         route_expiration: routeForm.route_expiration.trim() || null,
       };
       if (editingRouteId) {
-        await contractorApi.routes.update(editingRouteId, payload);
+        const data = await contractorApi.routes.update(editingRouteId, payload);
+        setRoutes((prev) => prev.map((r) => (r.id === editingRouteId ? (data.route || r) : r)));
         setShowRouteForm(false);
         setEditingRouteId(null);
       } else {
-        await contractorApi.routes.create(payload);
+        const data = await contractorApi.routes.create(payload);
+        if (data.route) {
+          const r = data.route;
+          setRoutes((prev) => [...prev, { ...r, id: r.id ?? r.Id, name: r.name ?? r.Name ?? r.name }]);
+        }
         setShowRouteForm(false);
         setRouteForm({ name: '', starting_point: '', destination: '', capacity: '', max_tons: '', route_expiration: '' });
       }
-      load();
+      // Refetch routes and rectors only (don't run full load() which can overwrite routes if context fails)
+      contractorApi.routes.list().then((r) => setRoutes(r.routes || [])).catch(() => {});
+      contractorApi.routeFactors.list().then((r) => setRectors(r.factors || [])).catch(() => {});
     } catch (err) {
       setError(err?.message || 'Failed to save route');
     } finally {
@@ -635,7 +652,7 @@ export default function AccessManagement() {
     setEditingRectorId(f.id);
     const alertList = (f.alert_types && typeof f.alert_types === 'string') ? f.alert_types.split(',').map((s) => s.trim()).filter(Boolean) : [];
     setRectorForm({
-      route_ids: f.route_id ? [f.route_id] : [],
+      route_ids: f.route_id ? [String(f.route_id)] : [],
       user_id: f.user_id || '',
       name: f.name || '',
       company: f.company || '',
@@ -713,17 +730,18 @@ export default function AccessManagement() {
   };
 
   const addRectorsToRoute = (routeId) => {
-    setRectorForm((prev) => ({ ...prev, route_ids: [routeId], user_id: '' }));
+    setRectorForm((prev) => ({ ...prev, route_ids: [String(routeId)], user_id: '' }));
     setEditingRectorId(null);
     setShowRectorForm(true);
   };
 
   const distToggleRoute = (routeId) => {
+    const id = String(routeId);
     setDistSelectedRouteIds((prev) =>
-      prev.includes(routeId) ? prev.filter((id) => id !== routeId) : [...prev, routeId]
+      prev.includes(id) ? prev.filter((rid) => rid !== id) : [...prev, id]
     );
   };
-  const distSelectAllRoutes = () => setDistSelectedRouteIds(routes.map((r) => r.id));
+  const distSelectAllRoutes = () => setDistSelectedRouteIds(routes.map((r) => String(r.id ?? r.Id)));
   const distClearAllRoutes = () => setDistSelectedRouteIds([]);
   const distAllSelected = routes.length > 0 && distSelectedRouteIds.length === routes.length;
 
@@ -813,12 +831,13 @@ export default function AccessManagement() {
     setDistSendResult(null);
     setError('');
     setDistSending(true);
+    const selectedRouteIds = distSelectedRouteIds.length > 0 ? distSelectedRouteIds.map((id) => String(id)) : null;
     contractorApi.distributionHistory
       .sendEmail({
         recipients: distRecipients.map((r) => r.email),
         cc: distCcRecipients.length > 0 ? distCcRecipients.map((r) => r.email) : undefined,
         list_type: listType,
-        route_ids: distSendPerContractor ? null : (distSelectedRouteIds.length > 0 ? distSelectedRouteIds : null),
+        route_ids: selectedRouteIds,
         fleet_columns: distIncludeFleet && distFleetColumns.length > 0 ? distFleetColumns : null,
         driver_columns: distIncludeDrivers && distDriverColumns.length > 0 ? distDriverColumns : null,
         format: distEmailFormat,
@@ -1166,13 +1185,13 @@ export default function AccessManagement() {
                     <label className="block text-xs font-medium text-surface-600 mb-1">Route(s) (required) — select one or more</label>
                     <select
                       multiple
-                      value={rectorForm.route_ids}
+                      value={(rectorForm.route_ids || []).map((id) => String(id))}
                       onChange={(e) => setRectorForm((f) => ({ ...f, route_ids: Array.from(e.target.selectedOptions, (o) => o.value) }))}
                       className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm min-h-[100px]"
                       required
                     >
                       {routes.map((r) => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
+                        <option key={r.id} value={String(r.id)}>{r.name}</option>
                       ))}
                     </select>
                     <p className="text-xs text-surface-500 mt-1">Hold Ctrl/Cmd to select multiple routes. {rectorForm.route_ids?.length > 0 ? `${rectorForm.route_ids.length} selected` : ''}</p>
@@ -1427,7 +1446,7 @@ export default function AccessManagement() {
               const detail = distRouteDetails[r.id];
               const trucks = detail?.trucks || [];
               const drivers = detail?.drivers || [];
-              const selected = distSelectedRouteIds.includes(r.id);
+              const selected = distSelectedRouteIds.includes(String(r.id ?? r.Id));
               return (
                 <div key={r.id} className="bg-white rounded-xl border border-surface-200 overflow-hidden">
                   <div className="p-4 border-b border-surface-100 flex items-center gap-3">

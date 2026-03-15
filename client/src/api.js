@@ -501,6 +501,14 @@ export const monthlyPerformanceReports = {
 };
 
 const rec = (path, options = {}) => request(`/recruitment${path}`, { ...options, body: options.body ? JSON.stringify(options.body) : options.body });
+/** Public job application (no auth): used by external /apply/:token page */
+export const recruitmentApply = {
+  getInvite: (token) => fetch(`${API}/recruitment/apply/${encodeURIComponent(token)}`, { credentials: 'include' }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))),
+  submit: (token, formData) =>
+    fetch(`${API}/recruitment/apply/${encodeURIComponent(token)}`, { method: 'POST', body: formData, credentials: 'include' }).then((res) =>
+      res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))
+    ),
+};
 export const recruitment = {
   vacancies: {
     list: () => rec('/vacancies'),
@@ -573,6 +581,24 @@ export const recruitment = {
     update: (id, body) => rec(`/appointments/${id}`, { method: 'PATCH', body }),
     sendCongratulations: (id) => rec(`/appointments/${id}/send-congratulations`, { method: 'POST' }),
     sendRegret: (id) => rec(`/appointments/${id}/send-regret`, { method: 'POST' }),
+  },
+  invites: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return rec(`/invites${q ? `?${q}` : ''}`);
+    },
+    create: (body) => rec('/invites', { method: 'POST', body }),
+  },
+  externalApplications: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return rec(`/external-applications${q ? `?${q}` : ''}`);
+    },
+    get: (id) => rec(`/external-applications/${id}`),
+    update: (id, body) => rec(`/external-applications/${id}`, { method: 'PATCH', body }),
+    score: (id) => rec(`/external-applications/${id}/score`, { method: 'POST' }),
+    acceptToScreening: (id) => rec(`/external-applications/${id}/accept-to-screening`, { method: 'POST' }),
+    downloadUrl: (id, field) => `${API}/recruitment/external-applications/${id}/download/${field}`,
   },
   myTabs: () => rec('/my-tabs'),
   tabPermissions: {

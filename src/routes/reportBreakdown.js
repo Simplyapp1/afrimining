@@ -5,7 +5,7 @@ import fs from 'fs';
 import { query } from '../db.js';
 import { getCommandCentreAndRectorEmailsForRoute } from '../lib/emailRecipients.js';
 import { breakdownReportHtml, breakdownConfirmationToDriverHtml } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail, parseDateTimeInAppTz } from '../lib/emailService.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -160,9 +160,8 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
 
     let reportedAt = new Date();
     if (reported_date) {
-      const time = (reported_time || '00:00').toString().trim();
-      reportedAt = new Date(`${reported_date}T${time}`);
-      if (Number.isNaN(reportedAt.getTime())) reportedAt = new Date();
+      const parsed = parseDateTimeInAppTz(reported_date, reported_time);
+      if (parsed) reportedAt = parsed;
     }
 
     const result = await query(

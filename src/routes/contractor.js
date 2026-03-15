@@ -8,7 +8,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -801,9 +801,8 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
     const route_id = (payload.route_id && String(payload.route_id).trim().length > 10) ? String(payload.route_id).trim() : null;
     let reportedAt = new Date();
     if (reported_date) {
-      const time = (reported_time || '00:00').toString().trim();
-      reportedAt = new Date(`${reported_date}T${time}`);
-      if (Number.isNaN(reportedAt.getTime())) reportedAt = new Date();
+      const parsed = parseDateTimeInAppTz(reported_date, reported_time);
+      if (parsed) reportedAt = parsed;
     }
     const result = await query(
       `INSERT INTO contractor_incidents (tenant_id, contractor_id, truck_id, driver_id, [type], title, description, severity, actions_taken, reported_at, location, route_id)
@@ -2574,11 +2573,9 @@ function sanitizeFilename(s) {
     .slice(0, 80) || 'list';
 }
 
-/** Filename for distribution attachments: Company name, Route name, Date and time. Optional suffix (e.g. fleet, driver) when sending separate files. */
+/** Filename for distribution attachments: Company name, Route name, Date and time (app timezone). Optional suffix (e.g. fleet, driver) when sending separate files. */
 function distributionFilename(routeName, contractorName, ext, listKind = '') {
-  const now = new Date();
-  const datePart = now.toISOString().slice(0, 10);
-  const timePart = now.toTimeString().slice(0, 5).replace(':', '-');
+  const { datePart, timePart } = nowForFilename();
   const company = sanitizeFilename(contractorName);
   const route = sanitizeFilename(routeName);
   const base = `${company}_${route}_${datePart}_${timePart}`;
@@ -2701,7 +2698,7 @@ function writeDistributionInfoBlock(sheet, opts) {
   const companyName = opts.companyName != null ? String(opts.companyName).trim() : '';
   const routeName = opts.routeName != null ? String(opts.routeName).trim() : '';
   const generated = opts.generated instanceof Date ? opts.generated : (opts.generated != null ? new Date(opts.generated) : new Date());
-  const dateTimeStr = generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' });
+  const dateTimeStr = formatDateForAppTz(generated);
   sheet.getRow(1).getCell(1).value = 'Company:';
   sheet.getRow(1).getCell(1).font = EXCEL_INFO_LABEL_FONT;
   sheet.getRow(1).getCell(2).value = companyName || '—';
@@ -2726,7 +2723,7 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Fleet list';
-  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
@@ -2768,7 +2765,7 @@ async function buildDriverListExcel(query, tenantId, routeIds, columns = null, o
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Driver list';
-  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
@@ -2909,7 +2906,7 @@ async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Fleet list';
-  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }
 
@@ -2918,7 +2915,7 @@ async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opt
   const contractorIds = opts.contractorIds ?? null;
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
   const title = opts.title ?? 'Thinkers – Driver list';
-  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }
 
@@ -3090,8 +3087,15 @@ router.post('/distribution/send-email', async (req, res, next) => {
          WHERE rd.route_id IN (${placeholders})`,
         { tenantId, ...routeParams }
       );
-      const contractorIdsOnRoute = (contractorsOnRouteResult.recordset || []).map((r) => r.cid ?? r.contractor_id).filter(Boolean);
+      let contractorIdsOnRoute = (contractorsOnRouteResult.recordset || []).map((r) => r.cid ?? r.contractor_id).filter(Boolean);
       if (contractorIdsOnRoute.length === 0) return res.status(400).json({ error: 'No companies have fleet or drivers enrolled on the selected route(s).' });
+
+      // If user selected specific companies, only include those that are also on the selected route(s).
+      if (contractorIds.length > 0) {
+        const selectedSet = new Set(contractorIds.map((id) => String(id).trim()));
+        contractorIdsOnRoute = contractorIdsOnRoute.filter((id) => selectedSet.has(String(id)));
+        if (contractorIdsOnRoute.length === 0) return res.status(400).json({ error: 'None of the selected companies have fleet or drivers enrolled on the selected route(s).' });
+      }
 
       const contractorsResult = await query(
         `SELECT id, name FROM contractors WHERE tenant_id = @tenantId AND id IN (${contractorIdsOnRoute.map((_, i) => `@c${i}`).join(',')}) ORDER BY name`,
@@ -3099,7 +3103,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
       );
       const contractorsList = contractorsResult.recordset || [];
       const generated = new Date();
-      const subtitle = `List distribution · Generated ${generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+      const subtitle = `List distribution · Generated ${formatDateForAppTz(generated)}`;
       const entries = [];
 
       for (const row of contractorsList) {
@@ -3160,7 +3164,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
       const contractorsList = contractorsResult.recordset || [];
       const entries = [];
       const generated = new Date();
-      const subtitle = `Access management – List distribution · Generated ${generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
+      const subtitle = `Access management – List distribution · Generated ${formatDateForAppTz(generated)}`;
 
       for (const row of contractorsList) {
         const cid = row.id;

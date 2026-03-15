@@ -171,11 +171,42 @@ export function isEmailConfigured() {
     return !!user && !!pass;
 }
 
-/** Format a date for display in emails (timezone-aware). Uses EMAIL_TIMEZONE or Africa/Johannesburg so timestamps are not behind. */
+/** Application timezone (South Africa). Use for all user-facing timestamps so times are not 2 hours behind. */
+export const APP_TIMEZONE = (process.env.EMAIL_TIMEZONE || process.env.TZ || 'Africa/Johannesburg').trim();
+
+/** Format a date for display in emails (timezone-aware). Uses APP_TIMEZONE so timestamps match local time. */
 export function formatDateForEmail(date) {
     if (date == null) return '';
     const d = date instanceof Date ? date : new Date(date);
     if (Number.isNaN(d.getTime())) return '';
-    const tz = (process.env.EMAIL_TIMEZONE || 'Africa/Johannesburg').trim();
-    return d.toLocaleString('en-ZA', { timeZone: tz, dateStyle: 'short', timeStyle: 'medium' });
+    return d.toLocaleString('en-ZA', { timeZone: APP_TIMEZONE, dateStyle: 'short', timeStyle: 'medium' });
+}
+
+/** Format a date in app timezone for Excel/subtitles (medium date, short time). */
+export function formatDateForAppTz(date, options = {}) {
+    if (date == null) return '';
+    const d = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(d.getTime())) return '';
+    const { dateStyle = 'medium', timeStyle = 'short' } = options;
+    return d.toLocaleString('en-ZA', { timeZone: APP_TIMEZONE, dateStyle, timeStyle });
+}
+
+/** Current date/time in app timezone, for filenames: YYYY-MM-DD and HH-mm. */
+export function nowForFilename() {
+    const d = new Date();
+    const datePart = d.toLocaleString('en-CA', { timeZone: APP_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const timePart = d.toLocaleString('en-ZA', { timeZone: APP_TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false })
+        .replace(':', '-');
+    return { datePart, timePart };
+}
+
+/** Parse date + time string as South African time. E.g. reported_date "2025-03-06" + reported_time "10:00" => Date (10:00 SA = 08:00 UTC). */
+export function parseDateTimeInAppTz(dateStr, timeStr) {
+    if (!dateStr || typeof dateStr !== 'string') return null;
+    const time = (timeStr && String(timeStr).trim()) || '00:00';
+    const combined = `${dateStr.trim()}T${time.trim()}`;
+    if (!/^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}/.test(combined) && !/^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}:\d{2}/.test(combined)) return null;
+    const withTz = combined.length <= 16 ? `${combined}:00+02:00` : `${combined}+02:00`;
+    const d = new Date(withTz);
+    return Number.isNaN(d.getTime()) ? null : d;
 }

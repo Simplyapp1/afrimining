@@ -811,6 +811,53 @@ router.delete('/interview-questions/:id', async (req, res, next) => {
   }
 });
 
+// --- My intended questions (questions I will ask in interviews) ---
+router.get('/my-intended-questions', async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const result = await query(
+      `SELECT question_id FROM recruitment_user_intended_questions WHERE user_id = @userId`,
+      { userId }
+    );
+    const question_ids = (result.recordset || []).map((r) => r.question_id);
+    res.json({ question_ids });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/my-intended-questions', async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const { question_id } = req.body || {};
+    if (!question_id) return res.status(400).json({ error: 'question_id required' });
+    await query(
+      `INSERT INTO recruitment_user_intended_questions (user_id, question_id)
+       SELECT @userId, @question_id
+       WHERE NOT EXISTS (SELECT 1 FROM recruitment_user_intended_questions WHERE user_id = @userId AND question_id = @question_id)`,
+      { userId, question_id }
+    );
+    const list = await query(`SELECT question_id FROM recruitment_user_intended_questions WHERE user_id = @userId`, { userId });
+    res.json({ question_ids: (list.recordset || []).map((r) => r.question_id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/my-intended-questions/:question_id', async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const { question_id } = req.params;
+    await query(`DELETE FROM recruitment_user_intended_questions WHERE user_id = @userId AND question_id = @question_id`, { userId, question_id });
+    res.json({ removed: question_id });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --- Panel sessions and scores ---
 const panelSessionSelect = `s.id, s.applicant_id, s.vacancy_id, s.conducted_at, s.total_score, s.overall_comments, a.name AS applicant_name, v.title AS vacancy_title, a.cv_id AS applicant_cv_id, c.file_name AS applicant_cv_file_name`;
 const panelSessionFrom = `FROM recruitment_panel_sessions s LEFT JOIN recruitment_applicants a ON a.id = s.applicant_id LEFT JOIN recruitment_vacancies v ON v.id = s.vacancy_id LEFT JOIN recruitment_cvs c ON c.id = a.cv_id`;

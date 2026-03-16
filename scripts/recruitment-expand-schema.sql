@@ -39,3 +39,17 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_recruitment_tab_grants
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_recruitment_tab_grants_tab_id' AND object_id = OBJECT_ID('recruitment_tab_grants'))
   CREATE INDEX IX_recruitment_tab_grants_tab_id ON recruitment_tab_grants(tab_id);
 GO
+
+-- Questions the current user intends to ask in interviews (selected on Interview tab, visible on Panel)
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'recruitment_user_intended_questions')
+CREATE TABLE recruitment_user_intended_questions (
+  user_id UNIQUEIDENTIFIER NOT NULL,
+  question_id UNIQUEIDENTIFIER NOT NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  PRIMARY KEY (user_id, question_id),
+  CONSTRAINT FK_recruitment_user_intended_questions_question FOREIGN KEY (question_id) REFERENCES recruitment_interview_questions(id) ON DELETE CASCADE
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_recruitment_user_intended_questions_user_id' AND object_id = OBJECT_ID('recruitment_user_intended_questions'))
+  CREATE INDEX IX_recruitment_user_intended_questions_user_id ON recruitment_user_intended_questions(user_id);
+GO

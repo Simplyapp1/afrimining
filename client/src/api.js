@@ -565,6 +565,11 @@ export const recruitment = {
     update: (id, body) => rec(`/interview-questions/${id}`, { method: 'PATCH', body }),
     delete: (id) => rec(`/interview-questions/${id}`, { method: 'DELETE' }),
   },
+  myIntendedQuestions: {
+    list: () => rec('/my-intended-questions'),
+    add: (questionId) => rec('/my-intended-questions', { method: 'POST', body: { question_id: questionId } }),
+    remove: (questionId) => rec(`/my-intended-questions/${questionId}`, { method: 'DELETE' }),
+  },
   panelSessions: {
     list: (params) => rec(`/panel-sessions${new URLSearchParams(params).toString() ? `?${new URLSearchParams(params)}` : ''}`),
     create: (body) => rec('/panel-sessions', { method: 'POST', body }),

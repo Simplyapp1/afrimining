@@ -128,8 +128,8 @@ export default function Recruitment() {
           {allowedTabIdSet.has(activeTab) && activeTab === 'cv-library' && <TabCvLibrary setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'applicant-invitation' && <TabApplicantInvitation vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'screening' && <TabScreening vacancies={vacancies} setError={setError} />}
-          {allowedTabIdSet.has(activeTab) && activeTab === 'interview' && <TabInterview vacancies={vacancies} setError={setError} />}
-          {allowedTabIdSet.has(activeTab) && activeTab === 'panel' && <TabPanel vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'interview' && <TabInterview vacancies={vacancies} setError={setError} user={user} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'panel' && <TabPanel vacancies={vacancies} setError={setError} user={user} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'results' && <TabResults vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'appointments' && <TabAppointments vacancies={vacancies} setError={setError} />}
           {allowedTabIdSet.has(activeTab) && activeTab === 'panel-members' && <TabPanelMembers setError={setError} />}
@@ -1068,11 +1068,16 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
   );
 }
 
-function TabInterview({ vacancies, setError }) {
+function TabInterview({ vacancies, setError, user }) {
   const [vacancyId, setVacancyId] = useState('');
   const [questions, setQuestions] = useState([]);
   const [users, setUsers] = useState([]);
+  const [myIntendedIds, setMyIntendedIds] = useState([]);
+  const [togglingIntended, setTogglingIntended] = useState(null);
   const [form, setForm] = useState({ question_text: '', possible_answers: [], max_score: 10, sort_order: 0, allowed_asker_user_ids: [] });
+  const [editQuestion, setEditQuestion] = useState(null);
+  const [editForm, setEditForm] = useState({ question_text: '', max_score: 10, allowed_asker_user_ids: [] });
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
     recruitmentApi.interviewQuestions.list(vacancyId || undefined).then((r) => setQuestions(r.questions || []));
@@ -1080,6 +1085,10 @@ function TabInterview({ vacancies, setError }) {
   useEffect(() => {
     recruitmentApi.panelMembers.options().then((r) => setUsers(r.users || [])).catch(() => setUsers([]));
   }, []);
+  useEffect(() => {
+    if (user?.id) recruitmentApi.myIntendedQuestions.list().then((r) => setMyIntendedIds(r.question_ids || [])).catch(() => setMyIntendedIds([]));
+    else setMyIntendedIds([]);
+  }, [user?.id]);
 
   const addQuestion = () => {
     if (!(form.question_text || '').trim()) return;
@@ -1099,15 +1108,57 @@ function TabInterview({ vacancies, setError }) {
     }));
   };
 
+  const openEdit = (q) => {
+    setEditQuestion(q);
+    setEditForm({
+      question_text: q.question_text || '',
+      max_score: q.max_score ?? 10,
+      allowed_asker_user_ids: Array.isArray(q.allowed_asker_user_ids) ? [...q.allowed_asker_user_ids] : [],
+    });
+  };
+
+  const toggleEditAsker = (userId) => {
+    setEditForm((f) => ({
+      ...f,
+      allowed_asker_user_ids: f.allowed_asker_user_ids.includes(userId) ? f.allowed_asker_user_ids.filter((id) => id !== userId) : [...f.allowed_asker_user_ids, userId],
+    }));
+  };
+
+  const saveEdit = () => {
+    if (!editQuestion || !(editForm.question_text || '').trim()) return;
+    setSavingEdit(true);
+    recruitmentApi.interviewQuestions.update(editQuestion.id, {
+      question_text: editForm.question_text.trim(),
+      max_score: editForm.max_score,
+      allowed_asker_user_ids: editForm.allowed_asker_user_ids,
+    })
+      .then((r) => {
+        setQuestions((prev) => prev.map((q) => (q.id === editQuestion.id ? { ...q, ...r.question } : q)));
+        setEditQuestion(null);
+      })
+      .catch((e) => setError(e?.message))
+      .finally(() => setSavingEdit(false));
+  };
+
   const removeQuestion = (id) => {
     if (!window.confirm('Delete this question?')) return;
     recruitmentApi.interviewQuestions.delete(id).then(() => setQuestions((prev) => prev.filter((q) => q.id !== id))).catch((e) => setError(e?.message));
   };
 
+  const toggleIntended = (q) => {
+    if (!user?.id) return;
+    const isIn = myIntendedIds.includes(q.id);
+    setTogglingIntended(q.id);
+    (isIn ? recruitmentApi.myIntendedQuestions.remove(q.id) : recruitmentApi.myIntendedQuestions.add(q.id))
+      .then((r) => setMyIntendedIds(r.question_ids != null ? r.question_ids : (isIn ? myIntendedIds.filter((id) => id !== q.id) : [...myIntendedIds, q.id])))
+      .catch((e) => setError(e?.message))
+      .finally(() => setTogglingIntended(null));
+  };
+
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-800">Interview</h2>
-      <p className="text-sm text-surface-600">Create interview questions with possible answers and grading sheet. Assign who can ask each question.</p>
+      <p className="text-sm text-surface-600">Create interview questions with possible answers and grading sheet. Assign who can ask each question. Select which questions you will ask so they appear in your list on the Panel tab.</p>
       <div className="flex gap-4">
         <select value={vacancyId} onChange={(e) => setVacancyId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
           <option value="">Global (all vacancies)</option>
@@ -1135,29 +1186,74 @@ function TabInterview({ vacancies, setError }) {
         <button type="button" onClick={addQuestion} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">Add question</button>
       </div>
       <div className="rounded-xl border border-surface-200 bg-white p-4">
-        <h3 className="font-medium text-surface-800 mb-2">Questions ({questions.length})</h3>
+        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <h3 className="font-medium text-surface-800">Questions ({questions.length})</h3>
+          {user?.id && myIntendedIds.length > 0 && (
+            <span className="text-xs font-medium text-brand-700 bg-brand-50 px-2 py-1 rounded">My questions to ask: {myIntendedIds.length}</span>
+          )}
+        </div>
         <ul className="space-y-2">
-          {questions.map((q) => (
-            <li key={q.id} className="flex justify-between items-start gap-2 p-3 rounded-lg border border-surface-100">
-              <div>
-                <p className="text-surface-800">{q.question_text}</p>
-                <p className="text-xs text-surface-500">Max score: {q.max_score}{q.allowed_asker_user_ids?.length > 0 ? ` · Assigned askers: ${q.allowed_asker_user_ids.length}` : ''}</p>
-              </div>
-              <button type="button" onClick={() => removeQuestion(q.id)} className="text-red-600 text-xs">Delete</button>
-            </li>
-          ))}
+          {questions.map((q) => {
+            const isIntended = myIntendedIds.includes(q.id);
+            return (
+              <li key={q.id} className="flex justify-between items-start gap-2 p-3 rounded-lg border border-surface-100">
+                <div className="min-w-0 flex-1">
+                  <p className="text-surface-800">{q.question_text}</p>
+                  <p className="text-xs text-surface-500">Max score: {q.max_score}{q.allowed_asker_user_ids?.length > 0 ? ` · Assigned askers: ${q.allowed_asker_user_ids.length}` : ''}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  {user?.id && (
+                    <button type="button" onClick={() => toggleIntended(q)} disabled={togglingIntended === q.id} className={`text-xs font-medium px-2 py-1 rounded ${isIntended ? 'bg-brand-100 text-brand-800' : 'border border-brand-300 text-brand-700 hover:bg-brand-50'}`}>
+                      {togglingIntended === q.id ? '…' : isIntended ? 'Remove from my list' : "I'll ask this"}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => openEdit(q)} className="text-brand-600 text-xs font-medium hover:underline">Edit</button>
+                  <button type="button" onClick={() => removeQuestion(q.id)} className="text-red-600 text-xs">Delete</button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       </div>
+      {editQuestion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !savingEdit && setEditQuestion(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold text-surface-900">Edit question</h3>
+            <textarea value={editForm.question_text} onChange={(e) => setEditForm((f) => ({ ...f, question_text: e.target.value }))} placeholder="Question text" rows={3} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <div className="flex gap-2 items-center">
+              <input type="number" value={editForm.max_score} onChange={(e) => setEditForm((f) => ({ ...f, max_score: Number(e.target.value) || 10 }))} min={1} className="w-20 rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <span className="text-sm text-surface-600">Max score</span>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-surface-500 mb-1">Who can ask this question (reallocate)</p>
+              <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 rounded border border-surface-200 bg-surface-50">
+                {users.map((u) => (
+                  <label key={u.id} className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={editForm.allowed_asker_user_ids.includes(u.id)} onChange={() => toggleEditAsker(u.id)} className="rounded border-surface-300" />
+                    <span className="text-sm text-surface-800">{u.full_name || u.email}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setEditQuestion(null)} disabled={savingEdit} className="px-4 py-2 rounded-lg border border-surface-300 text-sm text-surface-700">Cancel</button>
+              <button type="button" onClick={saveEdit} disabled={savingEdit || !(editForm.question_text || '').trim()} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm disabled:opacity-50">{savingEdit ? 'Saving…' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function TabPanel({ vacancies, setError }) {
+function TabPanel({ vacancies, setError, user }) {
   const [applicants, setApplicants] = useState([]);
   const [vacancyId, setVacancyId] = useState('');
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
   const [questions, setQuestions] = useState([]);
+  const [myIntendedIds, setMyIntendedIds] = useState([]);
+  const [showOnlyMyQuestions, setShowOnlyMyQuestions] = useState(false);
   const [scores, setScores] = useState([]);
   const [draftScores, setDraftScores] = useState({});
   const [filterApplicantName, setFilterApplicantName] = useState('');
@@ -1176,6 +1272,10 @@ function TabPanel({ vacancies, setError }) {
       recruitmentApi.interviewQuestions.list(vacancyId).then((r) => setQuestions(r.questions || []));
     } else setApplicants([]);
   }, [vacancyId]);
+  useEffect(() => {
+    if (user?.id) recruitmentApi.myIntendedQuestions.list().then((r) => setMyIntendedIds(r.question_ids || [])).catch(() => setMyIntendedIds([]));
+    else setMyIntendedIds([]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (selectedSession) recruitmentApi.panelSessions.getScores(selectedSession.id).then((r) => setScores(r.scores || []));
@@ -1374,35 +1474,56 @@ function TabPanel({ vacancies, setError }) {
                   <span className="text-xs text-surface-500">No CV linked</span>
                 )}
               </div>
-              <p className="text-xs text-surface-500 mb-3">Score and comment per question; changes save when you leave the field.</p>
-              {questions.map((q) => {
-                const scoreRow = scores.find((sc) => sc.question_id === q.id);
+              <p className="text-xs text-surface-500 mb-2">Score and comment per question; changes save when you leave the field. Questions you have scored are marked so you don&apos;t ask them again.</p>
+              {user?.id && myIntendedIds.length > 0 && (
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-medium text-surface-600">Show:</span>
+                  <button type="button" onClick={() => setShowOnlyMyQuestions(false)} className={`px-2 py-1 rounded text-xs font-medium ${!showOnlyMyQuestions ? 'bg-surface-200 text-surface-800' : 'border border-surface-300 text-surface-600 hover:bg-surface-50'}`}>All questions</button>
+                  <button type="button" onClick={() => setShowOnlyMyQuestions(true)} className={`px-2 py-1 rounded text-xs font-medium ${showOnlyMyQuestions ? 'bg-brand-100 text-brand-800' : 'border border-brand-300 text-brand-700 hover:bg-brand-50'}`}>My questions only ({myIntendedIds.length})</button>
+                </div>
+              )}
+              {(() => {
+                const list = showOnlyMyQuestions && user?.id && myIntendedIds.length > 0 ? questions.filter((q) => myIntendedIds.includes(q.id)) : questions;
+                if (showOnlyMyQuestions && list.length === 0) return <p className="text-sm text-surface-500 py-2">None of your selected questions are in this vacancy&apos;s list. Add questions on the Interview tab or switch to &quot;All questions&quot;.</p>;
                 return (
-                  <div key={q.id} className="mb-3 p-2 rounded border border-surface-100">
-                    <p className="text-sm text-surface-800">{q.question_text}</p>
-                    <div className="flex gap-2 mt-1">
-                      <input
-                        type="number"
-                        placeholder="Score"
-                        min={0}
-                        max={q.max_score}
-                        value={getDisplayScore(q, scoreRow)}
-                        onChange={(e) => handleScoreChange(q, scoreRow, e.target.value)}
-                        onBlur={() => handleScoreBlur(q, scoreRow)}
-                        className="w-20 rounded border border-surface-300 px-2 py-1.5 text-sm"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Comments"
-                        value={getDisplayComments(q, scoreRow)}
-                        onChange={(e) => handleCommentsChange(q, scoreRow, e.target.value)}
-                        onBlur={() => handleCommentsBlur(q, scoreRow)}
-                        className="flex-1 rounded border border-surface-300 px-2 py-1.5 text-sm"
-                      />
+              <div className="max-h-[42vh] overflow-y-auto rounded-lg border border-surface-200 bg-surface-50/50 pr-1">
+                {list.map((q) => {
+                  const scoreRow = scores.find((sc) => sc.question_id === q.id);
+                  const alreadyAsked = !!scoreRow;
+                  return (
+                    <div key={q.id} className="mb-2 p-2 rounded border border-surface-100 bg-white last:mb-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm text-surface-800 line-clamp-2 flex-1 min-w-0">{q.question_text}</p>
+                        {alreadyAsked && (
+                          <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800" title="This question has already been asked and scored for this candidate">Already asked</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2 mt-1.5">
+                        <input
+                          type="number"
+                          placeholder="Score"
+                          min={0}
+                          max={q.max_score}
+                          value={getDisplayScore(q, scoreRow)}
+                          onChange={(e) => handleScoreChange(q, scoreRow, e.target.value)}
+                          onBlur={() => handleScoreBlur(q, scoreRow)}
+                          className="w-16 rounded border border-surface-300 px-2 py-1 text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Comments"
+                          value={getDisplayComments(q, scoreRow)}
+                          onChange={(e) => handleCommentsChange(q, scoreRow, e.target.value)}
+                          onBlur={() => handleCommentsBlur(q, scoreRow)}
+                          className="flex-1 min-w-0 rounded border border-surface-300 px-2 py-1 text-sm"
+                        />
+                      </div>
                     </div>
-                  </div>
+                  );
+                })}
+              </div>
                 );
-              })}
+              })()}
               <div className="mt-4 pt-3 border-t border-surface-200">
                 <h4 className="text-sm font-medium text-surface-800 mb-2">Add question</h4>
                 <p className="text-xs text-surface-500 mb-2">New questions are added to the Interview list for this vacancy and linked to you as the asker.</p>

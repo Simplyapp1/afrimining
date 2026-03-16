@@ -1264,6 +1264,8 @@ function TabPanel({ vacancies, setError, user }) {
   const [filterScoreMax, setFilterScoreMax] = useState('');
   const [viewingCv, setViewingCv] = useState(null);
   const [viewLoading, setViewLoading] = useState(false);
+  const [viewFullQuestion, setViewFullQuestion] = useState(null);
+  const [fullQuestionModalSaved, setFullQuestionModalSaved] = useState(false);
 
   useEffect(() => {
     if (vacancyId) {
@@ -1291,10 +1293,10 @@ function TabPanel({ vacancies, setError, user }) {
   };
 
   const saveScore = (questionId, score, comments) => {
-    if (!selectedSession) return;
-    recruitmentApi.panelSessions.saveScore(selectedSession.id, { question_id: questionId, score: score ?? null, comments: (comments ?? '').toString().trim() })
+    if (!selectedSession) return Promise.resolve();
+    return recruitmentApi.panelSessions.saveScore(selectedSession.id, { question_id: questionId, score: score ?? null, comments: (comments ?? '').toString().trim() })
       .then((r) => { setScores(r.scores || []); setDraftScores((prev) => { const next = { ...prev }; delete next[questionId]; return next; }); })
-      .catch((e) => setError(e?.message));
+      .catch((e) => { setError(e?.message); throw e; });
   };
 
   const getDisplayScore = (q, scoreRow) => {
@@ -1493,7 +1495,9 @@ function TabPanel({ vacancies, setError, user }) {
                   return (
                     <div key={q.id} className="mb-2 p-2 rounded border border-surface-100 bg-white last:mb-0">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="text-sm text-surface-800 line-clamp-2 flex-1 min-w-0">{q.question_text}</p>
+                        <button type="button" onClick={() => setViewFullQuestion(q)} title="Click to see full question" className="text-left text-sm text-surface-800 line-clamp-2 flex-1 min-w-0 hover:text-brand-700 hover:underline cursor-pointer">
+                          {q.question_text}
+                        </button>
                         {alreadyAsked && (
                           <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800" title="This question has already been asked and scored for this candidate">Already asked</span>
                         )}
@@ -1530,6 +1534,49 @@ function TabPanel({ vacancies, setError, user }) {
                 <AddQuestionForm sessionId={selectedSession.id} vacancyId={selectedSession.vacancy_id} onAdded={() => { recruitmentApi.panelSessions.getScores(selectedSession.id).then((r) => setScores(r.scores || [])); recruitmentApi.interviewQuestions.list(selectedSession.vacancy_id).then((r) => setQuestions(r.questions || [])); }} setError={setError} />
               </div>
               <button type="button" onClick={() => recruitmentApi.panelSessions.update(selectedSession.id, { total_score: scores.reduce((a, s) => a + (Number(s.score) || 0), 0) }).then(() => setSelectedSession((s) => ({ ...s, total_score: scores.reduce((a, s) => a + (Number(s.score) || 0), 0) })))} className="mt-2 px-3 py-2 rounded-lg bg-surface-100 text-sm">Update total score</button>
+              {viewFullQuestion && (() => {
+                const scoreRow = scores.find((sc) => sc.question_id === viewFullQuestion.id);
+                return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setViewFullQuestion(null)}>
+                  <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                    <h4 className="font-semibold text-surface-900 mb-3">Full question</h4>
+                    <p className="text-surface-800 text-base whitespace-pre-wrap overflow-y-auto flex-1 min-h-0 mb-4">{viewFullQuestion.question_text}</p>
+                    <p className="text-xs text-surface-500 mb-4">Max score: {viewFullQuestion.max_score}</p>
+                    <div className="space-y-3 border-t border-surface-200 pt-4">
+                      <label className="block">
+                        <span className="text-xs font-medium text-surface-600 block mb-1">Score (0–{viewFullQuestion.max_score})</span>
+                        <input
+                          type="number"
+                          placeholder="Score"
+                          min={0}
+                          max={viewFullQuestion.max_score}
+                          value={getDisplayScore(viewFullQuestion, scoreRow)}
+                          onChange={(e) => handleScoreChange(viewFullQuestion, scoreRow, e.target.value)}
+                          onBlur={() => handleScoreBlur(viewFullQuestion, scoreRow)}
+                          className="w-24 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-xs font-medium text-surface-600 block mb-1">Comments</span>
+                        <textarea
+                          placeholder="Comments"
+                          rows={3}
+                          value={getDisplayComments(viewFullQuestion, scoreRow)}
+                          onChange={(e) => handleCommentsChange(viewFullQuestion, scoreRow, e.target.value)}
+                          onBlur={() => handleCommentsBlur(viewFullQuestion, scoreRow)}
+                          className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                        />
+                      </label>
+                    </div>
+                    {fullQuestionModalSaved && <p className="text-sm font-medium text-emerald-600 mt-2">Results saved.</p>}
+                    <div className="flex gap-2 mt-4">
+                      <button type="button" onClick={() => { const s = getDisplayScore(viewFullQuestion, scoreRow); const c = getDisplayComments(viewFullQuestion, scoreRow); saveScore(viewFullQuestion.id, s === '' ? null : Number(s), c).then(() => { setFullQuestionModalSaved(true); setTimeout(() => setFullQuestionModalSaved(false), 3000); }); }} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">Save</button>
+                      <button type="button" onClick={() => { setViewFullQuestion(null); setFullQuestionModalSaved(false); }} className="px-4 py-2 rounded-lg bg-surface-200 text-surface-800 text-sm font-medium hover:bg-surface-300">Close</button>
+                    </div>
+                  </div>
+                </div>
+                );
+              })()}
             </>
           ) : (
             <p className="text-surface-500 text-sm">Select or start a session</p>
@@ -1591,15 +1638,30 @@ function TabResults({ vacancies, setError }) {
   const [vacancyId, setVacancyId] = useState('');
   const [results, setResults] = useState([]);
   const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [selectedApplicantResult, setSelectedApplicantResult] = useState(null);
+  const [detailScores, setDetailScores] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     recruitmentApi.results.list(vacancyId || undefined).then((r) => { setResults(r.results || []); setAiAnalysis(r.ai_analysis || null); }).catch((e) => setError(e?.message));
   }, [vacancyId]);
 
+  useEffect(() => {
+    if (!selectedApplicantResult?.id) {
+      setDetailScores([]);
+      return;
+    }
+    setDetailLoading(true);
+    recruitmentApi.panelSessions.getScores(selectedApplicantResult.id)
+      .then((r) => setDetailScores(r.scores || []))
+      .catch((e) => setError(e?.message))
+      .finally(() => setDetailLoading(false));
+  }, [selectedApplicantResult?.id]);
+
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-800">Results</h2>
-      <p className="text-sm text-surface-600">View grading results and AI analysis and recommendations.</p>
+      <p className="text-sm text-surface-600">View grading results and AI analysis and recommendations. Click an applicant row to see all questions and scores from the panel.</p>
       <select value={vacancyId} onChange={(e) => setVacancyId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
         <option value="">All vacancies</option>
         {vacancies.map((v) => <option key={v.id} value={v.id}>{v.title}</option>)}
@@ -1624,7 +1686,11 @@ function TabResults({ vacancies, setError }) {
           </thead>
           <tbody>
             {results.map((r) => (
-              <tr key={r.id} className="border-b border-surface-100">
+              <tr
+                key={r.id}
+                className="border-b border-surface-100 hover:bg-surface-50 cursor-pointer"
+                onClick={() => setSelectedApplicantResult(r)}
+              >
                 <td className="p-2">{r.applicant_name}</td>
                 <td className="p-2">{r.vacancy_title}</td>
                 <td className="p-2">{r.total_score != null ? r.total_score : '—'}</td>
@@ -1635,6 +1701,38 @@ function TabResults({ vacancies, setError }) {
           </tbody>
         </table>
       </div>
+
+      {selectedApplicantResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedApplicantResult(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b border-surface-200 flex justify-between items-start">
+              <div>
+                <h3 className="font-semibold text-surface-900">Panel results – {selectedApplicantResult.applicant_name}</h3>
+                <p className="text-sm text-surface-500 mt-0.5">{selectedApplicantResult.vacancy_title} · Total score: {selectedApplicantResult.total_score != null ? selectedApplicantResult.total_score : '—'}</p>
+              </div>
+              <button type="button" onClick={() => setSelectedApplicantResult(null)} className="text-surface-500 hover:text-surface-700 p-1">✕</button>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1 min-h-0">
+              <p className="text-sm text-surface-700 mb-4 p-3 rounded-lg bg-surface-100"><span className="font-medium text-surface-800">Overall comments:</span> {(selectedApplicantResult.overall_comments || '').trim() || '—'}</p>
+              {detailLoading ? (
+                <p className="text-surface-500 text-sm">Loading questions and scores…</p>
+              ) : detailScores.length === 0 ? (
+                <p className="text-surface-500 text-sm">No questions or scores recorded for this applicant.</p>
+              ) : (
+                <ul className="space-y-4">
+                  {detailScores.map((sc) => (
+                    <li key={sc.id} className="border-b border-surface-100 pb-4 last:border-0 last:pb-0">
+                      <p className="text-surface-800 text-sm font-medium mb-1">{sc.question_text || 'Question'}</p>
+                      <p className="text-xs text-surface-500 mb-1">Score: {sc.score != null ? sc.score : '—'} / {sc.max_score != null ? sc.max_score : '—'}</p>
+                      <p className="text-sm text-surface-600 mt-1"><span className="font-medium text-surface-700">Comments:</span> {(sc.comments || '').trim() ? <span className="whitespace-pre-wrap">{sc.comments}</span> : '—'}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

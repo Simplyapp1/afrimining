@@ -37,8 +37,13 @@ export async function downloadAttachmentWithAuth(url, filename) {
 
 function wrapNetworkError(err) {
   if (err?.message === 'Failed to fetch') {
+    if (import.meta.env.DEV) {
+      return new Error(
+        'Cannot reach the API. (1) Start the backend: npm run server (in project root). (2) If the API runs on another port, set VITE_API_BASE in client/.env (e.g. VITE_API_BASE=http://localhost:3001/api) and restart the dev server.'
+      );
+    }
     return new Error(
-      'Cannot reach the API. (1) Start the backend: npm run server (in project root). (2) If the API runs on another port, set VITE_API_BASE in client/.env (e.g. VITE_API_BASE=http://localhost:3001/api) and restart the dev server.'
+      'Cannot reach the API. If the site is hosted separately from the API, rebuild the client with VITE_API_BASE set to your API base URL (e.g. https://your-app.azurewebsites.net/api). On the server, set FRONTEND_ORIGIN (and optionally FRONTEND_ORIGINS) to this site’s exact URL(s) so CORS allows the browser. See docs/azure-hosting.md.'
     );
   }
   return err;

@@ -31,7 +31,32 @@ app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173', credentials: true }));
+function normalizeOrigin(o) {
+  if (!o || typeof o !== 'string') return '';
+  return o.trim().replace(/\/$/, '');
+}
+
+// CORS: browser Origin must match exactly (scheme + host; www vs apex are different).
+// Local dev: Vite on localhost or 127.0.0.1. Production: set FRONTEND_ORIGIN to your public URL
+// (e.g. https://your-app.azurewebsites.net). Use FRONTEND_ORIGINS for extra URLs (comma-separated),
+// e.g. custom domain + default hostname, or www + apex.
+const corsOriginSet = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  ...[process.env.FRONTEND_ORIGIN, ...(process.env.FRONTEND_ORIGINS ? process.env.FRONTEND_ORIGINS.split(',') : [])]
+    .map(normalizeOrigin)
+    .filter(Boolean),
+]);
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (corsOriginSet.has(normalizeOrigin(origin))) return callback(null, true);
+      callback(null, false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '50mb' })); // allow large payloads e.g. progress report PDF send-email
 app.use(
   session({

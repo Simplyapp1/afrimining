@@ -77,8 +77,11 @@ The app accepts either **`AZURE_SQL_*`** or **`SQLSERVER_*`** (same semantics).
 |------|--------|--------------|
 | `SESSION_SECRET` | A long random string (e.g. 32+ chars) | ✓ |
 | `FRONTEND_ORIGIN` | Your site URL, e.g. `https://your-app.azurewebsites.net` or `https://your-domain.com` (no trailing slash) | ✓ |
+| `FRONTEND_ORIGINS` | Optional. Comma-separated extra origins if users reach the app at more than one URL (e.g. `https://www.example.com,https://example.com` or default hostname + custom domain). Must match the browser address bar exactly (including `https`). | |
 
 The API sets **trust proxy** for Azure’s load balancer so `secure` session cookies work over HTTPS.
+
+If the UI shows “Cannot reach the API” in production, the browser is blocking the request (wrong `VITE_API_BASE`, or CORS: set `FRONTEND_ORIGIN` / `FRONTEND_ORIGINS` to the exact origin you use in the browser).
 
 **Optional – email:**  
 If you use the app’s email features, add `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM_NAME`, and optionally `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_SECURE` as in your `.env.example`.

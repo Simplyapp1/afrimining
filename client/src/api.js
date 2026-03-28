@@ -1,7 +1,7 @@
+import { getApiBase } from './lib/apiBase.js';
+
 // In dev, call API directly so it works even if proxy fails. Override with VITE_API_BASE in client .env.
-const API =
-  (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) ||
-  (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
+const API = getApiBase();
 
 /** Open an attachment URL in a new tab using fetch with credentials so auth is sent. */
 export async function openAttachmentWithAuth(url) {
@@ -261,8 +261,7 @@ export const contractor = {
     sendEmail: (body) => request('/contractor/distribution/send-email', { method: 'POST', body: JSON.stringify(body) }),
     exportUrl: (params = {}) => {
       const q = new URLSearchParams(params).toString();
-      const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-      return `${API}/contractor/distribution-history/export${q ? `?${q}` : ''}`;
+      return `${getApiBase()}/contractor/distribution-history/export${q ? `?${q}` : ''}`;
     },
   },
   pilotDistribution: {
@@ -389,14 +388,10 @@ export const commandCentre = {
     upload: (file) => {
       const formData = new FormData();
       formData.append('file', file);
-      const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-      return fetch(`${API}/command-centre/library/documents`, { method: 'POST', body: formData, credentials: 'include' })
+      return fetch(`${getApiBase()}/command-centre/library/documents`, { method: 'POST', body: formData, credentials: 'include' })
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
     },
-    downloadUrl: (id) => {
-      const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-      return `${API}/command-centre/library/documents/${id}/download`;
-    },
+    downloadUrl: (id) => `${getApiBase()}/command-centre/library/documents/${id}/download`,
   },
   investigationReports: {
     list: (approvedOnly) => request(`/command-centre/investigation-reports${approvedOnly ? '?approved=1' : ''}`),
@@ -807,8 +802,7 @@ export const transportOperations = {
       if (params.dateFrom) q.set('dateFrom', params.dateFrom);
       if (params.dateTo) q.set('dateTo', params.dateTo);
       if (params.shift) q.set('shift', params.shift);
-      const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-      return `${API}/transport-operations/presentations/pptx${q.toString() ? `?${q.toString()}` : ''}`;
+      return `${getApiBase()}/transport-operations/presentations/pptx${q.toString() ? `?${q.toString()}` : ''}`;
     },
   },
 };

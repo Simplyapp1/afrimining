@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } fr
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
+import { getApiBase } from './lib/apiBase.js';
 
 const NAV_SECTIONS = [
   {
@@ -3192,10 +3193,7 @@ function LibraryTab() {
       });
   };
 
-  const viewUrl = (name) => {
-    const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
-    return `${API}/accounting/library/${encodeURIComponent(name)}`;
-  };
+  const viewUrl = (name) => `${getApiBase()}/accounting/library/${encodeURIComponent(name)}`;
 
   const handleView = (name) => openAttachmentWithAuth(viewUrl(name));
 

@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { getApiBase } from './lib/apiBase.js';
 
-const API_BASE =
-  (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) ||
-  (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
+const API_BASE = getApiBase();
 
 const INCIDENT_TYPES = ['Breakdown', 'Accident', 'Load spill', 'Delay', 'Other incident'];
 const SEVERITIES = ['Low', 'Medium', 'High', 'Critical'];

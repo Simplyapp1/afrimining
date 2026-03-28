@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAuth } from './AuthContext';
 import { contractor as contractorApi, users as usersApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
+import { getApiBase } from './lib/apiBase.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
@@ -843,10 +844,9 @@ export default function AccessManagement() {
     if (format === 'excel') params.set('format', 'excel');
     const q = params.toString() ? `?${params.toString()}` : '';
     const path = isFleet ? `/contractor/enrollment/fleet-list${q}` : `/contractor/enrollment/driver-list${q}`;
-    const API_BASE = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
     const ext = format === 'excel' ? 'xlsx' : 'csv';
     const filename = (isFleet ? 'fleet-list' : 'driver-list') + '.' + ext;
-    fetch(`${API_BASE}${path}`, { credentials: 'include' })
+    fetch(`${getApiBase()}${path}`, { credentials: 'include' })
       .then((res) => {
         if (!res.ok) throw new Error('Failed to download list');
         return res.blob();

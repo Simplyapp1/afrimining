@@ -8,6 +8,7 @@ import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
+import { getApiBase } from './lib/apiBase.js';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -3855,7 +3856,7 @@ function GenericReportForm({ reportType, reportTypes, onBack, saving, setSaving,
   );
 }
 
-const API_BASE = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
+const API_BASE = getApiBase();
 function TabLibrary() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);

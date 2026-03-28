@@ -128,7 +128,7 @@ export default function Layout() {
           </div>
         </header>
 
-        <main className="app-main flex-1 min-h-0 p-4 sm:p-6 overflow-auto flex flex-col bg-surface-50 dark:bg-surface-950">
+        <main className="app-main flex-1 min-h-0 p-4 sm:p-6 overflow-auto flex flex-col">
           <Outlet key={dataRefreshKey} />
         </main>
       </div>

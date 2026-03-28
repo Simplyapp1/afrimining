@@ -42,36 +42,54 @@ Because both the app and the database are on Azure, you can enable **Allow Azure
 
 In the App Service → **Configuration** → **Application settings**, add:
 
-**Database – use one of these:**
+**Runtime (recommended)**
 
-**Option A – Connection string (recommended)**
+| Name | Value | Slot setting |
+|------|--------|--------------|
+| `NODE_ENV` | `production` | ✓ |
+| `WEBSITE_NODE_DEFAULT_VERSION` | `~20` or `22` (match `package.json` `engines`) | Optional; set in **Configuration** → **General settings** if the stack picker does not match |
+
+**Database – use one of these (same names as local `.env`; `.env` is not deployed)**
+
+**Option A – Connection string**
 
 | Name | Value | Slot setting |
 |------|--------|--------------|
 | `AZURE_SQL_CONNECTION_STRING` | `Server=tcp:YOUR_SERVER.database.windows.net,1433;Initial Catalog=YOUR_DB;User ID=YOUR_USER;Password=YOUR_PASSWORD;Encrypt=true;TrustServerCertificate=false` | ✓ |
 
-**Option B – Separate variables (recommended if Option A fails)**
+Or **`SQLSERVER_CONNECTION_STRING`** with the same value (see `src/db.js`).
 
-Use this if the single connection string fails (e.g. password with `;`, `=`, or `@`; or parsing errors). The app prefers Option B when all four variables are set.
+**Option B – Separate variables (preferred when passwords have special characters)**
+
+The app accepts either **`AZURE_SQL_*`** or **`SQLSERVER_*`** (same semantics).
 
 | Name | Value | Slot setting |
 |------|--------|--------------|
-| `AZURE_SQL_SERVER` | `yourserver.database.windows.net` | ✓ |
-| `AZURE_SQL_DATABASE` | Your database name | ✓ |
-| `AZURE_SQL_USER` | SQL login user | ✓ |
-| `AZURE_SQL_PASSWORD` | SQL login password | ✓ (mark as secret) |
-| `AZURE_SQL_PORT` | `1433` (optional) | ✓ |
+| `AZURE_SQL_SERVER` or `SQLSERVER_HOST` | `yourserver.database.windows.net` | ✓ |
+| `AZURE_SQL_DATABASE` or `SQLSERVER_DATABASE` | Your database name | ✓ |
+| `AZURE_SQL_USER` or `SQLSERVER_USER` | SQL login user | ✓ |
+| `AZURE_SQL_PASSWORD` or `SQLSERVER_PASSWORD` | SQL login password | ✓ (mark as secret) |
+| `AZURE_SQL_PORT` or `SQLSERVER_PORT` | `1433` (optional) | ✓ |
 
-**Required for auth:**
+**Required for auth and same-origin SPA**
 
 | Name | Value | Slot setting |
 |------|--------|--------------|
 | `SESSION_SECRET` | A long random string (e.g. 32+ chars) | ✓ |
+| `FRONTEND_ORIGIN` | Your site URL, e.g. `https://your-app.azurewebsites.net` or `https://your-domain.com` (no trailing slash) | ✓ |
+
+The API sets **trust proxy** for Azure’s load balancer so `secure` session cookies work over HTTPS.
 
 **Optional – email:**  
 If you use the app’s email features, add `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM_NAME`, and optionally `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_SECURE` as in your `.env.example`.
 
 Save **Configuration** so the App Service picks up the new settings. The backend will then connect to Azure SQL using `src/db.js`.
+
+**Startup command** (Linux): under **Configuration** → **General settings**, use **`npm start`** (runs `node server.js` from `package.json`) or `node server.js`.
+
+### GitHub Actions deploy (this repo)
+
+The workflow **`.github/workflows/main_tihlo.yml`** builds on push to `main` and deploys with `azure/webapps-deploy`. It does **not** inject database passwords; you must still set Application settings in the Portal (or use Azure Key Vault references). After changing settings, restart the Web App.
 
 ---
 
@@ -97,9 +115,8 @@ Then one URL serves both API and frontend; no `VITE_API_BASE` needed if the app 
 
 - [ ] Azure SQL server and database exist; SQL user has access.
 - [ ] SQL server firewall: **Allow Azure services and resources to access this server** (and your IP for local dev).
-- [ ] App Service **Configuration** → Application settings: either `AZURE_SQL_CONNECTION_STRING` or `AZURE_SQL_SERVER`, `AZURE_SQL_DATABASE`, `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD`.
-- [ ] `SESSION_SECRET` set on App Service.
-- [ ] Backend start command runs `node server.js` (or equivalent).
+- [ ] App Service **Configuration** → Application settings: `AZURE_SQL_*` or `SQLSERVER_*` or a connection string; `NODE_ENV=production`; `SESSION_SECRET`; `FRONTEND_ORIGIN` = your HTTPS site URL.
+- [ ] Backend **Startup Command** `npm start` or `node server.js` (Linux).
 - [ ] If frontend is on Static Web Apps, `VITE_API_BASE` points to your App Service API URL.
 
 ---

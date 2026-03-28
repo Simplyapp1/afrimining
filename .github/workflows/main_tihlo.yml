@@ -1,5 +1,13 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
+# Deploy to Azure App Service (Linux, Node). This workflow does NOT set SQL secrets —
+# configure Application settings in the Portal (see docs/azure-hosting.md).
+#
+# Required on the Web App (Configuration → Application settings):
+#   - Database: AZURE_SQL_* or SQLSERVER_* or *_CONNECTION_STRING (see src/db.js)
+#   - SESSION_SECRET, NODE_ENV=production
+#   - FRONTEND_ORIGIN=https://<your-app>.azurewebsites.net (or custom domain)
+# Optional: WEBSITE_NODE_DEFAULT_VERSION ~20 (match package.json engines)
+#
+# Docs: https://github.com/Azure/webapps-deploy
 
 name: Build and deploy Node.js app to Azure Web App - Tihlo
 
@@ -8,6 +16,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+
+env:
+  NODE_ENV: production
 
 jobs:
   build:
@@ -18,16 +29,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js version
-        uses: actions/setup-node@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
+          node-version: '22'
+          cache: 'npm'
 
-      - name: npm install, build, and test
+      - name: Install, build client, shrink package for App Service
         run: |
-          npm install
+          npm ci
           npm run build --if-present
           npm run test --if-present
+          rm -rf client/node_modules
+          npm prune --omit=dev
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4

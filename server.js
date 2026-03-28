@@ -26,6 +26,9 @@ import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.
 import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 
 const app = express();
+// Azure App Service / reverse proxies: correct req.secure, req.ip, and secure session cookies
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173', credentials: true }));

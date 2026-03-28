@@ -21,6 +21,7 @@ import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceRepo
 import recruitmentRoutes from './src/routes/recruitment.js';
 import accountingRoutes from './src/routes/accounting.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
+import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 
@@ -77,6 +78,12 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Thinkers API running at http://localhost:${PORT}`);
+  if (!isDbEnvConfigured()) {
+    console.warn(
+      'Database: no SQLSERVER_* / AZURE_SQL_* / connection string in environment — API routes that use the DB will fail. ' +
+        'Set the same variables in Azure App Service → Configuration, ECS task definition, etc. (.env is not deployed).'
+    );
+  }
   const emailOn = isEmailConfigured();
   console.log(
     'Email:',

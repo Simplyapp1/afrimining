@@ -3,6 +3,32 @@ import 'dotenv/config';
 
 const firstNonEmpty = (...values) => values.find((v) => typeof v === 'string' && v.trim().length > 0);
 
+/** True if discrete SQL vars or a connection string are present (does not verify connectivity). */
+export function isDbEnvConfigured() {
+  const server = firstNonEmpty(
+    process.env.SQLSERVER_HOST,
+    process.env.AWS_SQL_SERVER,
+    process.env.AZURE_SQL_SERVER
+  );
+  const database = firstNonEmpty(
+    process.env.SQLSERVER_DATABASE,
+    process.env.AWS_SQL_DATABASE,
+    process.env.AZURE_SQL_DATABASE
+  );
+  const user = firstNonEmpty(process.env.SQLSERVER_USER, process.env.AWS_SQL_USER, process.env.AZURE_SQL_USER);
+  const password = firstNonEmpty(
+    process.env.SQLSERVER_PASSWORD,
+    process.env.AWS_SQL_PASSWORD,
+    process.env.AZURE_SQL_PASSWORD
+  );
+  const connectionString = firstNonEmpty(
+    process.env.SQLSERVER_CONNECTION_STRING,
+    process.env.AWS_SQL_CONNECTION_STRING,
+    process.env.AZURE_SQL_CONNECTION_STRING
+  );
+  return Boolean(connectionString || (server && database && user && password));
+}
+
 const getConfig = () => {
   // SQLSERVER_* = preferred on AWS (many hosts forbid env vars prefixed AWS_).
   // Legacy: AWS_SQL_* then AZURE_SQL_*.
@@ -62,7 +88,8 @@ const getConfig = () => {
     return connectionString;
   }
   throw new Error(
-    'Set SQLSERVER_HOST/SQLSERVER_DATABASE/SQLSERVER_USER/SQLSERVER_PASSWORD (or legacy AWS_SQL_* / AZURE_SQL_*), or SQLSERVER_CONNECTION_STRING.'
+    'Database env not set. Add SQLSERVER_HOST, SQLSERVER_DATABASE, SQLSERVER_USER, SQLSERVER_PASSWORD (or legacy AZURE_SQL_* / AWS_SQL_*), or SQLSERVER_CONNECTION_STRING. ' +
+      'On Azure App Service / Docker / ECS, copy these into Application settings or task env — local .env is not deployed.'
   );
 };
 

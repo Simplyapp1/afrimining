@@ -77,9 +77,20 @@ The app accepts either **`AZURE_SQL_*`** or **`SQLSERVER_*`** (same semantics).
 |------|--------|--------------|
 | `SESSION_SECRET` | A long random string (e.g. 32+ chars) | ✓ |
 | `FRONTEND_ORIGIN` | Your site URL, e.g. `https://your-app.azurewebsites.net` or `https://your-domain.com` (no trailing slash) | ✓ |
-| `FRONTEND_ORIGINS` | Optional. Comma-separated extra origins if users reach the app at more than one URL (e.g. `https://www.example.com,https://example.com` or default hostname + custom domain). Must match the browser address bar exactly (including `https`). | |
+| `FRONTEND_ORIGINS` | Optional. Comma-separated **extra** origins if users reach the app at more than one URL. Must match the browser address bar exactly (scheme + host, no path; no trailing slash). | |
 
 The API sets **trust proxy** for Azure’s load balancer so `secure` session cookies work over HTTPS.
+
+**Example — `www`, apex, and Azure hostname (Wise App):** users may open any of these; list every **origin** (scheme + host, no path):
+
+| Setting | Value (copy as one line per row; no spaces after commas in `FRONTEND_ORIGINS`) |
+|--------|----------------------------------------------------------------------------------|
+| `FRONTEND_ORIGIN` | `https://www.wiseapp.co.za` (pick one canonical URL for email links; often `www` or apex) |
+| `FRONTEND_ORIGINS` | `https://wiseapp.co.za,https://tihlo-ajezeehje0ebeabf.southafricanorth-01.azurewebsites.net` |
+
+That covers `www.wiseapp.co.za`, `wiseapp.co.za`, and the regional Azure default host (`southafricanorth-01.azurewebsites.net`). If your App Service name or region changes, update the third URL to match **Configuration → Overview → Default domain**.
+
+**Do not** add spaces after commas in `FRONTEND_ORIGINS`. Use **https** for all three if the site is served over HTTPS.
 
 If the UI shows “Cannot reach the API” in production, the browser is blocking the request (wrong `VITE_API_BASE`, or CORS: set `FRONTEND_ORIGIN` / `FRONTEND_ORIGINS` to the exact origin you use in the browser).
 
@@ -118,7 +129,7 @@ Then one URL serves both API and frontend; no `VITE_API_BASE` needed if the app 
 
 - [ ] Azure SQL server and database exist; SQL user has access.
 - [ ] SQL server firewall: **Allow Azure services and resources to access this server** (and your IP for local dev).
-- [ ] App Service **Configuration** → Application settings: `AZURE_SQL_*` or `SQLSERVER_*` or a connection string; `NODE_ENV=production`; `SESSION_SECRET`; `FRONTEND_ORIGIN` = your HTTPS site URL.
+- [ ] App Service **Configuration** → Application settings: `AZURE_SQL_*` or `SQLSERVER_*` or a connection string; `NODE_ENV=production`; `SESSION_SECRET`; `FRONTEND_ORIGIN` = primary HTTPS site URL; `FRONTEND_ORIGINS` = any other hostnames users use (apex + `www` + `.azurewebsites.net` if applicable), comma-separated.
 - [ ] Backend **Startup Command** `npm start` or `node server.js` (Linux).
 - [ ] If frontend is on Static Web Apps, `VITE_API_BASE` points to your App Service API URL.
 

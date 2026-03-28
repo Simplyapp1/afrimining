@@ -23,14 +23,14 @@ import { getFirstAllowedPath } from './lib/pageAccess.js';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-surface-100"><div className="animate-pulse text-surface-500">Loading…</div></div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-surface-100 dark:bg-surface-950"><div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div></div>;
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 function FirstAllowedRedirect() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="p-4 text-surface-500">Loading…</div>;
+  if (loading) return <div className="p-4 text-surface-500 dark:text-surface-400">Loading…</div>;
   const to = getFirstAllowedPath(user);
   return <Navigate to={to} replace />;
 }

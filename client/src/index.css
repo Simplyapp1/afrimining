@@ -6,12 +6,63 @@ body {
   @apply bg-surface-50 text-surface-900 font-sans antialiased;
 }
 
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark body {
+  @apply bg-surface-950 text-surface-100;
+}
+
+/* Dark mode: common light surfaces inside the main shell (most pages inherit these) */
+html.dark .app-main .bg-white {
+  @apply bg-surface-900 text-surface-100;
+}
+html.dark .app-main .border-surface-200 {
+  @apply border-surface-700;
+}
+html.dark .app-main .border-surface-300 {
+  @apply border-surface-600;
+}
+html.dark .app-main .bg-surface-50 {
+  @apply bg-surface-900/50;
+}
+html.dark .app-main .bg-surface-100 {
+  @apply bg-surface-900/70;
+}
+html.dark .app-main .text-surface-900 {
+  @apply text-surface-50;
+}
+html.dark .app-main .text-surface-800 {
+  @apply text-surface-100;
+}
+html.dark .app-main .text-surface-700 {
+  @apply text-surface-200;
+}
+html.dark .app-main .text-surface-600 {
+  @apply text-surface-300;
+}
+html.dark .app-main .text-surface-500 {
+  @apply text-surface-400;
+}
+
+/* Full-screen pages outside Layout (e.g. report breakdown) */
+html.dark .bg-surface-100 {
+  @apply bg-surface-950;
+}
+
 /* Global scrollbar – visible and consistent across the app */
 html,
 body,
 #root {
   scrollbar-width: thin;
   scrollbar-color: #94a3b8 #e2e8f0;
+}
+
+html.dark,
+html.dark body,
+html.dark #root {
+  scrollbar-color: #525252 #262626;
 }
 
 /* WebKit (Chrome, Safari, Edge) – global */
@@ -38,6 +89,23 @@ html::-webkit-scrollbar-thumb:hover,
 body::-webkit-scrollbar-thumb:hover,
 #root::-webkit-scrollbar-thumb:hover {
   background: #64748b;
+}
+
+html.dark::-webkit-scrollbar-track,
+html.dark body::-webkit-scrollbar-track,
+html.dark #root::-webkit-scrollbar-track {
+  background: #262626;
+}
+html.dark::-webkit-scrollbar-thumb,
+html.dark body::-webkit-scrollbar-thumb,
+html.dark #root::-webkit-scrollbar-thumb {
+  background: #525252;
+  border-color: #262626;
+}
+html.dark::-webkit-scrollbar-thumb:hover,
+html.dark body::-webkit-scrollbar-thumb:hover,
+html.dark #root::-webkit-scrollbar-thumb:hover {
+  background: #737373;
 }
 
 /* All scrollable containers (overflow-auto, overflow-y-auto, etc.) – Firefox */

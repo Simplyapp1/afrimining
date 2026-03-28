@@ -23,6 +23,7 @@
     "db:contractor-unique": "node scripts/run-contractor-unique.js",
     "db:command-centre": "node scripts/run-command-centre-schema.js",
     "db:command-centre-shift-reports": "node scripts/run-command-centre-shift-reports.js",
+    "db:command-centre-controller-evaluations": "node scripts/run-command-centre-controller-evaluations.js",
     "db:command-centre-investigation-reports": "node scripts/run-command-centre-investigation-reports.js",
     "db:command-centre-library-documents": "node scripts/run-command-centre-library-documents.js",
     "db:command-centre-compliance-inspections": "node scripts/run-command-centre-compliance-inspections.js",

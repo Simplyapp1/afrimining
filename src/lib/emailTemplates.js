@@ -658,7 +658,7 @@ export function shiftReportOverrideRequestHtml({ requesterName, requesterEmail, 
     ${taskSectionBar('Override request')}
     ${taskKeyValueTable(rows)}
     <p style="margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: #64748b;">OVERRIDE CODE (share with requester)</p>
-    <p style="margin: 0 0 16px; font-size: 22px; font-weight: 700; letter-spacing: 0.15em; color: #b91c1c; font-family: monospace;">${escapeHtml(code)}</p>
+    <p style="margin: 0 0 16px; font-size: 22px; font-weight: 700; color: #b91c1c; font-family: monospace; white-space: nowrap;">${escapeHtml(code)}</p>
     <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">Share this code with <strong>${escapeHtml(requesterName || requesterEmail || 'the requester')}</strong> so they can complete their action in Command Centre → Requests.</p>
     <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/command-centre')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Command Centre →</a></p>
   `;
@@ -676,8 +676,8 @@ export function shiftReportOverrideCodeToRequesterHtml({ reportRoute, reportDate
     ${taskSectionBar('Your override code')}
     ${taskKeyValueTable(rows)}
     <p style="margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: #64748b;">OVERRIDE CODE</p>
-    <p style="margin: 0 0 16px; font-size: 22px; font-weight: 700; letter-spacing: 0.15em; color: #b91c1c; font-family: monospace;">${escapeHtml(code)}</p>
-    <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">Enter this code in the override field and then choose Approve, Reject, or Provisional approval.</p>
+    <p style="margin: 0 0 16px; font-size: 22px; font-weight: 700; color: #b91c1c; font-family: monospace; white-space: nowrap;">${escapeHtml(code)}</p>
+    <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">Enter the six digits (numbers only) in the override field, then choose Approve, Reject, or Provisional approval.</p>
     <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/command-centre')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Command Centre →</a></p>
   `;
   return taskEmailLayout('Your override code', content, 'Command Centre');

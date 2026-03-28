@@ -192,7 +192,7 @@ router.get('/', async (req, res, next) => {
     const total = countResult.recordset[0].total;
 
     const result = await query(
-      `SELECT DISTINCT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.id_number, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name
+      `SELECT DISTINCT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.id_number, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name, t.[plan] AS tenant_plan
        ${fromJoin}
        ${where}
        ORDER BY u.${validSort} ${validOrder}

@@ -15,14 +15,23 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_drivers') AND name = 'id_number_norm')
   ALTER TABLE contractor_drivers ADD id_number_norm AS LOWER(LTRIM(RTRIM(id_number))) PERSISTED;
 GO
--- Unfiltered unique index (SQL Server disallows computed columns in filtered-index predicates).
+-- Replace legacy unfiltered index: SQL Server treats NULL as one value per key, so only one
+-- driver per tenant could have a blank id_number. Filter on base column id_number (not computed).
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ct_drivers_tenant_id_number' AND object_id = OBJECT_ID('contractor_drivers'))
+  DROP INDEX UQ_ct_drivers_tenant_id_number ON contractor_drivers;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ct_drivers_tenant_id_number' AND object_id = OBJECT_ID('contractor_drivers'))
-  CREATE UNIQUE INDEX UQ_ct_drivers_tenant_id_number ON contractor_drivers(tenant_id, id_number_norm);
+  CREATE UNIQUE INDEX UQ_ct_drivers_tenant_id_number ON contractor_drivers(tenant_id, id_number_norm)
+  WHERE id_number IS NOT NULL;
 GO
 
 -- contractor_drivers: unique license_number per tenant, case-insensitive (when not null)
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_drivers') AND name = 'license_number_norm')
   ALTER TABLE contractor_drivers ADD license_number_norm AS LOWER(LTRIM(RTRIM(license_number))) PERSISTED;
 GO
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ct_drivers_tenant_license' AND object_id = OBJECT_ID('contractor_drivers'))
+  DROP INDEX UQ_ct_drivers_tenant_license ON contractor_drivers;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ct_drivers_tenant_license' AND object_id = OBJECT_ID('contractor_drivers'))
-  CREATE UNIQUE INDEX UQ_ct_drivers_tenant_license ON contractor_drivers(tenant_id, license_number_norm);
+  CREATE UNIQUE INDEX UQ_ct_drivers_tenant_license ON contractor_drivers(tenant_id, license_number_norm)
+  WHERE license_number IS NOT NULL;

@@ -4,7 +4,7 @@ import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
-import { generateShiftReportPdf } from './lib/shiftReportPdf.js';
+import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
@@ -216,11 +216,12 @@ export default function CommandCentre() {
     const handler = (e) => {
       const report = e.detail?.report ?? e.detail;
       const tenantId = e.detail?.tenantId ?? user?.tenant_id;
+      const tenantName = e.detail?.tenantName ?? user?.tenant_name;
       if (!report) return;
       const runPdf = (logoDataUrl) => {
         try {
           const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
-          doc.save(`shift-report-${report.id || 'download'}.pdf`);
+          doc.save(buildShiftReportDownloadFilename(report, { tenantName }));
         } catch (err) {
           setError(err?.message || 'Failed to generate PDF');
         }
@@ -1566,6 +1567,7 @@ function TabSavedReports() {
   const [submittingTo, setSubmittingTo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [savingReport, setSavingReport] = useState(false);
+  const [deletingReport, setDeletingReport] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [forceEditMode, setForceEditMode] = useState(false);
 
@@ -1612,6 +1614,7 @@ function TabSavedReports() {
   const canDownload = report && report.status === 'approved';
   const isApprover = report && user && report.approved_by_user_id != null && normId(report.approved_by_user_id) === normId(user.id);
   const isSuperAdminHere = user?.role === 'super_admin';
+  const canDeleteDraftSuperAdmin = isSuperAdminHere && report && String(report.status || '').toLowerCase().trim() === 'draft';
   const canRevokeApproval = report && report.status === 'approved' && (isApprover || isSuperAdminHere);
   const showCommentsToCreator = report && isCreator && (report.status === 'provisional' || report.status === 'pending_approval');
   const canMarkAddressed = report && isCreator && report.status === 'provisional';
@@ -1629,10 +1632,34 @@ function TabSavedReports() {
               <button type="button" onClick={() => setForceEditMode(true)} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Edit report</button>
             )}
             {canDownload && (
-              <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
+              <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id, tenantName: user?.tenant_name } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
             )}
             {canRevokeApproval && (
               <button type="button" onClick={() => { setSavingReport(true); ccApi.shiftReports.revokeApproval(selectedId).then((r) => { setReport(r.report); loadList(); setSavingReport(false); }).catch((err) => { setError(err?.message || 'Revoke failed'); setSavingReport(false); }); }} disabled={savingReport} className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">Revoke approval</button>
+            )}
+            {canDeleteDraftSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!window.confirm('Permanently delete this draft shift report? This cannot be undone.')) return;
+                  setDeletingReport(true);
+                  setError('');
+                  ccApi.shiftReports
+                    .delete(selectedId)
+                    .then(() => {
+                      setSelectedId(null);
+                      setReport(null);
+                      setComments([]);
+                      loadList();
+                    })
+                    .catch((err) => setError(err?.message || 'Delete failed'))
+                    .finally(() => setDeletingReport(false));
+                }}
+                disabled={deletingReport}
+                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deletingReport ? 'Deleting…' : 'Delete draft'}
+              </button>
             )}
             {canSubmit && (
               <button type="button" onClick={openSubmitModal} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Submit for approval</button>
@@ -2472,7 +2499,7 @@ function TabRequests() {
           <button type="button" onClick={() => { setSelectedId(null); setReport(null); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
           <span className="text-xs font-semibold text-surface-500 uppercase">Status: {report.status}</span>
           {report.status === 'approved' && (
-            <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
+            <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id, tenantName: user?.tenant_name } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
           )}
         </div>
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
@@ -2505,9 +2532,9 @@ function TabRequests() {
               </button>
             ) : (
               <div className="space-y-3">
-                <p className="text-sm text-red-800">Check your email for the override code (it was sent to you and to Access Management). Enter it below to proceed.</p>
+                <p className="text-sm text-red-800">Check your email for the six-digit override code (numbers only—paste is fine). It was sent to you and to Access Management.</p>
                 <div className="flex flex-wrap items-center gap-2">
-                  <input type="text" value={overrideCode} onChange={(e) => setOverrideCode(e.target.value)} placeholder="Enter override code" maxLength={10} className="rounded-lg border-2 border-red-200 px-3 py-2 text-sm font-mono w-40" />
+                  <input type="text" inputMode="numeric" autoComplete="one-time-code" value={overrideCode} onChange={(e) => setOverrideCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="123456" maxLength={6} className="rounded-lg border-2 border-red-200 px-3 py-2 text-sm font-mono w-36 tracking-wide" />
                 </div>
                 <div className="flex flex-wrap gap-2 pt-2">
                   <button type="button" onClick={approve} disabled={acting || !overrideCode.trim()} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">Approve</button>
@@ -2639,8 +2666,16 @@ function ShiftReportReadOnlyView({ report }) {
             <div><span className="text-xs text-surface-500">Report date</span><p className="font-medium">{r.report_date ? new Date(r.report_date).toLocaleDateString() : '—'}</p></div>
             <div><span className="text-xs text-surface-500">Shift date</span><p className="font-medium">{r.shift_date ? new Date(r.shift_date).toLocaleDateString() : '—'}</p></div>
             <div><span className="text-xs text-surface-500">Shift start / end</span><p className="font-medium">{r.shift_start || '—'} / {r.shift_end || '—'}</p></div>
-            <div><span className="text-xs text-surface-500">Controller 1</span><p className="font-medium">{r.controller1_name || '—'} {r.controller1_email ? `(${r.controller1_email})` : ''}</p></div>
-            <div><span className="text-xs text-surface-500">Controller 2</span><p className="font-medium">{r.controller2_name || '—'} {r.controller2_email ? `(${r.controller2_email})` : ''}</p></div>
+            <div>
+              <span className="text-xs text-surface-500">Controller 1</span>
+              <p className="font-medium text-surface-900 mt-0.5">{r.controller1_name?.trim() || '—'}</p>
+              {r.controller1_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller1_email}</p> : null}
+            </div>
+            <div>
+              <span className="text-xs text-surface-500">Controller 2 <span className="text-surface-400 font-normal">(optional)</span></span>
+              <p className="font-medium text-surface-900 mt-0.5">{r.controller2_name?.trim() || '—'}</p>
+              {r.controller2_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller2_email}</p> : null}
+            </div>
           </div>
         )}
         {openSection === 'summary' && (
@@ -2927,12 +2962,18 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       .then((r) => {
         if (cancelled) return;
         const list = Array.isArray(r?.users) ? r.users : [];
+        const canBeController = (u) => {
+          if (!u || (u.status && String(u.status).toLowerCase() !== 'active')) return false;
+          if (u.role === 'super_admin' || u.role === 'tenant_admin') return true;
+          if (String(u.tenant_plan || '').toLowerCase() === 'enterprise') return true;
+          return Array.isArray(u?.page_roles) && u.page_roles.includes('command_centre');
+        };
         const withCommandCentre = list
-          .filter((u) => Array.isArray(u?.page_roles) && u.page_roles.includes('command_centre'))
+          .filter(canBeController)
           .map((u) => ({
             id: u.id,
-            full_name: u.full_name || '',
-            email: u.email || '',
+            full_name: (u.full_name || '').trim(),
+            email: (u.email || '').trim(),
           }))
           .filter((u) => u.full_name || u.email)
           .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
@@ -2952,14 +2993,14 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     controller2Options.find((u) => {
       const selectedEmail = String(formFields.controller2_email || '').trim().toLowerCase();
       const selectedName = String(formFields.controller2_name || '').trim().toLowerCase();
-      return (
-        (selectedEmail && String(u.email || '').trim().toLowerCase() === selectedEmail) ||
-        (!selectedEmail && selectedName && String(u.full_name || '').trim().toLowerCase() === selectedName)
-      );
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const uName = String(u.full_name || '').trim().toLowerCase();
+      if (selectedEmail && uEmail && uEmail === selectedEmail) return true;
+      if (selectedName && uName && uName === selectedName) return true;
+      return false;
     }) || null;
   const handleController2Select = (selectedId) => {
     if (!selectedId) {
-      setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
       return;
     }
     const picked = controller2Options.find((u) => String(u.id) === String(selectedId));
@@ -2971,6 +3012,9 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       report_date: f.report_date || todayDate(),
       shift_date: f.shift_date || todayDate(),
     }));
+  };
+  const clearController2 = () => {
+    setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
   };
   const selectedRoute = String(formFields.route || '').trim().toLowerCase();
   const filteredBreakdowns = (reportedBreakdowns || []).filter((b) => {
@@ -3219,18 +3263,43 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
               <input name="controller1_email" type="email" value={formFields.controller1_email} onChange={set('controller1_email')} placeholder="Email" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Controller 2 (optional)</label>
+              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">
+                Controller 2 <span className="font-normal normal-case text-surface-400">(optional)</span>
+              </label>
+              <p className="text-xs text-surface-500 mb-1.5">Choose a teammate or enter name and email below — same layout as Controller 1.</p>
               <select
+                aria-label="Optional: select Controller 2 from Command Centre team"
                 value={selectedController2 ? String(selectedController2.id) : ''}
-                onChange={(e) => handleController2Select(e.target.value)}
-                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) clearController2();
+                  else handleController2Select(v);
+                }}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2"
               >
-                <option value="">Select controller 2</option>
+                <option value="">— None: type name &amp; email below —</option>
                 {controller2Options.map((u) => (
-                  <option key={u.id} value={u.id}>{u.full_name || u.email} {u.email ? `(${u.email})` : ''}</option>
+                  <option key={u.id} value={u.id}>
+                    {u.full_name ? `${u.full_name}${u.email ? ` — ${u.email}` : ''}` : u.email || '—'}
+                  </option>
                 ))}
               </select>
-              <input name="controller2_email" type="email" value={formFields.controller2_email} onChange={set('controller2_email')} placeholder="Email" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input
+                name="controller2_name"
+                type="text"
+                value={formFields.controller2_name}
+                onChange={set('controller2_name')}
+                placeholder="Full name"
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1"
+              />
+              <input
+                name="controller2_email"
+                type="email"
+                value={formFields.controller2_email}
+                onChange={set('controller2_email')}
+                placeholder="Email"
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
             </div>
           </div>
         </SectionBlock>
@@ -3923,7 +3992,7 @@ function TabLibrary() {
                         <p className="font-medium text-surface-900 truncate">{r.route || 'Shift report'}</p>
                         <p className="text-xs text-surface-500 mt-0.5">{dateStr} · {r.controller1_name || '—'}</p>
                       </div>
-                      <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report: r, tenantId: user?.tenant_id } })); }} className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700">Download</a>
+                      <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report: r, tenantId: user?.tenant_id, tenantName: user?.tenant_name } })); }} className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700">Download</a>
                     </div>
                   </div>
                 );

@@ -352,6 +352,7 @@ export const commandCentre = {
     get: (id) => request(`/command-centre/shift-reports/${id}`),
     create: (body) => request('/command-centre/shift-reports', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/command-centre/shift-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => request(`/command-centre/shift-reports/${id}`, { method: 'DELETE' }),
     submit: (id, submitted_to_user_id) => request(`/command-centre/shift-reports/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_to_user_id }) }),
     addComment: (id, comment_text) => request(`/command-centre/shift-reports/${id}/comments`, { method: 'POST', body: JSON.stringify({ comment_text }) }),
     markCommentAddressed: (reportId, commentId) => request(`/command-centre/shift-reports/${reportId}/comments/${commentId}/addressed`, { method: 'PATCH' }),

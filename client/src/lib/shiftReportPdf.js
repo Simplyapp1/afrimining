@@ -157,6 +157,72 @@ function buildDeclaration(report) {
   return 'As the controller(s) on duty, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.';
 }
 
+/** Strip characters that are invalid in file names on common OSes. */
+function sanitizeFilenamePart(s, fallback = '') {
+  const t = String(s ?? '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t || fallback;
+}
+
+/** Parse hour 0–23 from shift_start / shift_end strings (e.g. 06:00, 18:30, 6pm). */
+function parseHourFromShiftTime(str) {
+  if (str == null || str === '') return null;
+  const s = String(str).trim();
+  const lower = s.toLowerCase();
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?(?:\s*(a\.?m\.?|p\.?m\.?))?/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const suf = m[3] ? m[3].replace(/\./g, '').toLowerCase() : '';
+  const isPm = suf.startsWith('p') || (!suf && lower.includes('pm') && !lower.includes('am'));
+  const isAm = suf.startsWith('a') || (!suf && lower.includes('am'));
+  if (isPm && h < 12) h += 12;
+  if (isAm && h === 12) h = 0;
+  if (!isPm && !isAm && lower.includes('pm') && h < 12) h += 12;
+  if (!isPm && !isAm && lower.includes('am') && h === 12) h = 0;
+  return ((h % 24) + 24) % 24;
+}
+
+function inferDayOrNightShift(report) {
+  const h = parseHourFromShiftTime(report.shift_start);
+  if (h != null) {
+    if (h >= 18 || h < 6) return 'Night';
+    return 'Day';
+  }
+  const h2 = parseHourFromShiftTime(report.shift_end);
+  if (h2 != null) {
+    if (h2 >= 18 || h2 < 6) return 'Night';
+    return 'Day';
+  }
+  return 'Day';
+}
+
+function formatShiftReportFileDate(report) {
+  const raw = report.report_date || report.shift_date || report.created_at;
+  const d = raw ? new Date(raw) : new Date();
+  if (Number.isNaN(d.getTime())) {
+    const now = new Date();
+    return now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/**
+ * Download filename for shift report PDFs, e.g. "Tihlo Day Shift Report 27 Mar 2026 - Anthra Siding.pdf"
+ * @param {Object} report
+ * @param {Object} [options]
+ * @param {string} [options.tenantName] - Company name (defaults to report.tenant_name or "Tihlo")
+ */
+export function buildShiftReportDownloadFilename(report, options = {}) {
+  const tenant = sanitizeFilenamePart(options.tenantName || report.tenant_name, 'Tihlo');
+  const dayNight = inferDayOrNightShift(report);
+  const dateStr = formatShiftReportFileDate(report);
+  const route = sanitizeFilenamePart(report.route, 'Route');
+  const base = `${tenant} ${dayNight} Shift Report ${dateStr} - ${route}`;
+  return `${base}.pdf`;
+}
+
 /**
  * Generate shift report PDF.
  * @param {Object} report - Shift report from API

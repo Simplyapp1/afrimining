@@ -103,17 +103,22 @@ export function requireTenantAdmin(req, res, next) {
 /**
  * Restrict route to users who have access to the given page(s).
  * allowedPageIds: string (one page_id) or string[] (any of).
- * Super_admin always allowed. If user has no page_roles assigned, allow all (legacy).
- * If user has page_roles, they must include at least one of allowedPageIds.
+ * Super_admin, tenant_admin, and enterprise-plan tenants: full access (same idea as requireTenantAdmin).
+ * If user has no page_roles assigned, allow all (legacy).
+ * If user has page_roles, they must include at least one of allowedPageIds (case-insensitive).
  */
 export function requirePageAccess(allowedPageIds) {
   const allowed = Array.isArray(allowedPageIds) ? allowedPageIds : [allowedPageIds];
+  const allowedNorm = allowed.map((p) => String(p).toLowerCase());
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
     if (req.user.role === 'super_admin') return next();
+    if (req.user.role === 'tenant_admin') return next();
+    if (String(req.user.tenant_plan || '').toLowerCase() === 'enterprise') return next();
     const roles = req.user.page_roles;
     if (!roles || roles.length === 0) return next();
-    const hasAccess = allowed.some((pageId) => roles.includes(pageId));
+    const roleNorm = roles.map((r) => String(r).toLowerCase());
+    const hasAccess = allowedNorm.some((pid) => roleNorm.includes(pid));
     if (!hasAccess) return res.status(403).json({ error: 'You do not have access to this page.' });
     next();
   };

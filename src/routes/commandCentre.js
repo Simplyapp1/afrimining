@@ -2155,11 +2155,22 @@ router.get('/shift-reports/:id', async (req, res, next) => {
     const comments = commentsResult.recordset || [];
     let evaluation = null;
     if (req.user?.id) {
-      const evalResult = await query(
-        `SELECT id, answers, overall_comment, created_at FROM controller_evaluations WHERE shift_report_id = @reportId AND evaluator_user_id = @userId`,
-        { reportId: req.params.id, userId: req.user.id }
-      );
-      evaluation = evalResult.recordset?.[0] ? { id: evalResult.recordset[0].id, answers: evalResult.recordset[0].answers, overall_comment: evalResult.recordset[0].overall_comment, created_at: evalResult.recordset[0].created_at } : null;
+      try {
+        const evalResult = await query(
+          `SELECT id, answers, overall_comment, created_at FROM controller_evaluations WHERE shift_report_id = @reportId AND evaluator_user_id = @userId`,
+          { reportId: req.params.id, userId: req.user.id }
+        );
+        evaluation = evalResult.recordset?.[0]
+          ? { id: evalResult.recordset[0].id, answers: evalResult.recordset[0].answers, overall_comment: evalResult.recordset[0].overall_comment, created_at: evalResult.recordset[0].created_at }
+          : null;
+      } catch (e) {
+        const msg = (e?.message || '').toLowerCase();
+        if (msg.includes('invalid object name') && msg.includes('controller_evaluations')) {
+          console.warn('[command-centre] controller_evaluations missing; run: npm run db:command-centre-controller-evaluations');
+        } else {
+          throw e;
+        }
+      }
     }
     res.json({ report: rowToShiftReport(report), comments, evaluation });
   } catch (err) {
@@ -2428,6 +2439,29 @@ router.patch('/shift-reports/:id', async (req, res, next) => {
   }
 });
 
+/** DELETE draft shift report (super_admin only). Cascades comments, evaluations, override requests. */
+router.delete('/shift-reports/:id', async (req, res, next) => {
+  try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only a system administrator can delete draft shift reports.' });
+    }
+    const getResult = await query(
+      `SELECT id, status FROM command_centre_shift_reports WHERE id = @id`,
+      { id: req.params.id }
+    );
+    const existing = getResult.recordset?.[0];
+    if (!existing) return res.status(404).json({ error: 'Report not found' });
+    const status = existing.status != null ? String(existing.status).toLowerCase().trim() : '';
+    if (status !== 'draft') {
+      return res.status(400).json({ error: 'Only draft reports can be deleted.' });
+    }
+    await query(`DELETE FROM command_centre_shift_reports WHERE id = @id`, { id: req.params.id });
+    res.sendStatus(204);
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** POST submit for approval */
 router.post('/shift-reports/:id/submit', async (req, res, next) => {
   try {
@@ -2531,16 +2565,37 @@ router.patch('/shift-reports/:reportId/comments/:commentId/addressed', async (re
   }
 });
 
+/** Strip non-digits so pasted codes match DB even when email HTML adds spaces (letter-spacing) or separators. */
+function normalizeOverrideCodeInput(raw) {
+  return String(raw ?? '').replace(/\D/g, '');
+}
+
 /** Helper: require evaluation for report by user, or valid override when report already in final state */
-async function requireEvaluationOrOverride(query, reportId, userId, status, overrideCode) {
-  const needsOverride = status === 'approved' || status === 'rejected';
-  if (needsOverride && overrideCode) {
-    const ov = await query(
-      `SELECT id FROM shift_report_override_requests WHERE shift_report_id = @reportId AND requested_by_user_id = @userId AND code = @code AND used_at IS NULL`,
-      { reportId, userId, code: String(overrideCode).trim() }
+async function requireEvaluationOrOverride(query, reportId, userId, status, overrideCode, ctx = {}) {
+  const { isSuperAdmin = false, submittedToUserId = null } = ctx;
+  const st = String(status ?? '').toLowerCase().trim();
+  const needsOverride = st === 'approved' || st === 'rejected';
+  const hasCode = overrideCode != null && String(overrideCode).trim() !== '';
+  if (needsOverride && hasCode) {
+    const codeNorm = normalizeOverrideCodeInput(overrideCode);
+    if (!codeNorm) return { error: 'Invalid or already used override code' };
+    const result = await query(
+      `SELECT id, code, requested_by_user_id FROM shift_report_override_requests WHERE shift_report_id = @reportId AND used_at IS NULL`,
+      { reportId }
     );
-    if (!ov.recordset?.length) return { error: 'Invalid or already used override code' };
-    await query(`UPDATE shift_report_override_requests SET used_at = SYSUTCDATETIME() WHERE id = @id`, { id: ov.recordset[0].id });
+    const rows = result.recordset || [];
+    const uid = String(userId ?? '').toLowerCase();
+    const subTo = submittedToUserId != null ? String(submittedToUserId).toLowerCase() : '';
+    const match = rows.find((r) => {
+      const dbNorm = normalizeOverrideCodeInput(r.code);
+      if (dbNorm !== codeNorm) return false;
+      const reqBy = String(r.requested_by_user_id ?? '').toLowerCase();
+      if (reqBy === uid) return true;
+      if (isSuperAdmin && subTo && reqBy === subTo) return true;
+      return false;
+    });
+    if (!match) return { error: 'Invalid or already used override code' };
+    await query(`UPDATE shift_report_override_requests SET used_at = SYSUTCDATETIME() WHERE id = @id`, { id: match.id });
     return {};
   }
   if (needsOverride) return { error: 'Override code required. Request one from Access Management.' };
@@ -2563,7 +2618,10 @@ router.patch('/shift-reports/:id/approve', async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: 'Report not found' });
     if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can approve' });
     const overrideCode = req.body?.override_code;
-    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
+    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode, {
+      isSuperAdmin: req.user?.role === 'super_admin',
+      submittedToUserId: existing.submitted_to_user_id,
+    });
     if (check.error) return res.status(400).json({ error: check.error });
     if (existing.status !== 'pending_approval' && existing.status !== 'provisional' && existing.status !== 'approved' && existing.status !== 'rejected') return res.status(400).json({ error: 'Report not in approvable state' });
 
@@ -2597,7 +2655,10 @@ router.patch('/shift-reports/:id/reject', async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: 'Report not found' });
     if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can reject' });
     const overrideCode = req.body?.override_code;
-    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
+    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode, {
+      isSuperAdmin: req.user?.role === 'super_admin',
+      submittedToUserId: existing.submitted_to_user_id,
+    });
     if (check.error) return res.status(400).json({ error: check.error });
     if (existing.status !== 'pending_approval' && existing.status !== 'provisional' && existing.status !== 'approved' && existing.status !== 'rejected') return res.status(400).json({ error: 'Report not in rejectable state' });
 
@@ -2630,7 +2691,10 @@ router.patch('/shift-reports/:id/provisional', async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: 'Report not found' });
     if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can give provisional approval' });
     const overrideCode = req.body?.override_code;
-    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
+    const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode, {
+      isSuperAdmin: req.user?.role === 'super_admin',
+      submittedToUserId: existing.submitted_to_user_id,
+    });
     if (check.error) return res.status(400).json({ error: check.error });
     if (existing.status !== 'pending_approval' && existing.status !== 'provisional' && existing.status !== 'approved' && existing.status !== 'rejected') return res.status(400).json({ error: 'Report not in correct state' });
 

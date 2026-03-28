@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
-import { generateShiftReportPdf } from './lib/shiftReportPdf.js';
+import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
@@ -560,7 +560,7 @@ export default function Rector() {
     const run = (logoDataUrl) => {
       try {
         const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
-        doc.save(`shift-report-${report.id || 'download'}.pdf`);
+        doc.save(buildShiftReportDownloadFilename(report, { tenantName: user?.tenant_name }));
       } catch (e) { setError(e?.message || 'PDF failed'); }
       setPdfDownloading(null);
     };

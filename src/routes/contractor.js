@@ -212,24 +212,21 @@ async function truckRegistrationExists(tenantId, registration, excludeId = null,
   return (result.recordset?.length ?? 0) > 0;
 }
 
-// Drivers: duplicate = same tenant (and same contractor when scoped) + same id_number or license_number
-async function driverDuplicateExists(tenantId, id_number, license_number, excludeId = null, contractorId = null) {
+// Drivers: id_number and license_number are unique per tenant (DB: UQ_ct_drivers_*), not per contractor.
+async function driverDuplicateExists(tenantId, id_number, license_number, excludeId = null) {
   const idNum = id_number ? String(id_number).trim() : null;
   const licNum = license_number ? String(license_number).trim() : null;
-  const contractorClause = contractorId != null
-    ? ' AND (contractor_id = @contractorId OR (contractor_id IS NULL AND @contractorId IS NULL))'
-    : '';
   if (idNum) {
     const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
-      { tenantId, idNumNorm: idNum.toLowerCase(), ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
+      { tenantId, idNumNorm: idNum.toLowerCase(), ...(excludeId && { excludeId }) }
     );
     if (result.recordset?.length > 0) return true;
   }
   if (licNum) {
     const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
-      { tenantId, licNumNorm: licNum.toLowerCase(), ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
+      { tenantId, licNumNorm: licNum.toLowerCase(), ...(excludeId && { excludeId }) }
     );
     if (result.recordset?.length > 0) return true;
   }
@@ -514,7 +511,7 @@ router.post('/drivers', async (req, res, next) => {
     const firstName = full_name || name || '';
     const lastName = surname || '';
     const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
-    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null, contractorId)) {
+    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null)) {
       return res.status(409).json({ error: 'A driver with this ID number or licence number already exists.' });
     }
     const result = await query(
@@ -549,7 +546,7 @@ router.patch('/drivers/:id', async (req, res, next) => {
     const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id } = req.body || {};
     const existingDriver = await query(`SELECT contractor_id FROM contractor_drivers WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId: req.user.tenant_id });
     const driverContractorId = existingDriver.recordset?.[0]?.contractor_id ?? existingDriver.recordset?.[0]?.contractor_Id;
-    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, id, driverContractorId)) {
+    if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, id)) {
       return res.status(409).json({ error: 'Another driver with this ID number or licence number already exists.' });
     }
     if (linked_truck_id !== undefined && linked_truck_id !== null && linked_truck_id !== '') {
@@ -629,7 +626,7 @@ router.post('/drivers/bulk', async (req, res, next) => {
       const lastName = surname || '';
       const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
       if (!fullName.trim()) continue;
-      if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null, contractorId)) {
+      if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null)) {
         skipped += 1;
         continue;
       }

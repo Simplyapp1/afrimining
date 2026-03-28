@@ -39,7 +39,7 @@ function wrapNetworkError(err) {
   if (err?.message === 'Failed to fetch') {
     if (import.meta.env.DEV) {
       return new Error(
-        'Cannot reach the API. (1) Start the backend: npm run server (in project root). (2) If the API runs on another port, set VITE_API_BASE in client/.env (e.g. VITE_API_BASE=http://localhost:3001/api) and restart the dev server.'
+        'Cannot reach the API. (1) Start the backend in the project root: npm run server (or npm start). (2) Wrong port: set VITE_API_BASE in client/.env, e.g. VITE_API_BASE=http://localhost:3001/api, then restart the Vite dev server. (3) If the browser console shows a CORS error, restart the API after changing root .env and ensure NODE_ENV is not production locally unless you intend strict CORS.'
       );
     }
     return new Error(

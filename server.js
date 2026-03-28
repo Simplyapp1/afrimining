@@ -37,21 +37,35 @@ function normalizeOrigin(o) {
 }
 
 // CORS: browser Origin must match exactly (scheme + host; www vs apex are different).
-// Local dev: Vite on localhost or 127.0.0.1. Production: set FRONTEND_ORIGIN to your public URL
-// (e.g. https://your-app.azurewebsites.net). Use FRONTEND_ORIGINS for extra URLs (comma-separated),
-// e.g. custom domain + default hostname, or www + apex.
-const corsOriginSet = new Set([
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  ...[process.env.FRONTEND_ORIGIN, ...(process.env.FRONTEND_ORIGINS ? process.env.FRONTEND_ORIGINS.split(',') : [])]
-    .map(normalizeOrigin)
-    .filter(Boolean),
-]);
+// Production (NODE_ENV=production): only listed origins. Local API (NODE_ENV unset or not production):
+// allow any http(s)://localhost or 127.0.0.1 with any port so Vite on a different port / preview (4173) works.
+// Split FRONTEND_ORIGIN on commas too (some portals paste multiple URLs into one field).
+const extraFromEnv = [
+  ...(process.env.FRONTEND_ORIGIN ? process.env.FRONTEND_ORIGIN.split(',') : []),
+  ...(process.env.FRONTEND_ORIGINS ? process.env.FRONTEND_ORIGINS.split(',') : []),
+];
+const corsOriginSet = new Set(
+  ['http://localhost:5173', 'http://127.0.0.1:5173', ...extraFromEnv].map(normalizeOrigin).filter(Boolean)
+);
+
+function isLoopbackOrigin(o) {
+  try {
+    const u = new URL(o);
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+const corsStrictProduction = process.env.NODE_ENV === 'production';
+
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (corsOriginSet.has(normalizeOrigin(origin))) return callback(null, true);
+      const n = normalizeOrigin(origin);
+      if (corsOriginSet.has(n)) return callback(null, true);
+      if (!corsStrictProduction && isLoopbackOrigin(origin)) return callback(null, true);
       callback(null, false);
     },
     credentials: true,

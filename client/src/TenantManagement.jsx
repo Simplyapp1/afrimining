@@ -35,7 +35,7 @@ export default function TenantManagement() {
     fetchTenants();
   }, [fetchTenants]);
 
-  const canViewAllTenants = me?.role === 'super_admin' || String(me?.tenant_plan).toLowerCase() === 'enterprise';
+  const canViewAllTenants = me?.role === 'super_admin';
 
   const openDetail = async (t) => {
     setDetailTenant(t);

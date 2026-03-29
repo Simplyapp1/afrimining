@@ -50,7 +50,7 @@ function StatusBadge({ status }) {
 
 export default function UserManagement() {
   const { user: me } = useAuth();
-  const canManageUsers = me?.role === 'super_admin' || me?.role === 'tenant_admin' || String(me?.tenant_plan).toLowerCase() === 'enterprise';
+  const canManageUsers = me?.role === 'super_admin' || me?.role === 'tenant_admin';
   const [users, setUsers] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -70,7 +70,7 @@ export default function UserManagement() {
   const [formUser, setFormUser] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState('users'); // 'users' | 'approvals'
+  const [tab, setTab] = useState('users'); // 'users' | 'approvals' | 'block-requests'
   const [signUpRequests, setSignUpRequests] = useState([]);
   const [signUpRequestStatus, setSignUpRequestStatus] = useState('pending');
   const [approvalRequest, setApprovalRequest] = useState(null);
@@ -81,6 +81,8 @@ export default function UserManagement() {
   const [formContractorsLoading, setFormContractorsLoading] = useState(false);
   const [newContractorName, setNewContractorName] = useState('');
   const [addingContractor, setAddingContractor] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState([]);
+  const [blockRequestsLoading, setBlockRequestsLoading] = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -136,6 +138,35 @@ export default function UserManagement() {
   useEffect(() => {
     if (tab === 'approvals') fetchSignUpRequests();
   }, [tab, fetchSignUpRequests]);
+
+  const fetchBlockRequests = useCallback(async () => {
+    setBlockRequestsLoading(true);
+    try {
+      const data = await usersApi.blockRequests.list();
+      setBlockedUsers(data.blocked || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBlockRequestsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'block-requests') fetchBlockRequests();
+  }, [tab, fetchBlockRequests]);
+
+  const unlockBlockedUser = async (userId) => {
+    setSaving(true);
+    setError('');
+    try {
+      await usersApi.blockRequests.unlock(userId);
+      await fetchBlockRequests();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleSort = (col) => {
     if (sort === col) setOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
@@ -461,6 +492,15 @@ export default function UserManagement() {
               )}
             </>
           )}
+          {tab === 'block-requests' && me?.role === 'super_admin' && (
+            <button
+              type="button"
+              onClick={() => fetchBlockRequests()}
+              className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+            >
+              Refresh
+            </button>
+          )}
         </div>
       </div>
 
@@ -480,6 +520,15 @@ export default function UserManagement() {
             className={`px-4 py-2 text-sm font-medium rounded-t-lg ${tab === 'approvals' ? 'bg-white border border-surface-200 border-b-0 -mb-px text-brand-600' : 'text-surface-600 hover:text-surface-900'}`}
           >
             Sign-up approvals
+          </button>
+        )}
+        {me?.role === 'super_admin' && (
+          <button
+            type="button"
+            onClick={() => setTab('block-requests')}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg ${tab === 'block-requests' ? 'bg-white border border-surface-200 border-b-0 -mb-px text-brand-600' : 'text-surface-600 hover:text-surface-900'}`}
+          >
+            Block requests
           </button>
         )}
       </div>
@@ -672,6 +721,59 @@ export default function UserManagement() {
         )}
       </div>
       </>
+      )}
+
+      {tab === 'block-requests' && me?.role === 'super_admin' && (
+        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="p-4 border-b border-surface-100">
+            <p className="text-sm text-surface-600">
+              Accounts appear here after <strong>three failed sign-in attempts</strong> in a row. Unlocking clears the lock and resets the failure counter so the user can sign in again.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-50 border-b border-surface-200">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Name</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Email</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Role</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Tenant</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Failed attempts</th>
+                  <th className="px-4 py-3 text-left font-medium text-surface-700">Locked at</th>
+                  <th className="px-4 py-3 text-right font-medium text-surface-700">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {blockRequestsLoading ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+                ) : blockedUsers.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-surface-500">No blocked accounts.</td></tr>
+                ) : (
+                  blockedUsers.map((u) => (
+                    <tr key={u.id} className="hover:bg-surface-50/50">
+                      <td className="px-4 py-2 font-medium text-surface-900">{u.full_name}</td>
+                      <td className="px-4 py-2 text-surface-600 font-mono text-xs">{u.email}</td>
+                      <td className="px-4 py-2"><RoleBadge role={u.role} /></td>
+                      <td className="px-4 py-2 text-surface-600">{u.tenant_name || '—'}</td>
+                      <td className="px-4 py-2 text-surface-600">{u.login_failed_attempts ?? '—'}</td>
+                      <td className="px-4 py-2 text-surface-600">{formatDate(u.login_locked_at)}</td>
+                      <td className="px-4 py-2 text-right">
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => unlockBlockedUser(u.id)}
+                          className="text-brand-600 hover:underline disabled:opacity-50"
+                        >
+                          Unlock
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {tab === 'approvals' && canManageUsers && (

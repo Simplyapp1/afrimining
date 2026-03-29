@@ -33,6 +33,7 @@ export const CC_TAB_IDS = [
   'reports',
   'saved_reports',
   'trends',
+  'truck_update_records',
   'shift_items',
   'shift_report_exports',
   'requests',
@@ -46,6 +47,7 @@ export const CC_TAB_IDS = [
   'contractors_details',
   'breakdowns',
   'delete_fleet_drivers',
+  'handed_over_analysis',
 ];
 
 router.use(requireAuth);
@@ -3015,6 +3017,258 @@ router.get('/library/documents/:id/download', async (req, res, next) => {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
     if (row.mime_type) res.setHeader('Content-Type', row.mime_type);
     res.sendFile(filePath);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* --- Truck update analysis: server save, handover, resume (12h idle prune of payload) --- */
+
+const TRUCK_ANALYSIS_REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function randomTruckAnalysisRef() {
+  let s = 'TA';
+  for (let i = 0; i < 6; i += 1) {
+    s += TRUCK_ANALYSIS_REF_CHARS[Math.floor(Math.random() * TRUCK_ANALYSIS_REF_CHARS.length)];
+  }
+  return s;
+}
+
+async function pruneStaleTruckAnalysisSessions(tenantId) {
+  if (!tenantId) return;
+  await query(
+    `UPDATE truck_analysis_handovers
+     SET status = 'pruned', payload_json = NULL, pruned_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+     WHERE tenant_id = @tenantId AND status <> N'pruned'
+       AND last_referenced_at < DATEADD(HOUR, -12, SYSUTCDATETIME())`,
+    { tenantId }
+  );
+}
+
+/** GET users who can use Command Centre (for truck analysis controller picker). */
+router.get('/truck-analysis/controllers', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId && req.user?.role !== 'super_admin') {
+      return res.status(400).json({ error: 'No tenant context' });
+    }
+    const result = await query(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM users u
+       WHERE (
+         EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId)
+         OR u.tenant_id = @tenantId
+       )
+       AND (
+         EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
+         OR EXISTS (
+           SELECT 1 FROM user_page_roles pr
+           WHERE pr.user_id = u.id AND LOWER(LTRIM(RTRIM(pr.page_id))) = N'command_centre'
+         )
+         OR u.role IN (N'tenant_admin', N'super_admin')
+       )
+       ORDER BY u.full_name`,
+      { tenantId }
+    );
+    res.json({ controllers: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET list analysis sessions for tenant (prunes idle payloads first). */
+router.get('/truck-analysis/sessions', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    await pruneStaleTruckAnalysisSessions(tenantId);
+    const result = await query(
+      `SELECT id, reference_code, status, summary_json, last_referenced_at, handed_over_at, pruned_at, created_at, updated_at
+       FROM truck_analysis_handovers
+       WHERE tenant_id = @tenantId
+       ORDER BY updated_at DESC`,
+      { tenantId }
+    );
+    const sessions = (result.recordset || []).map((row) => {
+      let summary = null;
+      try {
+        summary = row.summary_json ? JSON.parse(row.summary_json) : null;
+      } catch (_) {}
+      return {
+        id: row.id,
+        reference_code: row.reference_code,
+        status: row.status,
+        summary,
+        last_referenced_at: row.last_referenced_at,
+        handed_over_at: row.handed_over_at,
+        pruned_at: row.pruned_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      };
+    });
+    res.json({ sessions });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST create new server-backed session (reference assigned). */
+router.post('/truck-analysis/sessions', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    await pruneStaleTruckAnalysisSessions(tenantId);
+    const payload = req.body?.payload;
+    if (payload == null || typeof payload !== 'object') {
+      return res.status(400).json({ error: 'payload object required' });
+    }
+    let ref = randomTruckAnalysisRef();
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        const id = randomUUID();
+        await query(
+          `INSERT INTO truck_analysis_handovers (id, tenant_id, reference_code, status, payload_json, created_by_user_id)
+           VALUES (@id, @tenantId, @ref, N'active', @payload, @uid)`,
+          {
+            id,
+            tenantId,
+            ref,
+            payload: JSON.stringify(payload),
+            uid: req.user.id,
+          }
+        );
+        return res.status(201).json({ id, reference_code: ref });
+      } catch (e) {
+        if (String(e?.message || e).includes('UQ_truck_analysis_tenant_ref') || String(e?.number) === '2627') {
+          ref = randomTruckAnalysisRef();
+        } else throw e;
+      }
+    }
+    return res.status(500).json({ error: 'Could not allocate reference' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET session by id (full payload; touches last_referenced_at). */
+router.get('/truck-analysis/sessions/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    await pruneStaleTruckAnalysisSessions(tenantId);
+    const { id } = req.params;
+    await query(
+      `UPDATE truck_analysis_handovers SET last_referenced_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const result = await query(
+      `SELECT id, reference_code, status, payload_json, summary_json, handed_over_at, pruned_at, last_referenced_at, created_at, updated_at
+       FROM truck_analysis_handovers WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Session not found' });
+    let payload = null;
+    let summary = null;
+    try {
+      payload = row.payload_json ? JSON.parse(row.payload_json) : null;
+    } catch (_) {}
+    try {
+      summary = row.summary_json ? JSON.parse(row.summary_json) : null;
+    } catch (_) {}
+    if (row.status === 'pruned' || !payload) {
+      return res.status(200).json({
+        session: {
+          id: row.id,
+          reference_code: row.reference_code,
+          status: row.status,
+          summary,
+          payload: null,
+          pruned: true,
+          handed_over_at: row.handed_over_at,
+          last_referenced_at: row.last_referenced_at,
+        },
+      });
+    }
+    res.json({
+      session: {
+        id: row.id,
+        reference_code: row.reference_code,
+        status: row.status,
+        summary,
+        payload,
+        pruned: false,
+        handed_over_at: row.handed_over_at,
+        last_referenced_at: row.last_referenced_at,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH save working payload */
+router.patch('/truck-analysis/sessions/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const { id } = req.params;
+    const payload = req.body?.payload;
+    if (payload == null || typeof payload !== 'object') {
+      return res.status(400).json({ error: 'payload object required' });
+    }
+    const existing = await query(
+      `SELECT id, status FROM truck_analysis_handovers WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const ex = existing.recordset?.[0];
+    if (!ex) return res.status(404).json({ error: 'Session not found' });
+    if (String(ex.status).toLowerCase() === 'pruned') {
+      return res.status(400).json({ error: 'Session pruned — start a new analysis' });
+    }
+    await query(
+      `UPDATE truck_analysis_handovers
+       SET payload_json = @payload, last_referenced_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, payload: JSON.stringify(payload) }
+    );
+    res.json({ saved: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST handover: keep payload + summary for record; mark handed_over */
+router.post('/truck-analysis/sessions/:id/handover', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id ?? null;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const { id } = req.params;
+    const summary = req.body?.summary;
+    if (summary == null || typeof summary !== 'object') {
+      return res.status(400).json({ error: 'summary object required' });
+    }
+    const cur = await query(
+      `SELECT payload_json FROM truck_analysis_handovers WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = cur.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Session not found' });
+    await query(
+      `UPDATE truck_analysis_handovers
+       SET summary_json = @summary,
+           status = N'handed_over',
+           handed_over_at = SYSUTCDATETIME(),
+           last_referenced_at = SYSUTCDATETIME(),
+           updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, summary: JSON.stringify(summary) }
+    );
+    const refRow = (
+      await query(`SELECT reference_code FROM truck_analysis_handovers WHERE id = @id`, { id })
+    ).recordset?.[0];
+    res.json({ handed_over: true, reference_code: refRow?.reference_code });
   } catch (err) {
     next(err);
   }

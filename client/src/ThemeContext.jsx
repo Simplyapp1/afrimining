@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useCallback, useEffect, useState } from 'react';
+import React, { createContext, useContext, useCallback, useLayoutEffect, useState } from 'react';
 
 const STORAGE_KEY = 'thinkers-theme';
 
@@ -14,15 +14,13 @@ function readStoredTheme() {
 }
 
 function applyDomTheme(theme) {
-  const root = document.documentElement;
-  if (theme === 'dark') root.classList.add('dark');
-  else root.classList.remove('dark');
+  document.documentElement.classList.toggle('dark', theme === 'dark');
 }
 
 export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState(() => readStoredTheme());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyDomTheme(theme);
     try {
       localStorage.setItem(STORAGE_KEY, theme);

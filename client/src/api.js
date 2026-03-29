@@ -61,7 +61,13 @@ async function request(path, options = {}) {
     throw wrapNetworkError(err);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    const base =
+      data.error ||
+      (res.status === 404 ? `Not found (${path})` : res.statusText);
+    const hint = data.hint ? ` ${data.hint}` : '';
+    throw new Error(`${base}${hint}`.trim());
+  }
   return data;
 }
 
@@ -107,6 +113,11 @@ export const users = {
     get: (id) => request(`/users/sign-up-requests/${id}`),
     approve: (id, body) => request(`/users/sign-up-requests/${id}/approve`, { method: 'POST', body: JSON.stringify(body) }),
     reject: (id, body) => request(`/users/sign-up-requests/${id}/reject`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  },
+  /** Super admin: accounts locked after failed sign-in attempts. */
+  blockRequests: {
+    list: () => request('/users/block-requests'),
+    unlock: (id) => request(`/users/block-requests/${encodeURIComponent(id)}/unlock`, { method: 'POST', body: '{}' }),
   },
 };
 
@@ -472,6 +483,23 @@ export const commandCentre = {
         body: JSON.stringify({ rector_user_ids: rectorUserIds }),
       }),
     attachmentUrl: (id, type) => `${API}/command-centre/breakdowns/${id}/attachments/${type}`,
+  },
+  truckAnalysis: {
+    controllers: () => request('/command-centre/truck-analysis/controllers'),
+    listSessions: () => request('/command-centre/truck-analysis/sessions'),
+    createSession: (payload) =>
+      request('/command-centre/truck-analysis/sessions', { method: 'POST', body: JSON.stringify({ payload }) }),
+    getSession: (id) => request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}`),
+    saveSession: (id, payload) =>
+      request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ payload }),
+      }),
+    handover: (id, summary) =>
+      request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}/handover`, {
+        method: 'POST',
+        body: JSON.stringify({ summary }),
+      }),
   },
   rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
 };

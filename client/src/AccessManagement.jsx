@@ -1975,7 +1975,7 @@ export default function AccessManagement() {
           <div>
             <h2 className="text-lg font-semibold text-surface-900">Pilot distribution</h2>
             <p className="text-sm text-surface-500 mt-1">
-              Schedule automatic list emails (same attachments as <strong>List distribution → Send from system</strong>). Times use the app timezone (default <strong>Africa/Johannesburg</strong>; override with <code className="text-xs bg-surface-100 px-1 rounded">EMAIL_TIMEZONE</code> in .env).
+              Schedule automatic list emails (same attachments as <strong>List distribution → Send from system</strong>). Choose fleet and driver columns for each file below (same as <strong>How to distribute</strong> on List distribution). Times use the app timezone (default <strong>Africa/Johannesburg</strong>; override with <code className="text-xs bg-surface-100 px-1 rounded">EMAIL_TIMEZONE</code> in .env).
             </p>
           </div>
 
@@ -2109,6 +2109,60 @@ export default function AccessManagement() {
                 </select>
               </div>
             </div>
+
+            <div className="rounded-xl border border-surface-200 bg-surface-50/80 p-4 space-y-4">
+              <div>
+                <h4 className="text-sm font-medium text-surface-900">Attachment columns</h4>
+                <p className="text-sm text-surface-500 mt-1">
+                  Choose which columns appear in each file. This matches <strong>List distribution</strong> → <strong>How to distribute</strong> (fleet and driver attachments). Applies to Excel, CSV, and the data shown in PDF.
+                </p>
+              </div>
+              {(pilotForm.list_type === 'both' || pilotForm.list_type === 'fleet') && (
+                <div>
+                  <p className="text-xs font-medium text-surface-500 mb-2">Fleet list columns to include in the attachment:</p>
+                  <div className="flex flex-wrap gap-3">
+                    {FLEET_COLUMNS.filter((c) => c.key !== 'route_name' || pilotForm.route_id).map((col) => (
+                      <label key={col.key} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pilotFleetCols.includes(col.key)}
+                          onChange={(e) =>
+                            setPilotFleetCols((prev) =>
+                              e.target.checked ? [...prev, col.key] : prev.filter((k) => k !== col.key)
+                            )
+                          }
+                          className="rounded border-surface-300"
+                        />
+                        <span className="text-sm text-surface-700">{col.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(pilotForm.list_type === 'both' || pilotForm.list_type === 'driver') && (
+                <div>
+                  <p className="text-xs font-medium text-surface-500 mb-2">Driver list columns to include in the attachment:</p>
+                  <div className="flex flex-wrap gap-3">
+                    {DRIVER_COLUMNS.filter((c) => c.key !== 'route_name' || pilotForm.route_id).map((col) => (
+                      <label key={col.key} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pilotDriverCols.includes(col.key)}
+                          onChange={(e) =>
+                            setPilotDriverCols((prev) =>
+                              e.target.checked ? [...prev, col.key] : prev.filter((k) => k !== col.key)
+                            )
+                          }
+                          className="rounded border-surface-300"
+                        />
+                        <span className="text-sm text-surface-700">{col.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="block text-xs font-medium text-surface-500 mb-2">Companies on route (per-company lists)</label>
               <input

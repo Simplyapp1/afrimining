@@ -132,6 +132,17 @@ app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 
+// Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    error: 'API route not found',
+    path: req.originalUrl,
+    method: req.method,
+    hint:
+      'Deploy the latest API build. Command Centre truck analysis needs /api/command-centre/truck-analysis/* routes and the truck_analysis_handovers table (npm run db:truck-analysis-handovers).',
+  });
+});
+
 // Serve frontend (Vite build) when both run on same host (e.g. Render, Railway, Azure)
 const clientDist = path.join(__dirname, 'client', 'dist');
 const noCacheHtml = (res, filePath) => {

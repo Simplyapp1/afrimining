@@ -293,7 +293,31 @@ function notifyFleetDriverEmails(tenantName, contractorName, type, list, senderE
 }
 
 // Trucks (expanded: main/sub contractor, year, ownership, fleet, trailers, tracking)
-router.get('/trucks', listHandler('contractor_trucks'));
+router.get('/trucks', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
+    const allowed = await getAllowedContractorIds(req);
+    let sql = `SELECT t.*, co.name AS contractor_company_name
+       FROM contractor_trucks t
+       LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
+       WHERE t.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ trucks: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND t.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    sql += ` ORDER BY created_at DESC`;
+    const result = await query(sql, params);
+    res.json({ trucks: result.recordset });
+  } catch (err) {
+    next(err);
+  }
+});
 router.post('/trucks', async (req, res, next) => {
   try {
     const {
@@ -1770,36 +1794,32 @@ router.get('/routes/enrolled-by-truck/:truckId', async (req, res, next) => {
   }
 });
 
-/** GET single route with enrolled trucks and drivers. When user has contractor scope, only trucks/drivers for that company are returned. */
+/** GET single route with enrolled trucks and drivers. All enrolled rows are returned (tenant-scoped); route enrollment is authoritative for who is on the route. */
 router.get('/routes/:id', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { id } = req.params;
-    const allowed = await getAllowedContractorIds(req);
     const routeResult = await query(
       `SELECT * FROM contractor_routes WHERE id = @id AND tenant_id = @tenantId`,
       { id, tenantId }
     );
     if (!routeResult.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
     const route = routeResult.recordset[0];
-    let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id
+    const trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id,
+       t.main_contractor, t.sub_contractor,
+       co.name AS contractor_company_name
        FROM contractor_route_trucks rt
        JOIN contractor_trucks t ON t.id = rt.truck_id
-       WHERE rt.route_id = @id`;
-    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
+       LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
+       WHERE rt.route_id = @id
+       ORDER BY t.registration`;
+    const driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
        FROM contractor_route_drivers rd
        JOIN contractor_drivers d ON d.id = rd.driver_id
-       WHERE rd.route_id = @id`;
-    const trucksParams = { id };
+       WHERE rd.route_id = @id
+       ORDER BY d.full_name`;
+    const trucksParams = { id, tenantId };
     const driversParams = { id };
-    if (allowed && allowed.length > 0) {
-      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
-      trucksSql += ` AND t.contractor_id IN (${placeholders})`;
-      driversSql += ` AND d.contractor_id IN (${placeholders})`;
-      allowed.forEach((cid, i) => { trucksParams[`c${i}`] = cid; driversParams[`c${i}`] = cid; });
-    }
-    trucksSql += ` ORDER BY t.registration`;
-    driversSql += ` ORDER BY d.full_name`;
     const trucksResult = await query(trucksSql, trucksParams);
     const driversResult = await query(driversSql, driversParams);
     res.json({

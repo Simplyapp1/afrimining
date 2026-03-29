@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
+import { getFirstAllowedPath } from './lib/pageAccess.js';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -10,15 +11,16 @@ export default function Login() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
 
-  if (user) return <Navigate to="/users" replace />;
+  if (user) return <Navigate to={getFirstAllowedPath(user)} replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await login(email.trim(), password);
-      navigate('/users');
+      const u = await login(email.trim(), password);
+      if (u) navigate(getFirstAllowedPath(u), { replace: true });
+      else navigate('/login', { replace: true });
     } catch (err) {
       setError(err.message || 'Login failed');
     } finally {

@@ -10,8 +10,11 @@
     <script>
       (function () {
         try {
-          if (localStorage.getItem('thinkers-theme') === 'dark') document.documentElement.classList.add('dark');
-        } catch (e) {}
+          var isDark = localStorage.getItem('thinkers-theme') === 'dark';
+          document.documentElement.classList.toggle('dark', isDark);
+        } catch (e) {
+          document.documentElement.classList.remove('dark');
+        }
       })();
     </script>
   </head>

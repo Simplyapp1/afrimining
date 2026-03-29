@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { query } from '../db.js';
+import { hasRequiredPageAssignments } from '../middleware/auth.js';
 import { auditLog } from '../lib/audit.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { passwordResetHtml } from '../lib/emailTemplates.js';
@@ -10,6 +11,7 @@ const router = Router();
 const SALT_ROUNDS = 10;
 const RESET_EXPIRY_HOURS = 1;
 const CODE_LENGTH = 6;
+const MAX_LOGIN_FAILED_ATTEMPTS = 3;
 
 router.post('/login', async (req, res, next) => {
   try {
@@ -20,7 +22,9 @@ router.post('/login', async (req, res, next) => {
     let result;
     try {
       result = await query(
-        `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.full_name, u.role, u.status, t.name AS tenant_name, t.[plan] AS tenant_plan
+        `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.full_name, u.role, u.status,
+                u.login_failed_attempts, u.login_locked_at,
+                t.name AS tenant_name, t.[plan] AS tenant_plan
          FROM users u
          LEFT JOIN tenants t ON t.id = u.tenant_id
          WHERE u.email = @email`,
@@ -43,6 +47,14 @@ router.post('/login', async (req, res, next) => {
     if (user.status !== 'active') {
       return res.status(403).json({ error: 'Account is not active' });
     }
+    const lockedAt = user.login_locked_at ?? user.login_Locked_At;
+    if (lockedAt) {
+      return res.status(403).json({
+        error:
+          'This account is locked after too many failed sign-in attempts. A super administrator must unlock it under User management → Block requests.',
+        code: 'account_locked',
+      });
+    }
     let tenant_ids = [];
     try {
       const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: user.id });
@@ -62,11 +74,72 @@ router.post('/login', async (req, res, next) => {
       return res.status(500).json({ error: 'Account configuration error. Contact support.' });
     }
     if (!match) {
+      try {
+        const failUpd = await query(
+          `UPDATE users SET
+             login_failed_attempts = login_failed_attempts + 1,
+             login_locked_at = CASE WHEN login_failed_attempts + 1 >= @maxFail THEN SYSUTCDATETIME() ELSE login_locked_at END,
+             updated_at = SYSUTCDATETIME()
+           OUTPUT INSERTED.login_failed_attempts AS attempts, INSERTED.login_locked_at AS locked_at
+           WHERE id = @id`,
+          { id: user.id, maxFail: MAX_LOGIN_FAILED_ATTEMPTS }
+        );
+        const fr = failUpd.recordset?.[0];
+        const nowLocked = fr?.locked_at ?? fr?.Locked_At;
+        if (nowLocked) {
+          await auditLog({
+            tenantId: user.tenant_id,
+            userId: user.id,
+            action: 'login.locked',
+            entityType: 'user',
+            entityId: user.id,
+            details: { reason: 'max_failed_password_attempts', attempts: fr?.attempts ?? fr?.Attempts },
+            ip: req.ip || req.connection?.remoteAddress,
+          });
+          return res.status(403).json({
+            error:
+              'Too many failed sign-in attempts. This account is now locked. A super administrator can unlock it under User management → Block requests.',
+            code: 'account_locked',
+          });
+        }
+      } catch (failErr) {
+        console.error('Login: failed-attempt update error', failErr?.message || failErr);
+      }
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    let page_roles = [];
+    try {
+      const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @id`, { id: user.id });
+      page_roles = (pr.recordset || []).map((r) => r.page_id ?? r.page_Id).filter(Boolean);
+    } catch (_) {}
+    if (user.role === 'super_admin') {
+      const { PAGE_IDS } = await import('./users.js');
+      page_roles = PAGE_IDS.slice();
+    }
+    const sessionTenantId = user.tenant_id || tenant_ids[0] || null;
+    let tenantPlanForAccess = user.tenant_plan;
+    if (sessionTenantId && String(sessionTenantId) !== String(user.tenant_id ?? '')) {
+      try {
+        const tp = await query(`SELECT [plan] AS p FROM tenants WHERE id = @id`, { id: sessionTenantId });
+        const row = tp.recordset?.[0];
+        tenantPlanForAccess = row?.p ?? row?.P ?? tenantPlanForAccess;
+      } catch (_) {}
+    }
+    if (
+      !hasRequiredPageAssignments({
+        role: user.role,
+        tenant_plan: tenantPlanForAccess,
+        page_roles,
+      })
+    ) {
+      return res.status(403).json({
+        error:
+          'No page access has been assigned to this account. You cannot sign in until an administrator assigns at least one page.',
+      });
     }
     try {
       await query(
-        `UPDATE users SET last_login_at = SYSUTCDATETIME(), login_count = login_count + 1, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        `UPDATE users SET login_failed_attempts = 0, login_locked_at = NULL, last_login_at = SYSUTCDATETIME(), login_count = login_count + 1, updated_at = SYSUTCDATETIME() WHERE id = @id`,
         { id: user.id }
       );
     } catch (updateErr) {
@@ -74,7 +147,7 @@ router.post('/login', async (req, res, next) => {
       // continue anyway; login can succeed
     }
     req.session.userId = user.id;
-    req.session.tenantId = user.tenant_id || tenant_ids[0] || null;
+    req.session.tenantId = sessionTenantId;
     try {
       await auditLog({
         tenantId: req.session.tenantId,
@@ -87,22 +160,13 @@ router.post('/login', async (req, res, next) => {
     } catch (auditErr) {
       console.error('Login: audit log failed', auditErr);
     }
-    let page_roles = [];
-    try {
-      const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @id`, { id: user.id });
-      page_roles = (pr.recordset || []).map((r) => r.page_id ?? r.page_Id).filter(Boolean);
-    } catch (_) {}
-    if (user.role === 'super_admin') {
-      const { PAGE_IDS } = await import('./users.js');
-      page_roles = PAGE_IDS.slice();
-    }
     res.json({
       user: {
         id: user.id,
         tenant_id: req.session.tenantId,
         tenant_ids: tenant_ids,
         tenant_name: user.tenant_name,
-        tenant_plan: user.tenant_plan,
+        tenant_plan: tenantPlanForAccess,
         email: user.email,
         full_name: user.full_name,
         role: user.role,
@@ -153,7 +217,8 @@ router.get('/me', async (req, res, next) => {
   }
   try {
     const result = await query(
-      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name, t.[plan] AS tenant_plan
+      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, u.login_locked_at,
+              t.name AS tenant_name, t.[plan] AS tenant_plan
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = @id`,
@@ -162,6 +227,12 @@ router.get('/me', async (req, res, next) => {
     const row = result.recordset[0];
     if (!row) return res.status(401).json({ error: 'User not found' });
     const get = (r, k) => { if (!r) return undefined; const l = k.toLowerCase(); const e = Object.entries(r).find(([key]) => key && String(key).toLowerCase() === l); return e ? e[1] : undefined; };
+    if (get(row, 'login_locked_at')) {
+      await new Promise((resolve, reject) => {
+        req.session.destroy((err) => (err ? reject(err) : resolve()));
+      });
+      return res.status(200).json({ user: null });
+    }
     const role = get(row, 'role');
     let page_roles = [];
     try {
@@ -192,6 +263,12 @@ router.get('/me', async (req, res, next) => {
           tenantPlan = trow.recordset[0].plan ?? trow.recordset[0].plan;
         }
       } catch (_) {}
+    }
+    if (!hasRequiredPageAssignments({ role, tenant_plan: tenantPlan, page_roles })) {
+      await new Promise((resolve, reject) => {
+        req.session.destroy((err) => (err ? reject(err) : resolve()));
+      });
+      return res.status(200).json({ user: null });
     }
     res.json({
       user: {
@@ -389,7 +466,7 @@ router.post('/reset-password', async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(new_password, SALT_ROUNDS);
     await query(
-      `UPDATE users SET password_hash = @passwordHash, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+      `UPDATE users SET password_hash = @passwordHash, login_failed_attempts = 0, login_locked_at = NULL, updated_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: userId, passwordHash }
     );
     await query(`DELETE FROM password_reset_tokens WHERE user_id = @userId`, { userId });

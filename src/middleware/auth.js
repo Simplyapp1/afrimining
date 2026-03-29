@@ -1,7 +1,20 @@
 import { query } from '../db.js';
 
-/** Page IDs for app pages (must match client and user_page_roles CHECK). Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'recruitment', 'letters', 'accounting_management'];
+/** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
+const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration'];
+
+/** Only platform super_admin skips page assignments (full app). Everyone else needs user_page_roles rows. */
+export function isPageAccessExempt(user) {
+  if (!user) return false;
+  return user.role === 'super_admin';
+}
+
+/** Must have at least one page assigned in DB (or be exempt). Used for login and session validity. */
+export function hasRequiredPageAssignments(user) {
+  if (isPageAccessExempt(user)) return true;
+  const roles = user.page_roles;
+  return Array.isArray(roles) && roles.length > 0;
+}
 
 /** Get value from row with case-insensitive key (SQL Server may return different casing) */
 function get(row, key) {
@@ -22,7 +35,8 @@ export async function loadUser(req, res, next) {
   if (!req.session?.userId) return next();
   try {
     const result = await query(
-      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, t.name AS tenant_name, t.[plan] AS tenant_plan
+      `SELECT u.id, u.tenant_id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.last_login_at, u.login_count, u.created_at, u.login_locked_at,
+              t.name AS tenant_name, t.[plan] AS tenant_plan
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = @userId`,
@@ -32,6 +46,14 @@ export async function loadUser(req, res, next) {
     if (!row) {
       req.session.destroy(() => {});
       return res.status(401).json({ error: 'Session invalid' });
+    }
+    if (get(row, 'login_locked_at')) {
+      await new Promise((resolve, reject) => {
+        req.session.destroy((err) => (err ? reject(err) : resolve()));
+      });
+      return res.status(401).json({
+        error: 'This account is locked after failed sign-in attempts. A super administrator must unlock it under User management → Block requests.',
+      });
     }
     let tenant_ids = [];
     try {
@@ -75,6 +97,14 @@ export async function loadUser(req, res, next) {
       created_at: get(row, 'created_at'),
       page_roles,
     };
+    if (!hasRequiredPageAssignments(req.user)) {
+      await new Promise((resolve, reject) => {
+        req.session.destroy((err) => (err ? reject(err) : resolve()));
+      });
+      return res.status(401).json({
+        error: 'No page access assigned to this account. You have been signed out. Contact your administrator.',
+      });
+    }
     next();
   } catch (err) {
     next(err);
@@ -89,7 +119,7 @@ export function requireSuperAdmin(req, res, next) {
   next();
 }
 
-/** Tenant admin, super admin, or enterprise-plan tenant (access to all pages) */
+/** Routes that create tenants/contractors/etc.: super_admin, tenant_admin, or enterprise tenant managers. (Separate from per-page requirePageAccess.) */
 export function requireTenantAdmin(req, res, next) {
   const role = req.user?.role;
   const tenantPlan = req.user?.tenant_plan;
@@ -103,9 +133,8 @@ export function requireTenantAdmin(req, res, next) {
 /**
  * Restrict route to users who have access to the given page(s).
  * allowedPageIds: string (one page_id) or string[] (any of).
- * Super_admin, tenant_admin, and enterprise-plan tenants: full access (same idea as requireTenantAdmin).
- * If user has no page_roles assigned, allow all (legacy).
- * If user has page_roles, they must include at least one of allowedPageIds (case-insensitive).
+ * Only super_admin bypasses (full access). All other roles, including tenant_admin and enterprise tenants,
+ * must have the page in user_page_roles.
  */
 export function requirePageAccess(allowedPageIds) {
   const allowed = Array.isArray(allowedPageIds) ? allowedPageIds : [allowedPageIds];
@@ -113,13 +142,10 @@ export function requirePageAccess(allowedPageIds) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
     if (req.user.role === 'super_admin') return next();
-    if (req.user.role === 'tenant_admin') return next();
-    if (String(req.user.tenant_plan || '').toLowerCase() === 'enterprise') return next();
-    const roles = req.user.page_roles;
-    if (!roles || roles.length === 0) return next();
+    const roles = req.user.page_roles || [];
     const roleNorm = roles.map((r) => String(r).toLowerCase());
     const hasAccess = allowedNorm.some((pid) => roleNorm.includes(pid));
-    if (!hasAccess) return res.status(403).json({ error: 'You do not have access to this page.' });
-    next();
+    if (hasAccess) return next();
+    return res.status(403).json({ error: 'You do not have access to this page.' });
   };
 }

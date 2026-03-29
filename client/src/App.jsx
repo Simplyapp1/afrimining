@@ -19,7 +19,8 @@ import Recruitment from './Recruitment';
 import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
 import JobApplication from './JobApplication';
-import { getFirstAllowedPath } from './lib/pageAccess.js';
+import NoAccess from './NoAccess';
+import { canAccessPage, getFirstAllowedPath, PATH_PAGE_IDS } from './lib/pageAccess.js';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -35,6 +36,24 @@ function FirstAllowedRedirect() {
   return <Navigate to={to} replace />;
 }
 
+/** Redirects to the first allowed page when the user opens a URL they are not assigned. */
+function PageGate({ pathKey, children }) {
+  const { user, loading } = useAuth();
+  const pageId = PATH_PAGE_IDS[pathKey];
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface-100 dark:bg-surface-950">
+        <div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div>
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  if (pageId && !canAccessPage(user, pageId)) {
+    return <Navigate to={getFirstAllowedPath(user)} replace />;
+  }
+  return children;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -46,18 +65,19 @@ function AppRoutes() {
       <Route path="/apply/:token" element={<JobApplication />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<FirstAllowedRedirect />} />
-        <Route path="users" element={<UserManagement />} />
-        <Route path="tenants" element={<TenantManagement />} />
-        <Route path="contractor" element={<Contractor />} />
-        <Route path="command-centre" element={<CommandCentre />} />
-        <Route path="access-management" element={<AccessManagement />} />
-        <Route path="rector" element={<Rector />} />
-        <Route path="tasks" element={<Tasks />} />
-        <Route path="profile" element={<Profile />} />
-        <Route path="management" element={<Management />} />
-        <Route path="recruitment" element={<Recruitment />} />
-        <Route path="letters" element={<Letters />} />
-        <Route path="accounting-management" element={<AccountingManagement />} />
+        <Route path="users" element={<PageGate pathKey="/users"><UserManagement /></PageGate>} />
+        <Route path="tenants" element={<PageGate pathKey="/tenants"><TenantManagement /></PageGate>} />
+        <Route path="contractor" element={<PageGate pathKey="/contractor"><Contractor /></PageGate>} />
+        <Route path="command-centre" element={<PageGate pathKey="/command-centre"><CommandCentre /></PageGate>} />
+        <Route path="access-management" element={<PageGate pathKey="/access-management"><AccessManagement /></PageGate>} />
+        <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
+        <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />
+        <Route path="profile" element={<PageGate pathKey="/profile"><Profile /></PageGate>} />
+        <Route path="management" element={<PageGate pathKey="/management"><Management /></PageGate>} />
+        <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
+        <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
+        <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
+        <Route path="no-access" element={<NoAccess />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

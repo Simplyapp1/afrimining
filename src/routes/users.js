@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { query, getPool, sql } from '../db.js';
-import { requireAuth, loadUser, requireTenantAdmin, requirePageAccess } from '../middleware/auth.js';
+import { requireAuth, loadUser, requireTenantAdmin, requirePageAccess, requireSuperAdmin } from '../middleware/auth.js';
 import { auditLog } from '../lib/audit.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { newUserCreatedHtml, accountApprovedHtml } from '../lib/emailTemplates.js';
@@ -395,6 +395,46 @@ router.post('/sign-up-requests/:id/reject', requireTenantAdmin, async (req, res,
   }
 });
 
+/** Super admin: accounts locked after too many failed sign-in attempts. */
+router.get('/block-requests', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT u.id, u.email, u.full_name, u.role, u.login_failed_attempts, u.login_locked_at, u.tenant_id, t.name AS tenant_name
+       FROM users u
+       LEFT JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.login_locked_at IS NOT NULL
+       ORDER BY u.login_locked_at DESC`
+    );
+    res.json({ blocked: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Super admin: clear sign-in lock and failed-attempt counter. */
+router.post('/block-requests/:id/unlock', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const upd = await query(
+      `UPDATE users SET login_failed_attempts = 0, login_locked_at = NULL, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.id, INSERTED.email
+       WHERE id = @id AND login_locked_at IS NOT NULL`,
+      { id }
+    );
+    if (!upd.recordset?.length) return res.status(404).json({ error: 'User not found or not locked' });
+    await auditLog({
+      userId: req.user.id,
+      action: 'user.login_unlock',
+      entityType: 'user',
+      entityId: id,
+      ip: req.ip,
+    });
+    res.json({ ok: true, user: upd.recordset[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id', async (req, res, next) => {
   try {
     const result = await query(
@@ -577,6 +617,8 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     }
     if (password !== undefined && password.length >= 8) {
       updates.push('password_hash = @passwordHash'); params.passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+      updates.push('login_failed_attempts = 0');
+      updates.push('login_locked_at = NULL');
     }
     if (page_roles !== undefined) {
       await query(`DELETE FROM user_page_roles WHERE user_id = @id`, { id });

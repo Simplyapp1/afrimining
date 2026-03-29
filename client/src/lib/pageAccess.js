@@ -18,21 +18,20 @@ export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants',
 
 /**
  * Whether the user can access the given page.
- * Super_admin, tenant_admin, enterprise plan: all. No page_roles assigned: all (legacy).
- * Otherwise only assigned pages (case-insensitive id match).
+ * Only super_admin sees all screens. Everyone else (including tenant_admin and enterprise tenants) needs page_id in page_roles.
  */
 export function canAccessPage(user, pageId) {
   if (!user) return false;
   if (user.role === 'super_admin') return true;
-  if (user.role === 'tenant_admin') return true;
-  if (String(user.tenant_plan || '').toLowerCase() === 'enterprise') return true;
-  const roles = user.page_roles;
-  if (!roles || roles.length === 0) return true;
   const pid = String(pageId).toLowerCase();
+  const roles = user.page_roles;
+  if (!roles || roles.length === 0) return false;
   return roles.some((r) => String(r).toLowerCase() === pid);
 }
 
-/** First path the user is allowed to access, or /profile as fallback. */
+/**
+ * First sidebar route the user may open, or `/no-access` when their assignments do not map to any registered screen.
+ */
 export function getFirstAllowedPath(user) {
-  return ALL_PATHS_ORDER.find((p) => canAccessPage(user, PATH_PAGE_IDS[p])) || '/profile';
+  return ALL_PATHS_ORDER.find((p) => canAccessPage(user, PATH_PAGE_IDS[p])) ?? '/no-access';
 }

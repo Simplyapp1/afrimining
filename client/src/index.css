@@ -2,9 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Light mode must match pre–dark-mode: explicit scheme so OS dark mode does not tint scrollbars/UI chrome */
-html {
+/* Light theme: match the app before dark mode — explicit scheme + canvas so OS dark mode
+   does not tint scrollbars, form controls, or html “gutter” behind the layout. */
+html:not(.dark) {
   color-scheme: light;
+  background-color: #fafafa;
 }
 
 body {
@@ -13,6 +15,7 @@ body {
 
 html.dark {
   color-scheme: dark;
+  background-color: #0a0a0a;
 }
 
 html.dark body {
@@ -49,6 +52,11 @@ html.dark .app-main .text-surface-600 {
 }
 html.dark .app-main .text-surface-500 {
   @apply text-surface-400;
+}
+
+/* Gradients that end in white are light-theme-only; without this, dark text remaps above + white gradient = invisible text */
+html.dark .app-main .bg-gradient-to-br.from-brand-50.to-white {
+  @apply from-surface-900 to-surface-950;
 }
 
 /* Full-screen pages outside Layout (e.g. report breakdown) */

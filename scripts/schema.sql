@@ -27,6 +27,8 @@ CREATE TABLE users (
   avatar_url NVARCHAR(500) NULL,
   last_login_at DATETIME2 NULL,
   login_count INT NOT NULL DEFAULT 0,
+  login_failed_attempts INT NOT NULL DEFAULT 0,
+  login_locked_at DATETIME2 NULL,
   metadata NVARCHAR(MAX) NULL,
   created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
   updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),

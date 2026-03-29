@@ -1,6 +1,7 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from './AuthContext';
+import { useTheme } from './ThemeContext';
 import Sidebar, { useSidebarState } from './components/Sidebar';
 import ThemeToggle from './components/ThemeToggle';
 import { tenants as tenantsApi } from './api';
@@ -24,6 +25,8 @@ function IconRefresh({ className }) {
 
 export default function Layout() {
   const { user, logout, switchTenant } = useAuth();
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   const navigate = useNavigate();
   const location = useLocation();
   const { collapsed, setCollapsed, hidden, setHidden, mobileOpen, setMobileOpen } = useSidebarState();
@@ -56,7 +59,7 @@ export default function Layout() {
   };
 
   return (
-    <div className="flex min-h-screen bg-surface-50 dark:bg-surface-950">
+    <div className={`flex min-h-screen ${isDark ? 'bg-surface-950' : 'bg-surface-50'}`}>
       <Sidebar
         collapsed={collapsed}
         setCollapsed={setCollapsed}
@@ -67,12 +70,18 @@ export default function Layout() {
         onLogout={handleLogout}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-surface-200 bg-white/95 backdrop-blur px-4 lg:px-6 dark:border-surface-800 dark:bg-surface-900/95">
+      <div className={`flex-1 flex flex-col min-w-0 ${isDark ? 'bg-surface-950' : 'bg-surface-50'}`}>
+        <header
+          className={`sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b backdrop-blur px-4 lg:px-6 ${
+            isDark ? 'border-surface-800 bg-surface-900/95' : 'border-surface-200 bg-white/95'
+          }`}
+        >
           <button
             type="button"
             onClick={() => (hidden ? setHidden(false) : setMobileOpen(true))}
-            className={`flex h-9 w-9 items-center justify-center rounded-lg text-surface-600 hover:bg-surface-100 transition-colors dark:text-surface-400 dark:hover:bg-surface-800 ${hidden ? 'lg:flex' : 'lg:hidden'}`}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+              isDark ? 'text-surface-400 hover:bg-surface-800' : 'text-surface-600 hover:bg-surface-100'
+            } ${hidden ? 'lg:flex' : 'lg:hidden'}`}
             aria-label={hidden ? 'Show sidebar' : 'Open menu'}
           >
             <IconMenu className="h-5 w-5" />
@@ -83,7 +92,11 @@ export default function Layout() {
             <button
               type="button"
               onClick={bumpDataRefresh}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-surface-200 bg-white text-surface-600 hover:bg-surface-50 transition-colors dark:border-surface-700 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg border transition-colors ${
+                isDark
+                  ? 'border-surface-700 bg-surface-800 text-surface-300 hover:bg-surface-700'
+                  : 'border-surface-200 bg-white text-surface-600 hover:bg-surface-50'
+              }`}
               title="Refresh page data"
               aria-label="Refresh page data"
             >
@@ -94,7 +107,11 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setTenantSwitcherOpen((o) => !o)}
-                  className="flex items-center gap-2 rounded-lg border border-surface-200 bg-white px-3 py-1.5 text-sm text-surface-700 hover:bg-surface-50 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-200 dark:hover:bg-surface-700"
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${
+                    isDark
+                      ? 'border-surface-700 bg-surface-800 text-surface-200 hover:bg-surface-700'
+                      : 'border-surface-200 bg-white text-surface-700 hover:bg-surface-50'
+                  }`}
                 >
                   <span className="max-w-[120px] truncate">{user?.tenant_name || 'Tenant'}</span>
                   <svg className="w-4 h-4 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
@@ -102,7 +119,11 @@ export default function Layout() {
                 {tenantSwitcherOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setTenantSwitcherOpen(false)} aria-hidden="true" />
-                    <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg border border-surface-200 bg-white shadow-lg py-1 max-h-60 overflow-y-auto dark:border-surface-700 dark:bg-surface-900">
+                    <div
+                      className={`absolute right-0 top-full mt-1 z-50 w-56 rounded-lg border shadow-lg py-1 max-h-60 overflow-y-auto ${
+                        isDark ? 'border-surface-700 bg-surface-900' : 'border-surface-200 bg-white'
+                      }`}
+                    >
                       {(user.tenant_ids || []).map((tid) => {
                         const t = tenantList.find((x) => x.id === tid);
                         const name = t?.name || tid;
@@ -114,7 +135,17 @@ export default function Layout() {
                             onClick={() => {
                               switchTenant(tid).then(() => setTenantSwitcherOpen(false));
                             }}
-                            className={`w-full text-left px-3 py-2 text-sm hover:bg-surface-50 dark:hover:bg-surface-800 ${isCurrent ? 'bg-brand-50 text-brand-800 font-medium dark:bg-brand-950/50 dark:text-brand-200' : 'text-surface-700 dark:text-surface-200'}`}
+                            className={`w-full text-left px-3 py-2 text-sm ${
+                              isDark ? 'hover:bg-surface-800' : 'hover:bg-surface-50'
+                            } ${
+                              isCurrent
+                                ? isDark
+                                  ? 'bg-brand-950/50 text-brand-200 font-medium'
+                                  : 'bg-brand-50 text-brand-800 font-medium'
+                                : isDark
+                                  ? 'text-surface-200'
+                                  : 'text-surface-700'
+                            }`}
                           >
                             {name} {isCurrent && '✓'}
                           </button>
@@ -128,7 +159,11 @@ export default function Layout() {
           </div>
         </header>
 
-        <main className="app-main flex-1 min-h-0 p-4 sm:p-6 overflow-auto flex flex-col">
+        <main
+          className={`app-main flex-1 min-h-0 p-4 sm:p-6 overflow-auto flex flex-col ${
+            isDark ? 'bg-surface-950' : 'bg-surface-50'
+          }`}
+        >
           <Outlet key={dataRefreshKey} />
         </main>
       </div>

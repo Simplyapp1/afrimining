@@ -33,9 +33,10 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     await authApi.login(email, password);
-    // Refetch from /auth/me so we get full user (page_roles, tenant_id, etc.) with session
     const data = await authApi.me();
-    setUser(data.user ?? null);
+    const u = data.user ?? null;
+    setUser(u);
+    return u;
   };
 
   const switchTenant = async (tenantId) => {

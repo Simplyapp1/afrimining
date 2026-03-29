@@ -15,6 +15,7 @@ const SCRIPTS = [
   'db:schema',
   'db:user-tenants',
   'db:users-id-number',
+  'db:users-login-lockout',
   'db:sign-up-requests',
   'db:password-reset',
   'db:user-page-roles',

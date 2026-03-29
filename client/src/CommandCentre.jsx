@@ -9,6 +9,8 @@ import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } fro
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
+import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
+import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -75,6 +77,8 @@ const CC_TABS = [
   { id: 'reports', label: 'Report composition', icon: 'file', section: 'Operations' },
   { id: 'saved_reports', label: 'View saved shift reports', icon: 'folder', section: 'Operations' },
   { id: 'trends', label: 'Trends', icon: 'chart', section: 'Analytics' },
+  { id: 'truck_update_records', label: 'Truck update records', icon: 'truck', section: 'Analytics' },
+  { id: 'handed_over_analysis', label: 'Handed over analysis', icon: 'send', section: 'Analytics' },
   { id: 'shift_items', label: 'Shift by route', icon: 'route', section: 'Operations' },
   { id: 'shift_report_exports', label: 'Export sections', icon: 'download', section: 'Operations' },
   { id: 'requests', label: 'Requests', icon: 'inbox', section: 'Operations' },
@@ -177,6 +181,7 @@ export default function CommandCentre() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [truckAnalysisResumeId, setTruckAnalysisResumeId] = useState(null);
   const [permissions, setPermissions] = useState(null);
   const [users, setUsers] = useState([]);
   const [inspections, setInspections] = useState(() => loadStoredInspections());
@@ -418,6 +423,20 @@ export default function CommandCentre() {
           {activeTab === 'reports' && canSeeTab('reports') && <TabReports />}
           {activeTab === 'saved_reports' && canSeeTab('saved_reports') && <TabSavedReports />}
           {activeTab === 'trends' && canSeeTab('trends') && <TabTrends />}
+          {activeTab === 'truck_update_records' && canSeeTab('truck_update_records') && (
+            <TruckUpdateRecordsTab
+              resumeServerSessionId={truckAnalysisResumeId}
+              onResumeConsumed={() => setTruckAnalysisResumeId(null)}
+            />
+          )}
+          {activeTab === 'handed_over_analysis' && canSeeTab('handed_over_analysis') && (
+            <HandedOverAnalysisTab
+              onContinueSession={(id) => {
+                setTruckAnalysisResumeId(id);
+                setActiveTab('truck_update_records');
+              }}
+            />
+          )}
           {activeTab === 'shift_items' && canSeeTab('shift_items') && <TabShiftItems setActiveTab={setActiveTab} />}
           {activeTab === 'shift_report_exports' && canSeeTab('shift_report_exports') && <TabShiftReportExports />}
           {activeTab === 'requests' && canSeeTab('requests') && <TabRequests />}
@@ -2965,9 +2984,10 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
         const list = Array.isArray(r?.users) ? r.users : [];
         const canBeController = (u) => {
           if (!u || (u.status && String(u.status).toLowerCase() !== 'active')) return false;
-          if (u.role === 'super_admin' || u.role === 'tenant_admin') return true;
-          if (String(u.tenant_plan || '').toLowerCase() === 'enterprise') return true;
-          return Array.isArray(u?.page_roles) && u.page_roles.includes('command_centre');
+          if (u.role === 'super_admin') return true;
+          const pr = u?.page_roles;
+          if (!Array.isArray(pr)) return false;
+          return pr.some((r) => String(r).toLowerCase() === 'command_centre');
         };
         const withCommandCentre = list
           .filter(canBeController)

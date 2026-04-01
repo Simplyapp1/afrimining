@@ -14,6 +14,55 @@ function getRow(row, ...keys) {
   return entry ? entry[1] : undefined;
 }
 
+function normalizeIds(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
+}
+
+function csvToIds(csv) {
+  if (!csv) return [];
+  return normalizeIds(String(csv).split(','));
+}
+
+function hasAccessManagement(req) {
+  if (req.user?.role === 'super_admin') return true;
+  return Array.isArray(req.user?.page_roles) && req.user.page_roles.includes('access_management');
+}
+
+async function getRectorRouteIds(req, tenantId) {
+  const result = await query(
+    `SELECT DISTINCT route_id FROM access_route_factors
+     WHERE tenant_id = @tenantId AND user_id = @userId AND route_id IS NOT NULL`,
+    { tenantId, userId: req.user?.id || null }
+  );
+  return normalizeIds((result.recordset || []).map((r) => getRow(r, 'route_id')));
+}
+
+async function resolveValidRouteIds(tenantId, routeIds) {
+  const ids = normalizeIds(routeIds);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map((_, i) => `@rid${i}`).join(',');
+  const params = { tenantId };
+  ids.forEach((id, i) => { params[`rid${i}`] = id; });
+  const result = await query(
+    `SELECT id FROM contractor_routes WHERE tenant_id = @tenantId AND id IN (${placeholders})`,
+    params
+  );
+  return normalizeIds((result.recordset || []).map((r) => getRow(r, 'id')));
+}
+
+async function replaceReportRoutes(reportId, tenantId, routeIds) {
+  await query(`DELETE FROM project_progress_report_routes WHERE report_id = @reportId`, { reportId });
+  const validRouteIds = await resolveValidRouteIds(tenantId, routeIds);
+  for (const routeId of validRouteIds) {
+    await query(
+      `INSERT INTO project_progress_report_routes (report_id, route_id) VALUES (@reportId, @routeId)`,
+      { reportId, routeId }
+    );
+  }
+  return validRouteIds;
+}
+
 router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess(['access_management', 'rector']));
@@ -47,12 +96,29 @@ router.get('/', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const scopedRectorRouteIds = !hasAccessManagement(req) ? await getRectorRouteIds(req, tenantId) : [];
+    const routePlaceholders = scopedRectorRouteIds.map((_, i) => `@routeId${i}`).join(',');
+    const routeParams = { tenantId };
+    scopedRectorRouteIds.forEach((id, i) => { routeParams[`routeId${i}`] = id; });
+    const rectorScopeSql = scopedRectorRouteIds.length > 0
+      ? `AND (
+          NOT EXISTS (SELECT 1 FROM project_progress_report_routes rr0 WHERE rr0.report_id = r.id)
+          OR EXISTS (
+            SELECT 1 FROM project_progress_report_routes rr1
+            WHERE rr1.report_id = r.id AND rr1.route_id IN (${routePlaceholders})
+          )
+        )`
+      : '';
     const result = await query(
-      `SELECT id, tenant_id, title, report_date, reporting_status, narrative_updates, phases_json, contractor_status_json, sanctions_text, conclusion_text, created_at, updated_at
-       FROM project_progress_reports
-       WHERE tenant_id = @tenantId
-       ORDER BY report_date DESC, updated_at DESC`,
-      { tenantId }
+      `SELECT r.id, r.tenant_id, r.title, r.report_date, r.reporting_status, r.narrative_updates, r.phases_json, r.contractor_status_json, r.sanctions_text, r.conclusion_text, r.created_at, r.updated_at,
+              STRING_AGG(CONVERT(NVARCHAR(36), rr.route_id), ',') AS route_ids_csv
+       FROM project_progress_reports r
+       LEFT JOIN project_progress_report_routes rr ON rr.report_id = r.id
+       WHERE r.tenant_id = @tenantId
+       ${rectorScopeSql}
+       GROUP BY r.id, r.tenant_id, r.title, r.report_date, r.reporting_status, r.narrative_updates, r.phases_json, r.contractor_status_json, r.sanctions_text, r.conclusion_text, r.created_at, r.updated_at
+       ORDER BY r.report_date DESC, r.updated_at DESC`,
+      routeParams
     );
     const list = (result.recordset || []).map((r) => ({
       id: getRow(r, 'id'),
@@ -65,6 +131,7 @@ router.get('/', async (req, res, next) => {
       contractor_status: parseJson(getRow(r, 'contractor_status_json')),
       sanctions_text: getRow(r, 'sanctions_text'),
       conclusion_text: getRow(r, 'conclusion_text'),
+      route_ids: csvToIds(getRow(r, 'route_ids_csv')),
       created_at: getRow(r, 'created_at'),
       updated_at: getRow(r, 'updated_at'),
     }));
@@ -80,11 +147,28 @@ router.get('/:id', async (req, res, next) => {
     const { id } = req.params;
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const scopedRectorRouteIds = !hasAccessManagement(req) ? await getRectorRouteIds(req, tenantId) : [];
+    const routePlaceholders = scopedRectorRouteIds.map((_, i) => `@routeId${i}`).join(',');
+    const params = { id, tenantId };
+    scopedRectorRouteIds.forEach((rid, i) => { params[`routeId${i}`] = rid; });
+    const rectorScopeSql = scopedRectorRouteIds.length > 0
+      ? `AND (
+          NOT EXISTS (SELECT 1 FROM project_progress_report_routes rr0 WHERE rr0.report_id = r.id)
+          OR EXISTS (
+            SELECT 1 FROM project_progress_report_routes rr1
+            WHERE rr1.report_id = r.id AND rr1.route_id IN (${routePlaceholders})
+          )
+        )`
+      : '';
     const result = await query(
-      `SELECT id, tenant_id, title, report_date, reporting_status, narrative_updates, phases_json, contractor_status_json, sanctions_text, conclusion_text, created_at, updated_at
-       FROM project_progress_reports
-       WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId }
+      `SELECT r.id, r.tenant_id, r.title, r.report_date, r.reporting_status, r.narrative_updates, r.phases_json, r.contractor_status_json, r.sanctions_text, r.conclusion_text, r.created_at, r.updated_at,
+              STRING_AGG(CONVERT(NVARCHAR(36), rr.route_id), ',') AS route_ids_csv
+       FROM project_progress_reports r
+       LEFT JOIN project_progress_report_routes rr ON rr.report_id = r.id
+       WHERE r.id = @id AND r.tenant_id = @tenantId
+       ${rectorScopeSql}
+       GROUP BY r.id, r.tenant_id, r.title, r.report_date, r.reporting_status, r.narrative_updates, r.phases_json, r.contractor_status_json, r.sanctions_text, r.conclusion_text, r.created_at, r.updated_at`,
+      params
     );
     const r = result.recordset?.[0];
     if (!r) return res.status(404).json({ error: 'Report not found' });
@@ -100,6 +184,7 @@ router.get('/:id', async (req, res, next) => {
         contractor_status: parseJson(getRow(r, 'contractor_status_json')),
         sanctions_text: getRow(r, 'sanctions_text'),
         conclusion_text: getRow(r, 'conclusion_text'),
+        route_ids: csvToIds(getRow(r, 'route_ids_csv')),
         created_at: getRow(r, 'created_at'),
         updated_at: getRow(r, 'updated_at'),
       },
@@ -124,6 +209,7 @@ router.post('/', async (req, res, next) => {
     const narrativeUpdates = (body.narrative_updates || '').toString().trim() || null;
     const phases = Array.isArray(body.phases) ? body.phases : [];
     const contractorStatus = Array.isArray(body.contractor_status) ? body.contractor_status : [];
+    const routeIds = normalizeIds(body.route_ids);
     const sanctionsText = (body.sanctions_text || '').toString().trim() || null;
     const conclusionText = (body.conclusion_text || '').toString().trim() || null;
     const phasesJson = JSON.stringify(phases);
@@ -146,12 +232,14 @@ router.post('/', async (req, res, next) => {
       }
     );
     const row = result.recordset?.[0];
+    const savedRouteIds = await replaceReportRoutes(getRow(row, 'id'), tenantId, routeIds);
     res.status(201).json({
       report: {
         id: getRow(row, 'id'),
         title: getRow(row, 'title'),
         report_date: getRow(row, 'report_date'),
         reporting_status: getRow(row, 'reporting_status'),
+        route_ids: savedRouteIds,
         created_at: getRow(row, 'created_at'),
       },
     });
@@ -180,19 +268,33 @@ router.patch('/:id', async (req, res, next) => {
     if (body.contractor_status !== undefined) { updates.push('contractor_status_json = @contractorStatusJson'); params.contractorStatusJson = JSON.stringify(Array.isArray(body.contractor_status) ? body.contractor_status : []); }
     if (body.sanctions_text !== undefined) { updates.push('sanctions_text = @sanctionsText'); params.sanctionsText = (body.sanctions_text || '').toString().trim() || null; }
     if (body.conclusion_text !== undefined) { updates.push('conclusion_text = @conclusionText'); params.conclusionText = (body.conclusion_text || '').toString().trim() || null; }
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    updates.push('updated_at = SYSUTCDATETIME()');
-    const result = await query(
-      `UPDATE project_progress_reports SET ${updates.join(', ')} OUTPUT INSERTED.id WHERE id = @id AND tenant_id = @tenantId`,
-      params
-    );
-    if (!result.recordset?.[0]) return res.status(404).json({ error: 'Report not found' });
+    const routeIdsProvided = body.route_ids !== undefined;
+    const routeIds = normalizeIds(body.route_ids);
+    if (updates.length === 0 && !routeIdsProvided) return res.status(400).json({ error: 'No fields to update' });
+    if (updates.length > 0) {
+      updates.push('updated_at = SYSUTCDATETIME()');
+      const result = await query(
+        `UPDATE project_progress_reports SET ${updates.join(', ')} OUTPUT INSERTED.id WHERE id = @id AND tenant_id = @tenantId`,
+        params
+      );
+      if (!result.recordset?.[0]) return res.status(404).json({ error: 'Report not found' });
+    } else {
+      const exists = await query(`SELECT id FROM project_progress_reports WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+      if (!exists.recordset?.[0]) return res.status(404).json({ error: 'Report not found' });
+    }
     const getResult = await query(
       `SELECT id, title, report_date, reporting_status, narrative_updates, phases_json, contractor_status_json, sanctions_text, conclusion_text, updated_at
        FROM project_progress_reports WHERE id = @id`,
       { id }
     );
     const r = getResult.recordset?.[0];
+    const reportId = getRow(r, 'id');
+    const savedRouteIds = routeIdsProvided
+      ? await replaceReportRoutes(reportId, tenantId, routeIds)
+      : await (async () => {
+        const rr = await query(`SELECT route_id FROM project_progress_report_routes WHERE report_id = @reportId`, { reportId });
+        return normalizeIds((rr.recordset || []).map((x) => getRow(x, 'route_id')));
+      })();
     res.json({
       report: {
         id: getRow(r, 'id'),
@@ -204,6 +306,7 @@ router.patch('/:id', async (req, res, next) => {
         contractor_status: parseJson(getRow(r, 'contractor_status_json')),
         sanctions_text: getRow(r, 'sanctions_text'),
         conclusion_text: getRow(r, 'conclusion_text'),
+        route_ids: savedRouteIds,
         updated_at: getRow(r, 'updated_at'),
       },
     });

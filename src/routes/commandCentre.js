@@ -6,7 +6,24 @@ import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
-import { applicationApprovedHtml, applicationBulkApprovedHtml, applicationApprovedToRectorHtml, applicationBulkApprovedToRectorHtml, breakdownReportHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
+import {
+  applicationApprovedHtml,
+  applicationBulkApprovedHtml,
+  applicationApprovedToRectorHtml,
+  applicationBulkApprovedToRectorHtml,
+  breakdownReportHtml,
+  breakdownResolvedHtml,
+  truckSuspendedToContractorHtml,
+  truckSuspendedToRectorHtml,
+  truckReinstatedToContractorHtml,
+  truckReinstatedToRectorHtml,
+  reinstatedToContractorHtml,
+  reinstatedToRectorHtml,
+  reinstatedToAccessManagementHtml,
+  shiftReportOverrideRequestHtml,
+  shiftReportOverrideCodeToRequesterHtml,
+  commandCentreReminderHtml,
+} from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -249,6 +266,154 @@ function rowToComplianceInspection(r, responseAttachments = []) {
     contractorName: getRow(r, 'contractor_name'),
   };
 }
+
+function mapNoteReminder(r) {
+  return {
+    id: getRow(r, 'id'),
+    tenant_id: getRow(r, 'tenant_id'),
+    user_id: getRow(r, 'user_id'),
+    user_name: getRow(r, 'user_name'),
+    note_text: getRow(r, 'note_text'),
+    is_private: !!getRow(r, 'is_private'),
+    reminder_at: getRow(r, 'reminder_at'),
+    reminder_sent_at: getRow(r, 'reminder_sent_at'),
+    is_done: !!getRow(r, 'is_done'),
+    created_at: getRow(r, 'created_at'),
+    updated_at: getRow(r, 'updated_at'),
+  };
+}
+
+// Notes & reminders: own private + public notes (tenant-wide) in Command Centre.
+router.get('/notes-reminders', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.json({ items: [] });
+    const onlyMine = String(req.query.only_mine || '').trim() === '1';
+    let sqlQuery = `SELECT n.*, u.full_name AS user_name
+      FROM cc_notes_reminders n
+      INNER JOIN users u ON u.id = n.user_id
+      WHERE n.tenant_id = @tenantId`;
+    const params = { tenantId, userId: req.user.id };
+    if (onlyMine) {
+      sqlQuery += ` AND n.user_id = @userId`;
+    } else {
+      sqlQuery += ` AND (n.user_id = @userId OR n.is_private = 0)`;
+    }
+    sqlQuery += ` ORDER BY n.created_at DESC`;
+    const result = await query(sqlQuery, params);
+    res.json({ items: (result.recordset || []).map((r) => mapNoteReminder(r)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/notes-reminders', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const noteText = String(req.body?.note_text || '').trim();
+    const isPrivate = req.body?.is_private !== false;
+    const reminderAtRaw = req.body?.reminder_at;
+    if (!noteText) return res.status(400).json({ error: 'note_text is required' });
+    if (noteText.length > 4000) return res.status(400).json({ error: 'note_text is too long (max 4000)' });
+    let reminderAt = null;
+    if (reminderAtRaw != null && String(reminderAtRaw).trim()) {
+      const parsed = new Date(reminderAtRaw);
+      if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'Invalid reminder_at' });
+      reminderAt = parsed.toISOString();
+    }
+    const created = await query(
+      `INSERT INTO cc_notes_reminders (tenant_id, user_id, note_text, is_private, reminder_at, is_done, updated_at)
+       OUTPUT INSERTED.*
+       VALUES (@tenantId, @userId, @noteText, @isPrivate, @reminderAt, 0, SYSUTCDATETIME())`,
+      { tenantId, userId: req.user.id, noteText, isPrivate: isPrivate ? 1 : 0, reminderAt }
+    );
+    const row = created.recordset?.[0];
+    const detail = await query(
+      `SELECT n.*, u.full_name AS user_name
+       FROM cc_notes_reminders n
+       INNER JOIN users u ON u.id = n.user_id
+       WHERE n.id = @id`,
+      { id: getRow(row, 'id') }
+    );
+    res.status(201).json({ item: mapNoteReminder(detail.recordset?.[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/notes-reminders/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const existing = await query(`SELECT * FROM cc_notes_reminders WHERE id = @id`, { id });
+    const row = existing.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(row, 'tenant_id')) !== String(tenantId)) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(row, 'user_id')) !== String(req.user.id)) return res.status(403).json({ error: 'Only the note owner can update this item' });
+
+    const hasNoteText = Object.prototype.hasOwnProperty.call(req.body || {}, 'note_text');
+    const hasPrivate = Object.prototype.hasOwnProperty.call(req.body || {}, 'is_private');
+    const hasReminder = Object.prototype.hasOwnProperty.call(req.body || {}, 'reminder_at');
+    const hasDone = Object.prototype.hasOwnProperty.call(req.body || {}, 'is_done');
+    if (!hasNoteText && !hasPrivate && !hasReminder && !hasDone) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+    const noteText = hasNoteText ? String(req.body.note_text || '').trim() : String(getRow(row, 'note_text') || '');
+    if (!noteText) return res.status(400).json({ error: 'note_text is required' });
+    if (noteText.length > 4000) return res.status(400).json({ error: 'note_text is too long (max 4000)' });
+    const isPrivate = hasPrivate ? !!req.body.is_private : !!getRow(row, 'is_private');
+    let reminderAt = hasReminder ? req.body.reminder_at : getRow(row, 'reminder_at');
+    if (hasReminder) {
+      if (reminderAt == null || String(reminderAt).trim() === '') reminderAt = null;
+      else {
+        const parsed = new Date(reminderAt);
+        if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'Invalid reminder_at' });
+        reminderAt = parsed.toISOString();
+      }
+    }
+    const isDone = hasDone ? !!req.body.is_done : !!getRow(row, 'is_done');
+    const reminderSentAt = hasReminder ? null : getRow(row, 'reminder_sent_at');
+    await query(
+      `UPDATE cc_notes_reminders
+       SET note_text = @noteText,
+           is_private = @isPrivate,
+           reminder_at = @reminderAt,
+           reminder_sent_at = @reminderSentAt,
+           is_done = @isDone,
+           updated_at = SYSUTCDATETIME()
+       WHERE id = @id`,
+      { id, noteText, isPrivate: isPrivate ? 1 : 0, reminderAt, reminderSentAt, isDone: isDone ? 1 : 0 }
+    );
+    const detail = await query(
+      `SELECT n.*, u.full_name AS user_name
+       FROM cc_notes_reminders n
+       INNER JOIN users u ON u.id = n.user_id
+       WHERE n.id = @id`,
+      { id }
+    );
+    res.json({ item: mapNoteReminder(detail.recordset?.[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/notes-reminders/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user?.tenant_id;
+    const existing = await query(`SELECT id, tenant_id, user_id FROM cc_notes_reminders WHERE id = @id`, { id });
+    const row = existing.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(row, 'tenant_id')) !== String(tenantId)) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(row, 'user_id')) !== String(req.user.id)) return res.status(403).json({ error: 'Only the note owner can delete this item' });
+    await query(`DELETE FROM cc_notes_reminders WHERE id = @id`, { id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** GET list compliance inspections (Command Centre: all; for Inspected / Inspection records tabs) */
 router.get('/compliance-inspections', async (req, res, next) => {
@@ -3385,5 +3550,48 @@ router.post('/truck-analysis/sessions/:id/handover', async (req, res, next) => {
     next(err);
   }
 });
+
+/** Reminder sender for Command Centre notes/reminders (called periodically from server startup). */
+export async function runCommandCentreReminderNotifications() {
+  if (!isEmailConfigured()) return { reminders: 0, sent: 0 };
+  const due = await query(
+    `SELECT TOP 100 n.id, n.note_text, n.reminder_at, u.email
+     FROM cc_notes_reminders n
+     INNER JOIN users u ON u.id = n.user_id
+     WHERE n.reminder_at IS NOT NULL
+       AND n.reminder_sent_at IS NULL
+       AND ISNULL(n.is_done, 0) = 0
+       AND n.reminder_at <= SYSUTCDATETIME()
+       AND u.email IS NOT NULL
+       AND LTRIM(RTRIM(u.email)) <> N''
+     ORDER BY n.reminder_at ASC`
+  );
+  const rows = due.recordset || [];
+  const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+  let sent = 0;
+  for (const row of rows) {
+    const id = getRow(row, 'id');
+    const to = String(getRow(row, 'email') || '').trim();
+    if (!id || !to || !to.includes('@')) continue;
+    const html = commandCentreReminderHtml({
+      noteText: getRow(row, 'note_text'),
+      reminderAt: getRow(row, 'reminder_at'),
+      appUrl,
+    });
+    try {
+      await sendEmail({ to, subject: 'Reminder: Notes & reminders', body: html, html: true });
+      sent += 1;
+      await query(
+        `UPDATE cc_notes_reminders
+         SET reminder_sent_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+         WHERE id = @id`,
+        { id }
+      );
+    } catch (err) {
+      console.error('[command-centre] notes reminder email error:', err?.message || err);
+    }
+  }
+  return { reminders: rows.length, sent };
+}
 
 export default router;

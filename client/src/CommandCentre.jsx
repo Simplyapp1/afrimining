@@ -12,6 +12,7 @@ import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
 import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
 import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
+import InfoHint from './components/InfoHint.jsx';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -189,6 +190,7 @@ export default function CommandCentre() {
   const [inspections, setInspections] = useState(() => loadStoredInspections());
   const [contractorsDetailsList, setContractorsDetailsList] = useState([]);
   const [contractorsDetailsLoading, setContractorsDetailsLoading] = useState(false);
+  const [notesPanelOpen, setNotesPanelOpen] = useState(false);
   const isSuperAdmin = user?.role === 'super_admin';
 
   useEffect(() => {
@@ -343,7 +345,7 @@ export default function CommandCentre() {
   }
 
   return (
-    <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
+    <div className="flex gap-0 flex-1 min-h-0 overflow-hidden relative">
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 shrink-0 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
@@ -469,6 +471,210 @@ export default function CommandCentre() {
             <div className="rounded-xl border border-surface-200 bg-surface-50 p-6 text-center text-surface-600">
               <p>Select a tab from the left, or you may not have access to this tab.</p>
             </div>
+          )}
+        </div>
+      </div>
+
+      {!notesPanelOpen && (
+        <button
+          type="button"
+          onClick={() => setNotesPanelOpen(true)}
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-20 rounded-l-xl border border-surface-300 border-r-0 bg-white px-3 py-2 text-sm font-medium text-surface-700 shadow hover:bg-surface-50"
+          title="Open notes and reminders"
+        >
+          Notes & reminders
+        </button>
+      )}
+
+      <aside
+        className={`shrink-0 bg-white border-l border-surface-200 min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${
+          notesPanelOpen ? 'w-[420px]' : 'w-0 border-l-0'
+        }`}
+        aria-hidden={!notesPanelOpen}
+      >
+        {notesPanelOpen && (
+          <div className="h-full overflow-auto p-4">
+            <TabNotesReminders onClose={() => setNotesPanelOpen(false)} />
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function TabNotesReminders({ onClose }) {
+  const { user } = useAuth();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [noteText, setNoteText] = useState('');
+  const [isPrivate, setIsPrivate] = useState(true);
+  const [reminderAt, setReminderAt] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    ccApi.notesReminders.list(false)
+      .then((r) => setItems(r.items || []))
+      .catch((e) => setError(e?.message || 'Failed to load notes/reminders'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!noteText.trim()) {
+      setError('Please type a note or reminder.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await ccApi.notesReminders.create({
+        note_text: noteText.trim(),
+        is_private: isPrivate,
+        reminder_at: reminderAt ? new Date(reminderAt).toISOString() : null,
+      });
+      setNoteText('');
+      setReminderAt('');
+      setIsPrivate(true);
+      load();
+    } catch (err) {
+      setError(err?.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleDone = async (item) => {
+    try {
+      await ccApi.notesReminders.update(item.id, { is_done: !item.is_done });
+      load();
+    } catch (err) {
+      setError(err?.message || 'Failed to update reminder');
+    }
+  };
+
+  const removeItem = async (itemId) => {
+    try {
+      await ccApi.notesReminders.remove(itemId);
+      load();
+    } catch (err) {
+      setError(err?.message || 'Failed to delete');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold text-surface-900">Notes & reminders</h1>
+          <InfoHint
+            title="Notes and reminders help"
+            text="Capture notes during your shift. Choose Private (only you) or Public (other Command Centre users can see). Notes are timestamped automatically when saved. If you set a reminder time, you will receive an email at that time."
+            bullets={[
+              'Every saved note gets an automatic timestamp.',
+              'Private notes are visible only to you.',
+              'Public notes are visible to other Command Centre users in your tenant.',
+              'Set reminder time to get an email when it is due.',
+            ]}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-surface-500 hover:text-surface-700 text-xl leading-none"
+              aria-label="Close notes and reminders"
+              title="Close"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleCreate} className="bg-white border border-surface-200 rounded-xl p-4 space-y-3">
+        <textarea
+          value={noteText}
+          onChange={(e) => setNoteText(e.target.value)}
+          placeholder="Type your shift note/reminder..."
+          rows={4}
+          className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          required
+        />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+          <label className="flex items-center gap-2 text-sm text-surface-700">
+            <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} />
+            Private note
+          </label>
+          <div>
+            <label className="block text-xs text-surface-500 mb-1">Reminder time (optional)</label>
+            <input
+              type="datetime-local"
+              value={reminderAt}
+              onChange={(e) => setReminderAt(e.target.value)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save note'}
+          </button>
+        </div>
+      </form>
+
+      <div className="grid grid-cols-1 gap-4">
+        <div className="bg-white border border-surface-200 rounded-xl p-4">
+          <h2 className="font-semibold text-surface-900 mb-3">All visible notes</h2>
+          {loading ? (
+            <p className="text-sm text-surface-500">Loading...</p>
+          ) : items.length === 0 ? (
+            <p className="text-sm text-surface-500">No notes yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {items.map((item) => (
+                <li key={item.id} className="border border-surface-200 rounded-lg p-3">
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <span className={`text-xs px-2 py-0.5 rounded ${item.is_private ? 'bg-surface-100 text-surface-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                      {item.is_private ? 'Private' : 'Public'}
+                    </span>
+                    <span className="text-xs text-surface-500">{new Date(item.created_at).toLocaleString()}</span>
+                  </div>
+                  <p className={`text-sm mt-2 whitespace-pre-wrap ${item.is_done ? 'line-through text-surface-400' : 'text-surface-800'}`}>{item.note_text}</p>
+                  {item.reminder_at && (
+                    <p className="text-xs text-indigo-700 mt-2">
+                      Reminder: {new Date(item.reminder_at).toLocaleString()}
+                      {item.reminder_sent_at ? ' (email sent)' : ''}
+                    </p>
+                  )}
+                  {item.user_name && <p className="text-xs text-surface-500 mt-1">By: {item.user_name}</p>}
+                  {String(item.user_id) === String(user?.id) && (
+                    <div className="mt-2 flex gap-3">
+                      <button type="button" onClick={() => toggleDone(item)} className="text-xs text-brand-700 hover:underline">
+                        {item.is_done ? 'Mark not done' : 'Mark done'}
+                      </button>
+                      <button type="button" onClick={() => removeItem(item.id)} className="text-xs text-red-600 hover:underline">
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </div>

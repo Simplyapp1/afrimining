@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { recruitment as recruitmentApi, downloadAttachmentWithAuth, openAttachmentWithAuth, users as usersApi } from './api';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 
 const ALL_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -312,8 +313,10 @@ function TabRecruitRegistration({ vacancies, setVacancies, setError }) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-800">Recruit registration</h2>
-      <p className="text-sm text-surface-600">Register a post or vacancy with full role details and descriptions. Click a vacancy to view full details.</p>
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-surface-800">Recruit registration</h2>
+        <InfoHint title="Recruit registration help" text="Register a post or vacancy with full role details and descriptions. Click a vacancy to view full details." />
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
           {selectedVacancy ? (
@@ -453,8 +456,10 @@ function TabApplicantInvitation({ vacancies, setError }) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-800">Applicant invitation</h2>
-      <p className="text-sm text-surface-600">Create a shareable link for a vacancy. Applicants open the link to complete the job application (particulars and uploads).</p>
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-surface-800">Applicant invitation</h2>
+        <InfoHint title="Applicant invitation help" text="Create a shareable link for a vacancy. Applicants open the link to complete the job application (particulars and uploads)." />
+      </div>
       <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
         <h3 className="font-medium text-surface-800">Create application link</h3>
         <div className="flex flex-wrap gap-3 items-end">
@@ -615,8 +620,10 @@ function TabCvLibrary({ setError }) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-800">CV library</h2>
-      <p className="text-sm text-surface-600">Upload CVs and organise them under folders. View on screen or download.</p>
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-surface-800">CV library</h2>
+        <InfoHint title="CV library help" text="Upload CVs and organise them under folders. View on screen or download." />
+      </div>
       <div className="flex flex-wrap gap-4 items-center">
         <div className="flex gap-2">
           <input type="text" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="New folder name" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48" />

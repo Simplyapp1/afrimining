@@ -27,3 +27,16 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_monthly_performance_reports_submitted' AND object_id = OBJECT_ID('monthly_performance_reports'))
   CREATE INDEX IX_monthly_performance_reports_submitted ON monthly_performance_reports(submitted_date DESC);
 GO
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'monthly_performance_report_routes')
+CREATE TABLE monthly_performance_report_routes (
+  report_id UNIQUEIDENTIFIER NOT NULL REFERENCES monthly_performance_reports(id) ON DELETE CASCADE,
+  route_id UNIQUEIDENTIFIER NOT NULL REFERENCES contractor_routes(id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_monthly_performance_report_routes PRIMARY KEY (report_id, route_id)
+);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_monthly_performance_report_routes_route' AND object_id = OBJECT_ID('monthly_performance_report_routes'))
+  CREATE INDEX IX_monthly_performance_report_routes_route ON monthly_performance_report_routes(route_id);
+GO

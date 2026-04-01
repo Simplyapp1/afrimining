@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
@@ -60,6 +60,38 @@ function formatDateTime(d) {
   return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
+/** Labels for which contractor routes a published report applies to (from Access Management). */
+function ReportRouteBadges({ routeIds, routeNameById, align = 'start' }) {
+  const ids = Array.isArray(routeIds) ? routeIds.filter((id) => id != null && String(id).trim()) : [];
+  const wrap =
+    align === 'center'
+      ? 'flex flex-wrap items-center justify-center gap-2'
+      : 'flex flex-wrap items-center gap-2';
+  const labelClass = align === 'center' ? 'text-xs font-medium text-surface-500 uppercase tracking-wider w-full text-center sm:w-auto' : 'text-xs font-medium text-surface-500 uppercase tracking-wider shrink-0';
+  if (ids.length === 0) {
+    return (
+      <div className={`${wrap} mt-1`}>
+        <span className={labelClass}>Published for</span>
+        <span className="inline-flex items-center rounded-full border border-surface-200 bg-surface-50 px-2.5 py-0.5 text-xs font-medium text-surface-700">All routes</span>
+      </div>
+    );
+  }
+  return (
+    <div className={`${wrap} mt-1`}>
+      <span className={labelClass}>Published for</span>
+      {ids.map((id) => (
+        <span
+          key={String(id)}
+          className="inline-flex items-center rounded-full border border-brand-200 bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-900"
+          title={String(id)}
+        >
+          {routeNameById[String(id)] || 'Route'}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function Rector() {
   const { user, loading: authLoading } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('rector');
@@ -79,6 +111,10 @@ export default function Rector() {
   const [fleetSubTab, setFleetSubTab] = useState('trucks');
   const [routes, setRoutes] = useState([]);
   const [routeEnrollments, setRouteEnrollments] = useState({}); // routeId -> { trucks: [], drivers: [] }
+  const routeNameById = useMemo(
+    () => Object.fromEntries((routes || []).map((r) => [String(r.id), r.name || 'Unnamed route'])),
+    [routes]
+  );
 
   // Incidents
   const [incidents, setIncidents] = useState([]);
@@ -1330,6 +1366,7 @@ export default function Rector() {
                               </>
                             )}
                           </div>
+                          <ReportRouteBadges routeIds={progressReportDetail.route_ids} routeNameById={routeNameById} />
 
                           {progressReportDetail.narrative_updates && (
                             <section>
@@ -1530,6 +1567,7 @@ export default function Rector() {
                               {actionPlanDetail.document_date && <span>{formatDate(actionPlanDetail.document_date)}</span>}
                               {actionPlanDetail.document_id && <><span className="text-surface-300">·</span><span>Doc. {actionPlanDetail.document_id}</span></>}
                             </div>
+                            <ReportRouteBadges routeIds={actionPlanDetail.route_ids} routeNameById={routeNameById} align="center" />
                           </div>
 
                           <p className="text-xs text-surface-500 text-center italic border-y border-surface-100 py-3">
@@ -1680,6 +1718,7 @@ export default function Rector() {
                               {monthlyPerfDetail.reporting_period_start && monthlyPerfDetail.reporting_period_end && <span>Reporting period: {formatDate(monthlyPerfDetail.reporting_period_start)} – {formatDate(monthlyPerfDetail.reporting_period_end)}</span>}
                               {monthlyPerfDetail.submitted_date && <><span className="text-surface-300">·</span><span>Submitted: {formatDate(monthlyPerfDetail.submitted_date)}</span></>}
                             </div>
+                            <ReportRouteBadges routeIds={monthlyPerfDetail.route_ids} routeNameById={routeNameById} align="center" />
                           </div>
                           <p className="text-xs text-surface-500 text-center italic border-y border-surface-100 py-3">This report contains proprietary and confidential information intended solely for use by Tihlo and parties duly authorised by Thinkers Afrika. Unauthorised distribution or disclosure is strictly prohibited.</p>
 

@@ -25,3 +25,16 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_project_progress_reports_report_date' AND object_id = OBJECT_ID('project_progress_reports'))
   CREATE INDEX IX_project_progress_reports_report_date ON project_progress_reports(report_date DESC);
 GO
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'project_progress_report_routes')
+CREATE TABLE project_progress_report_routes (
+  report_id UNIQUEIDENTIFIER NOT NULL REFERENCES project_progress_reports(id) ON DELETE CASCADE,
+  route_id UNIQUEIDENTIFIER NOT NULL REFERENCES contractor_routes(id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_project_progress_report_routes PRIMARY KEY (report_id, route_id)
+);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_project_progress_report_routes_route' AND object_id = OBJECT_ID('project_progress_report_routes'))
+  CREATE INDEX IX_project_progress_report_routes_route ON project_progress_report_routes(route_id);
+GO

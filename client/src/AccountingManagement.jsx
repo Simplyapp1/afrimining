@@ -3,6 +3,7 @@ import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { getApiBase } from './lib/apiBase.js';
+import InfoHint from './components/InfoHint.jsx';
 
 const NAV_SECTIONS = [
   {
@@ -1933,14 +1934,16 @@ function StatementsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h2 className="text-lg font-semibold text-surface-900">Customer statements & other statements</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold text-surface-900">Customer statements & other statements</h2>
+          <InfoHint
+            title="Statements help"
+            text="Build a bank-style statement of account: opening balance, dated lines with reference, debit/credit, and running balance. For customer statements, load invoices and payments from period to populate Paid/Outstanding and payment credits."
+          />
+        </div>
         <button type="button" onClick={openNew} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">New statement</button>
       </div>
-      <p className="text-sm text-surface-600 max-w-3xl">
-        Build a <strong>bank-style statement of account</strong>: opening balance, dated lines with reference, debit / credit, and running balance.
-        For a <strong>customer</strong> statement, use <strong>Load invoices &amp; payments from period</strong> to pull that customer’s invoices: each shows as <strong>Paid</strong> or <strong>Outstanding</strong>; paid invoices also get a <strong>payment credit</strong> (date &amp; reference from “Mark paid”).
-        Use <strong>Banking / footer</strong> for payment instructions. Run <code className="text-xs bg-surface-100 px-1 rounded">npm run db:accounting-statement-lines</code> once if saving fails.
-      </p>
+      
       {formOpen && (
         <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm w-full max-w-6xl">
           <h3 className="font-medium text-surface-900 mb-4">{editingId ? 'Edit statement' : 'New statement'}</h3>

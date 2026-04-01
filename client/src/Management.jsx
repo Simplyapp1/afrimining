@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { profileManagement as pm } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
+  { id: 'shift-swaps', label: 'Shift swap requests' },
   { id: 'schedule-events', label: 'Schedule events' },
   { id: 'leave', label: 'Leave applications' },
   { id: 'documents', label: 'Documents library' },
@@ -17,6 +19,166 @@ const SECTIONS = [
 function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
+}
+
+function shiftLabel(st) {
+  return st === 'night' ? 'Night' : 'Day';
+}
+
+function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
+  const [sub, setSub] = useState('pending');
+  const [notesById, setNotesById] = useState({});
+  const [busyId, setBusyId] = useState(null);
+
+  const pending = (requests || []).filter((r) => r.status === 'pending_management');
+  const history = (requests || []).filter((r) => r.status !== 'pending_management');
+  const show = sub === 'pending' ? pending : history;
+
+  const act = async (id, approve) => {
+    setBusyId(id);
+    onError('');
+    try {
+      await pm.shiftSwaps.managementReview(id, {
+        approve,
+        notes: notesById[id]?.trim() || undefined,
+      });
+      onRefresh();
+    } catch (e) {
+      onError(e?.message || 'Action failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold text-surface-900">Shift swap requests</h1>
+          <InfoHint
+            title="Shift swap requests help"
+            text="Employees propose swaps on their profile; the colleague must accept first. Requests listed here are ready for your decision. Approving updates both work schedules immediately by exchanging the two shifts (dates and day/night)."
+          />
+        </div>
+      </div>
+      <div className="flex gap-2 border-b border-surface-200">
+        <button
+          type="button"
+          onClick={() => setSub('pending')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+            sub === 'pending' ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'
+          }`}
+        >
+          Awaiting approval ({pending.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setSub('history')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+            sub === 'history' ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'
+          }`}
+        >
+          History ({history.length})
+        </button>
+      </div>
+      {show.length === 0 ? (
+        <p className="text-sm text-surface-500 bg-white rounded-xl border border-surface-200 p-6">
+          {sub === 'pending' ? 'No swaps waiting for management right now.' : 'No completed or declined swaps yet.'}
+        </p>
+      ) : (
+        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[720px]">
+              <thead className="bg-surface-50 border-b border-surface-200">
+                <tr>
+                  <th className="px-4 py-2 text-left font-medium text-surface-700">Requester → colleague</th>
+                  <th className="px-4 py-2 text-left font-medium text-surface-700">Exchange</th>
+                  <th className="px-4 py-2 text-left font-medium text-surface-700">Status</th>
+                  <th className="px-4 py-2 text-left font-medium text-surface-700 w-[280px]">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {show.map((r) => (
+                  <tr key={r.id} className="align-top">
+                    <td className="px-4 py-3">
+                      <span className="font-medium text-surface-900">{r.requester_name}</span>
+                      <span className="text-surface-500"> ↔ </span>
+                      <span className="font-medium text-surface-900">{r.counterparty_name}</span>
+                      {r.message && <p className="text-xs text-surface-600 mt-1 italic">&ldquo;{r.message}&rdquo;</p>}
+                    </td>
+                    <td className="px-4 py-3 text-surface-800">
+                      <p>
+                        <span className="text-surface-500">Gives:</span> {formatDate(r.requester_work_date)} · {shiftLabel(r.requester_shift_type)}
+                      </p>
+                      <p className="mt-0.5">
+                        <span className="text-surface-500">Receives:</span> {formatDate(r.counterparty_work_date)} · {shiftLabel(r.counterparty_shift_type)}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                          r.status === 'pending_management'
+                            ? 'bg-violet-100 text-violet-900'
+                            : r.status === 'management_approved'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'bg-surface-100 text-surface-700'
+                        }`}
+                      >
+                        {r.status === 'pending_management' && 'Pending'}
+                        {r.status === 'management_approved' && 'Approved'}
+                        {r.status === 'management_declined' && 'Declined'}
+                        {r.status === 'peer_declined' && 'Peer declined'}
+                        {r.status === 'cancelled' && 'Cancelled'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {r.status === 'pending_management' ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={notesById[r.id] || ''}
+                            onChange={(e) => setNotesById((m) => ({ ...m, [r.id]: e.target.value }))}
+                            placeholder="Note (optional)"
+                            className="w-full px-2 py-1.5 rounded border border-surface-200 text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              disabled={busyId === r.id}
+                              onClick={() => act(r.id, true)}
+                              className="flex-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                              Approve &amp; apply
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busyId === r.id}
+                              onClick={() => act(r.id, false)}
+                              className="flex-1 px-3 py-1.5 rounded-lg border border-surface-300 text-surface-800 text-xs hover:bg-surface-50 disabled:opacity-50"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-surface-500">
+                          {formatDate(r.management_reviewed_at || r.peer_reviewed_at || r.created_at)}
+                          {r.management_review_notes && <span className="block mt-1 text-surface-600">{r.management_review_notes}</span>}
+                          {r.peer_review_notes && r.status === 'peer_declined' && (
+                            <span className="block mt-1 text-surface-600">Peer: {r.peer_review_notes}</span>
+                          )}
+                        </p>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function Management() {
@@ -35,6 +197,7 @@ export default function Management() {
   const [controllerMigrationRequired, setControllerMigrationRequired] = useState(false);
   const [pipPlans, setPipPlans] = useState([]);
   const [tenantUsers, setTenantUsers] = useState([]);
+  const [shiftSwapRequests, setShiftSwapRequests] = useState([]);
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
@@ -83,6 +246,12 @@ export default function Management() {
 
   useEffect(() => {
     if (activeSection === 'pip') pm.pip.listAll().then((d) => setPipPlans(d.plans || [])).catch(() => setPipPlans([]));
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection === 'shift-swaps') {
+      pm.shiftSwaps.managementQueue(null).then((d) => setShiftSwapRequests(d.requests || [])).catch(() => setShiftSwapRequests([]));
+    }
   }, [activeSection]);
 
   return (
@@ -136,6 +305,14 @@ export default function Management() {
               schedules={schedules}
               tenantUsers={tenantUsers}
               onRefresh={() => pm.schedules.list().then((d) => setSchedules(d.schedules || []))}
+              onError={setError}
+            />
+          )}
+
+          {activeSection === 'shift-swaps' && (
+            <ShiftSwapsManagementSection
+              requests={shiftSwapRequests}
+              onRefresh={() => pm.shiftSwaps.managementQueue(null).then((d) => setShiftSwapRequests(d.requests || [])).catch(() => setShiftSwapRequests([]))}
               onError={setError}
             />
           )}
@@ -361,10 +538,13 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Work schedules</h1>
-      <p className="text-sm text-surface-600">Create and manage work schedules (6:00 – 6:00 shifts).</p>
-
-      <p className="text-sm text-surface-600">Each employee has their own private schedule. Create a schedule for an employee, then add their shifts. They will only see their own schedule on their Profile.</p>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Work schedules</h1>
+        <InfoHint
+          title="Work schedules help"
+          text="Create and manage work schedules (6:00 – 6:00 shifts). Each employee has a private schedule. Create a schedule for an employee, then add their shifts. They only see their own schedule on Profile."
+        />
+      </div>
 
       {!showForm ? (
         <button type="button" onClick={() => setShowForm(true)} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
@@ -415,7 +595,13 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         </button>
         {showBulk && (
           <form onSubmit={handleBulkGenerate} className="p-4 border-t border-surface-100 space-y-4">
-            <p className="text-sm text-surface-600">Define a repeating pattern (e.g. day, day, night, off). The pattern repeats from the start date for the chosen time frame. Only &quot;Day&quot; and &quot;Night&quot; create shifts; &quot;Off&quot; is a rest day.</p>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-surface-700">Pattern guide</span>
+              <InfoHint
+                title="Bulk pattern help"
+                text="Define a repeating pattern (e.g. day, day, night, off). The pattern repeats from the start date for the chosen time frame. Only Day and Night create shifts; Off is a rest day."
+              />
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>

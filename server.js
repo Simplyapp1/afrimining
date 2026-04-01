@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import tenantRoutes from './src/routes/tenants.js';
 import userRoutes from './src/routes/users.js';
 import contractorRoutes from './src/routes/contractor.js';
-import commandCentreRoutes from './src/routes/commandCentre.js';
+import commandCentreRoutes, { runCommandCentreReminderNotifications } from './src/routes/commandCentre.js';
 import reportBreakdownRoutes from './src/routes/reportBreakdown.js';
 import testEmailRoutes from './src/routes/testEmail.js';
 import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
@@ -207,6 +207,11 @@ const server = app.listen(PORT, () => {
   setInterval(() => {
     runPilotListDistributions().catch((e) => console.error('[pilot-distribution]', e?.message || e));
   }, PILOT_DIST_MS);
+  // Command Centre notes reminders — check every minute
+  const CC_REMINDER_MS = 60 * 1000;
+  setInterval(() => {
+    runCommandCentreReminderNotifications().catch((e) => console.error('[cc-reminder]', e?.message || e));
+  }, CC_REMINDER_MS);
 });
 
 server.on('error', (err) => {

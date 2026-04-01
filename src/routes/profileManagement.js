@@ -2,10 +2,21 @@ import { Router } from 'express';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { query, getPool } from '../db.js';
+import { query, getPool, sql } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
-import { scheduleCreatedHtml, leaveAppliedHtml, leaveReviewedHtml, warningIssuedHtml, rewardIssuedHtml } from '../lib/emailTemplates.js';
+import {
+  scheduleCreatedHtml,
+  leaveAppliedHtml,
+  leaveReviewedHtml,
+  warningIssuedHtml,
+  rewardIssuedHtml,
+  shiftSwapRequestedHtml,
+  shiftSwapPendingManagementHtml,
+  shiftSwapApprovedHtml,
+  shiftSwapPeerDeclinedHtml,
+  shiftSwapManagementDeclinedHtml,
+} from '../lib/emailTemplates.js';
 import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
 
 const router = Router();
@@ -235,7 +246,7 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
     const start = new Date(y, m, 1);
     const end = new Date(y, m + 1, 0);
     const result = await query(
-      `SELECT e.work_date, e.shift_type, e.notes, s.title AS schedule_title
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes, s.title AS schedule_title
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
@@ -243,12 +254,574 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
       { tenantId, userId, start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
     );
     const entries = (result.recordset || []).map((r) => ({
+      entry_id: getRow(r, 'entry_id'),
       work_date: getRow(r, 'work_date'),
       shift_type: getRow(r, 'shift_type'),
       notes: getRow(r, 'notes'),
       schedule_title: getRow(r, 'schedule_title'),
     }));
     res.json({ entries });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function execTx(transaction, text, params = {}) {
+  const request = new sql.Request(transaction);
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    const k = key.startsWith('@') ? key.slice(1) : key;
+    request.input(k, value);
+  }
+  return request.query(text);
+}
+
+/** Load schedule entry with owning user and tenant */
+async function loadEntryWithSchedule(entryId) {
+  const r = await query(
+    `SELECT e.id, e.work_date, e.shift_type, e.work_schedule_id, s.user_id AS schedule_user_id, s.tenant_id
+     FROM work_schedule_entries e
+     INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+     WHERE e.id = @id`,
+    { id: entryId }
+  );
+  return r.recordset?.[0] ? r.recordset[0] : null;
+}
+
+function mapSwapRow(r) {
+  if (!r) return null;
+  return {
+    id: getRow(r, 'id'),
+    tenant_id: getRow(r, 'tenant_id'),
+    requester_user_id: getRow(r, 'requester_user_id'),
+    counterparty_user_id: getRow(r, 'counterparty_user_id'),
+    requester_entry_id: getRow(r, 'requester_entry_id'),
+    counterparty_entry_id: getRow(r, 'counterparty_entry_id'),
+    message: getRow(r, 'message'),
+    status: getRow(r, 'status'),
+    peer_reviewed_at: getRow(r, 'peer_reviewed_at'),
+    peer_review_notes: getRow(r, 'peer_review_notes'),
+    management_reviewed_at: getRow(r, 'management_reviewed_at'),
+    management_review_notes: getRow(r, 'management_review_notes'),
+    management_reviewed_by: getRow(r, 'management_reviewed_by'),
+    created_at: getRow(r, 'created_at'),
+    updated_at: getRow(r, 'updated_at'),
+    requester_name: getRow(r, 'requester_name'),
+    counterparty_name: getRow(r, 'counterparty_name'),
+    requester_work_date: getRow(r, 'requester_work_date'),
+    requester_shift_type: getRow(r, 'requester_shift_type'),
+    counterparty_work_date: getRow(r, 'counterparty_work_date'),
+    counterparty_shift_type: getRow(r, 'counterparty_shift_type'),
+  };
+}
+
+// Colleague's shifts for a month (same tenant) — pick counterparty entry when requesting a swap
+router.get('/shift-swaps/colleague-entries', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const colleagueId = req.query.user_id;
+    const m = req.query.month != null ? parseInt(req.query.month, 10) : new Date().getMonth();
+    const y = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    if (!tenantId || !colleagueId) return res.status(400).json({ error: 'user_id required' });
+    if (String(colleagueId).toLowerCase() === String(req.user.id).toLowerCase()) {
+      return res.status(400).json({ error: 'Choose a colleague other than yourself' });
+    }
+    const ut = await query(
+      `SELECT 1 AS ok FROM user_tenants WHERE user_id = @uid AND tenant_id = @tenantId`,
+      { uid: colleagueId, tenantId }
+    );
+    if (!ut.recordset?.length) return res.status(403).json({ error: 'User not in your organization' });
+    const start = new Date(y, m, 1);
+    const end = new Date(y, m + 1, 0);
+    const result = await query(
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type
+       FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
+       WHERE e.work_date >= @start AND e.work_date <= @end
+       ORDER BY e.work_date`,
+      { tenantId, userId: colleagueId, start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+    );
+    const entries = (result.recordset || []).map((row) => ({
+      entry_id: getRow(row, 'entry_id'),
+      work_date: getRow(row, 'work_date'),
+      shift_type: getRow(row, 'shift_type'),
+    }));
+    res.json({ entries });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Swap requests involving the current user, overlapping the calendar month (for profile UI)
+router.get('/shift-swaps/my', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    if (!tenantId) return res.json({ requests: [] });
+    const m = req.query.month != null ? parseInt(req.query.month, 10) : new Date().getMonth();
+    const y = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    const start = new Date(y, m, 1).toISOString().slice(0, 10);
+    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    const result = await query(
+      `SELECT r.*,
+        ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+        re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+       FROM shift_swap_requests r
+       INNER JOIN users ru ON ru.id = r.requester_user_id
+       INNER JOIN users cu ON cu.id = r.counterparty_user_id
+       INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+       INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+       WHERE r.tenant_id = @tenantId
+         AND (r.requester_user_id = @userId OR r.counterparty_user_id = @userId)
+         AND r.status NOT IN (N'cancelled')
+         AND (
+           (CONVERT(date, re.work_date) >= @start AND CONVERT(date, re.work_date) <= @end)
+           OR (CONVERT(date, ce.work_date) >= @start AND CONVERT(date, ce.work_date) <= @end)
+         )
+       ORDER BY r.created_at DESC`,
+      { tenantId, userId, start, end }
+    );
+    res.json({ requests: (result.recordset || []).map((row) => mapSwapRow(row)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/shift-swaps', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const requesterId = req.user.id;
+    const { counterparty_user_id, requester_entry_id, counterparty_entry_id, message } = req.body || {};
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!counterparty_user_id || !requester_entry_id || !counterparty_entry_id) {
+      return res.status(400).json({ error: 'counterparty_user_id, requester_entry_id, and counterparty_entry_id required' });
+    }
+    if (String(counterparty_user_id).toLowerCase() === String(requesterId).toLowerCase()) {
+      return res.status(400).json({ error: 'Cannot swap with yourself' });
+    }
+    const re = await loadEntryWithSchedule(requester_entry_id);
+    const ce = await loadEntryWithSchedule(counterparty_entry_id);
+    if (!re || !ce) return res.status(404).json({ error: 'One or both shifts not found' });
+    if (String(getRow(re, 'tenant_id')).toLowerCase() !== String(tenantId).toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(ce, 'tenant_id')).toLowerCase() !== String(tenantId).toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(re, 'schedule_user_id')).toLowerCase() !== String(requesterId).toLowerCase()) {
+      return res.status(403).json({ error: 'You can only offer your own scheduled shifts' });
+    }
+    if (String(getRow(ce, 'schedule_user_id')).toLowerCase() !== String(counterparty_user_id).toLowerCase()) {
+      return res.status(400).json({ error: 'Counterparty shift must belong to the selected colleague' });
+    }
+    const dup = await query(
+      `SELECT id FROM shift_swap_requests
+       WHERE status IN (N'pending_peer', N'pending_management')
+         AND (requester_entry_id = @re OR counterparty_entry_id = @re OR requester_entry_id = @ce OR counterparty_entry_id = @ce)`,
+      { re: requester_entry_id, ce: counterparty_entry_id }
+    );
+    if (dup.recordset?.length) return res.status(409).json({ error: 'One of these shifts already has an open swap request' });
+    const ins = await query(
+      `INSERT INTO shift_swap_requests (tenant_id, requester_user_id, counterparty_user_id, requester_entry_id, counterparty_entry_id, message, status)
+       OUTPUT INSERTED.*
+       VALUES (@tenantId, @requesterId, @counterpartyId, @re, @ce, @message, N'pending_peer')`,
+      {
+        tenantId,
+        requesterId,
+        counterpartyId: counterparty_user_id,
+        re: requester_entry_id,
+        ce: counterparty_entry_id,
+        message: message != null && String(message).trim() ? String(message).trim().slice(0, 500) : null,
+      }
+    );
+    const row = ins.recordset[0];
+    const full = await query(
+      `SELECT r.*,
+        ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+        re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+       FROM shift_swap_requests r
+       INNER JOIN users ru ON ru.id = r.requester_user_id
+       INNER JOIN users cu ON cu.id = r.counterparty_user_id
+       INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+       INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+       WHERE r.id = @id`,
+      { id: getRow(row, 'id') }
+    );
+    if (isEmailConfigured()) {
+      const swap = mapSwapRow(full.recordset[0]);
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      const cpUser = await query(`SELECT email FROM users WHERE id = @id`, { id: counterparty_user_id });
+      const cpEmail = cpUser.recordset?.[0] && getRow(cpUser.recordset[0], 'email');
+      if (cpEmail && String(cpEmail).trim()) {
+        const html = shiftSwapRequestedHtml({
+          requesterName: swap?.requester_name || req.user.full_name || req.user.email || 'Colleague',
+          requesterDate: swap?.requester_work_date,
+          requesterShift: swap?.requester_shift_type,
+          yourDate: swap?.counterparty_work_date,
+          yourShift: swap?.counterparty_shift_type,
+          message: swap?.message || null,
+          appUrl,
+        });
+        sendEmail({
+          to: cpEmail,
+          subject: `Shift swap request from ${swap?.requester_name || 'colleague'}`,
+          body: html,
+          html: true,
+        }).catch((e) => console.error('[profile-management] Shift swap request email error:', e?.message));
+      }
+    }
+    res.status(201).json({ request: mapSwapRow(full.recordset[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/shift-swaps/:id/cancel', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM shift_swap_requests WHERE id = @id`, { id });
+    const row = r.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(row, 'tenant_id')).toLowerCase() !== String(tenantId).toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(row, 'requester_user_id')).toLowerCase() !== String(req.user.id).toLowerCase()) {
+      return res.status(403).json({ error: 'Only the requester can cancel' });
+    }
+    if (getRow(row, 'status') !== 'pending_peer') return res.status(400).json({ error: 'Only pending peer requests can be cancelled' });
+    await query(
+      `UPDATE shift_swap_requests SET status = N'cancelled', updated_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/shift-swaps/:id/peer', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { approve, notes } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM shift_swap_requests WHERE id = @id`, { id });
+    const row = r.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(row, 'tenant_id')).toLowerCase() !== String(tenantId).toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
+    if (String(getRow(row, 'counterparty_user_id')).toLowerCase() !== String(req.user.id).toLowerCase()) {
+      return res.status(403).json({ error: 'Only the colleague can respond' });
+    }
+    if (getRow(row, 'status') !== 'pending_peer') return res.status(400).json({ error: 'This request is not awaiting your response' });
+    if (typeof approve !== 'boolean') return res.status(400).json({ error: 'approve (boolean) required' });
+    const note = notes != null && String(notes).trim() ? String(notes).trim().slice(0, 500) : null;
+    if (approve === true) {
+      await query(
+        `UPDATE shift_swap_requests SET status = N'pending_management', peer_reviewed_at = SYSUTCDATETIME(), peer_review_notes = @notes, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id, notes: note }
+      );
+    } else {
+      await query(
+        `UPDATE shift_swap_requests SET status = N'peer_declined', peer_reviewed_at = SYSUTCDATETIME(), peer_review_notes = @notes, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id, notes: note }
+      );
+    }
+    const full = await query(
+      `SELECT r.*,
+        ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+        re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+       FROM shift_swap_requests r
+       INNER JOIN users ru ON ru.id = r.requester_user_id
+       INNER JOIN users cu ON cu.id = r.counterparty_user_id
+       INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+       INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+       WHERE r.id = @id`,
+      { id }
+    );
+    if (isEmailConfigured()) {
+      const swap = mapSwapRow(full.recordset[0]);
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      if (approve === true) {
+        const managementEmails = await getManagementEmailsForTenant(query, tenantId);
+        if (managementEmails.length > 0) {
+          const html = shiftSwapPendingManagementHtml({
+            requesterName: swap?.requester_name,
+            counterpartyName: swap?.counterparty_name,
+            requesterDate: swap?.requester_work_date,
+            requesterShift: swap?.requester_shift_type,
+            counterpartyDate: swap?.counterparty_work_date,
+            counterpartyShift: swap?.counterparty_shift_type,
+            appUrl,
+          });
+          for (const to of managementEmails) {
+            sendEmail({
+              to,
+              subject: 'Shift swap pending management approval',
+              body: html,
+              html: true,
+            }).catch((e) => console.error('[profile-management] Shift swap management notification email error:', e?.message));
+          }
+        }
+      } else {
+        const requesterId = getRow(row, 'requester_user_id');
+        const reqUser = await query(`SELECT email FROM users WHERE id = @id`, { id: requesterId });
+        const requesterEmail = reqUser.recordset?.[0] && getRow(reqUser.recordset[0], 'email');
+        if (requesterEmail && String(requesterEmail).trim().includes('@')) {
+          const html = shiftSwapPeerDeclinedHtml({
+            counterpartyName: swap?.counterparty_name,
+            requesterDate: swap?.requester_work_date,
+            requesterShift: swap?.requester_shift_type,
+            counterpartyDate: swap?.counterparty_work_date,
+            counterpartyShift: swap?.counterparty_shift_type,
+            peerNotes: note,
+            appUrl,
+          });
+          sendEmail({
+            to: requesterEmail,
+            subject: `Shift swap declined by ${swap?.counterparty_name || 'colleague'}`,
+            body: html,
+            html: true,
+          }).catch((e) => console.error('[profile-management] Shift swap peer declined email error:', e?.message));
+        }
+      }
+    }
+    res.json({ request: mapSwapRow(full.recordset[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/shift-swaps/management-queue', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ requests: [] });
+    const statusFilter = req.query.status;
+    let sqlQuery = `SELECT r.*,
+        ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+        re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+       FROM shift_swap_requests r
+       INNER JOIN users ru ON ru.id = r.requester_user_id
+       INNER JOIN users cu ON cu.id = r.counterparty_user_id
+       INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+       INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+       WHERE r.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (statusFilter === 'pending') {
+      sqlQuery += ` AND r.status = N'pending_management'`;
+    } else if (statusFilter === 'history') {
+      sqlQuery += ` AND r.status IN (N'management_approved', N'management_declined', N'peer_declined', N'cancelled')`;
+    } else {
+      sqlQuery += ` AND r.status IN (N'pending_management', N'management_approved', N'management_declined', N'peer_declined', N'cancelled')`;
+    }
+    sqlQuery += ' ORDER BY r.created_at DESC';
+    const result = await query(sqlQuery, params);
+    res.json({ requests: (result.recordset || []).map((row) => mapSwapRow(row)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/shift-swaps/:id/management', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { approve, notes } = req.body || {};
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM shift_swap_requests WHERE id = @id`, { id });
+    const row = r.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(row, 'tenant_id')).toLowerCase() !== String(tenantId).toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'status') !== 'pending_management') return res.status(400).json({ error: 'This swap is not awaiting management approval' });
+    if (typeof approve !== 'boolean') return res.status(400).json({ error: 'approve (boolean) required' });
+    const note = notes != null && String(notes).trim() ? String(notes).trim().slice(0, 500) : null;
+    if (approve !== true) {
+      await query(
+        `UPDATE shift_swap_requests SET status = N'management_declined', management_reviewed_at = SYSUTCDATETIME(), management_review_notes = @notes, management_reviewed_by = @by, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id, notes: note, by: req.user.id }
+      );
+      const full = await query(
+        `SELECT r.*,
+          ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+          re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+          ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+         FROM shift_swap_requests r
+         INNER JOIN users ru ON ru.id = r.requester_user_id
+         INNER JOIN users cu ON cu.id = r.counterparty_user_id
+         INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+         INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+         WHERE r.id = @id`,
+        { id }
+      );
+      const swapDeclined = mapSwapRow(full.recordset[0]);
+      if (isEmailConfigured()) {
+        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+        const requesterUserId = getRow(row, 'requester_user_id');
+        const counterpartyUserId = getRow(row, 'counterparty_user_id');
+        const usersResult = await query(
+          `SELECT id, email FROM users WHERE id IN (@requesterId, @counterpartyId)`,
+          { requesterId: requesterUserId, counterpartyId: counterpartyUserId }
+        );
+        const emailsById = new Map(
+          (usersResult.recordset || []).map((u) => [String(getRow(u, 'id')), String(getRow(u, 'email') || '').trim()])
+        );
+        const requesterEmail = emailsById.get(String(requesterUserId));
+        const counterpartyEmail = emailsById.get(String(counterpartyUserId));
+        if (requesterEmail && requesterEmail.includes('@')) {
+          const html = shiftSwapManagementDeclinedHtml({
+            otherPartyName: swapDeclined?.counterparty_name,
+            requesterDate: swapDeclined?.requester_work_date,
+            requesterShift: swapDeclined?.requester_shift_type,
+            counterpartyDate: swapDeclined?.counterparty_work_date,
+            counterpartyShift: swapDeclined?.counterparty_shift_type,
+            managementNotes: note,
+            appUrl,
+          });
+          sendEmail({
+            to: requesterEmail,
+            subject: 'Shift swap not approved by management',
+            body: html,
+            html: true,
+          }).catch((e) => console.error('[profile-management] Shift swap management declined requester email error:', e?.message));
+        }
+        if (counterpartyEmail && counterpartyEmail.includes('@')) {
+          const html = shiftSwapManagementDeclinedHtml({
+            otherPartyName: swapDeclined?.requester_name,
+            requesterDate: swapDeclined?.requester_work_date,
+            requesterShift: swapDeclined?.requester_shift_type,
+            counterpartyDate: swapDeclined?.counterparty_work_date,
+            counterpartyShift: swapDeclined?.counterparty_shift_type,
+            managementNotes: note,
+            appUrl,
+          });
+          sendEmail({
+            to: counterpartyEmail,
+            subject: 'Shift swap not approved by management',
+            body: html,
+            html: true,
+          }).catch((e) => console.error('[profile-management] Shift swap management declined counterparty email error:', e?.message));
+        }
+      }
+      return res.json({ request: swapDeclined });
+    }
+    const reId = getRow(row, 'requester_entry_id');
+    const ceId = getRow(row, 'counterparty_entry_id');
+    const requesterUserId = getRow(row, 'requester_user_id');
+    const counterpartyUserId = getRow(row, 'counterparty_user_id');
+    const e1 = await loadEntryWithSchedule(reId);
+    const e2 = await loadEntryWithSchedule(ceId);
+    if (!e1 || !e2) return res.status(400).json({ error: 'Schedule entries missing' });
+    if (String(getRow(e1, 'schedule_user_id')).toLowerCase() !== String(requesterUserId).toLowerCase()
+      || String(getRow(e2, 'schedule_user_id')).toLowerCase() !== String(counterpartyUserId).toLowerCase()) {
+      return res.status(400).json({ error: 'Schedule data no longer matches this request' });
+    }
+    const d1 = getRow(e1, 'work_date');
+    const s1 = getRow(e1, 'shift_type');
+    const d2 = getRow(e2, 'work_date');
+    const s2 = getRow(e2, 'shift_type');
+    const d1s = d1 instanceof Date ? d1.toISOString().slice(0, 10) : String(d1).slice(0, 10);
+    const d2s = d2 instanceof Date ? d2.toISOString().slice(0, 10) : String(d2).slice(0, 10);
+    const clash1 = await query(
+      `SELECT COUNT(*) AS c FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+       WHERE s.tenant_id = @tenantId AND s.user_id = @uid AND CONVERT(date, e.work_date) = CONVERT(date, @targetDate)
+         AND e.id != @excludeId`,
+      { tenantId, uid: requesterUserId, targetDate: d2s, excludeId: reId }
+    );
+    const clash2 = await query(
+      `SELECT COUNT(*) AS c FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+       WHERE s.tenant_id = @tenantId AND s.user_id = @uid AND CONVERT(date, e.work_date) = CONVERT(date, @targetDate)
+         AND e.id != @excludeId`,
+      { tenantId, uid: counterpartyUserId, targetDate: d1s, excludeId: ceId }
+    );
+    const c1 = clash1.recordset?.[0] && parseInt(getRow(clash1.recordset[0], 'c'), 10);
+    const c2 = clash2.recordset?.[0] && parseInt(getRow(clash2.recordset[0], 'c'), 10);
+    if (c1 > 0 || c2 > 0) {
+      return res.status(409).json({
+        error: 'Cannot apply swap: one employee already has another shift on the target date. Adjust schedules manually, then retry.',
+      });
+    }
+    const pool = await getPool();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+      await execTx(transaction, `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s WHERE id = @id`, {
+        d: d2s,
+        s: s2,
+        id: reId,
+      });
+      await execTx(transaction, `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s WHERE id = @id`, {
+        d: d1s,
+        s: s1,
+        id: ceId,
+      });
+      await execTx(
+        transaction,
+        `UPDATE shift_swap_requests SET status = N'management_approved', management_reviewed_at = SYSUTCDATETIME(), management_review_notes = @notes, management_reviewed_by = @by, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id, notes: note, by: req.user.id }
+      );
+      await transaction.commit();
+    } catch (txErr) {
+      await transaction.rollback();
+      throw txErr;
+    }
+    const full = await query(
+      `SELECT r.*,
+        ru.full_name AS requester_name, cu.full_name AS counterparty_name,
+        re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+       FROM shift_swap_requests r
+       INNER JOIN users ru ON ru.id = r.requester_user_id
+       INNER JOIN users cu ON cu.id = r.counterparty_user_id
+       INNER JOIN work_schedule_entries re ON re.id = r.requester_entry_id
+       INNER JOIN work_schedule_entries ce ON ce.id = r.counterparty_entry_id
+       WHERE r.id = @id`,
+      { id }
+    );
+    if (isEmailConfigured()) {
+      const swap = mapSwapRow(full.recordset[0]);
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      const usersResult = await query(
+        `SELECT id, email FROM users WHERE id IN (@requesterId, @counterpartyId)`,
+        { requesterId: requesterUserId, counterpartyId: counterpartyUserId }
+      );
+      const emailsById = new Map(
+        (usersResult.recordset || []).map((u) => [String(getRow(u, 'id')), String(getRow(u, 'email') || '').trim()])
+      );
+      const requesterEmail = emailsById.get(String(requesterUserId));
+      const counterpartyEmail = emailsById.get(String(counterpartyUserId));
+
+      if (requesterEmail && requesterEmail.includes('@')) {
+        const html = shiftSwapApprovedHtml({
+          counterpartyName: swap?.counterparty_name,
+          yourOldDate: d1s,
+          yourOldShift: s1,
+          yourNewDate: d2s,
+          yourNewShift: s2,
+          appUrl,
+        });
+        sendEmail({
+          to: requesterEmail,
+          subject: 'Shift swap approved by management',
+          body: html,
+          html: true,
+        }).catch((e) => console.error('[profile-management] Shift swap approved requester email error:', e?.message));
+      }
+      if (counterpartyEmail && counterpartyEmail.includes('@')) {
+        const html = shiftSwapApprovedHtml({
+          counterpartyName: swap?.requester_name,
+          yourOldDate: d2s,
+          yourOldShift: s2,
+          yourNewDate: d1s,
+          yourNewShift: s1,
+          appUrl,
+        });
+        sendEmail({
+          to: counterpartyEmail,
+          subject: 'Shift swap approved by management',
+          body: html,
+          html: true,
+        }).catch((e) => console.error('[profile-management] Shift swap approved counterparty email error:', e?.message));
+      }
+    }
+    res.json({ request: mapSwapRow(full.recordset[0]) });
   } catch (err) {
     next(err);
   }

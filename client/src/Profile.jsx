@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 
@@ -30,6 +31,16 @@ function formatDate(d) {
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
 }
 
+function isoDate(d) {
+  if (!d) return '';
+  if (typeof d === 'string') return d.slice(0, 10);
+  try {
+    return new Date(d).toISOString().slice(0, 10);
+  } catch {
+    return '';
+  }
+}
+
 export default function Profile() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('profile');
@@ -49,6 +60,9 @@ export default function Profile() {
   const [scheduleEvents, setScheduleEvents] = useState([]);
   const [myTasks, setMyTasks] = useState([]);
   const [selectedScheduleDate, setSelectedScheduleDate] = useState(null);
+  const [tenantUsers, setTenantUsers] = useState([]);
+  const [swapRequests, setSwapRequests] = useState([]);
+  const [swapModal, setSwapModal] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -64,19 +78,42 @@ export default function Profile() {
     return map;
   }, [scheduleEntries]);
 
+  const swapBadgesByDate = useMemo(() => {
+    const m = {};
+    (swapRequests || []).forEach((r) => {
+      const rd = r.requester_work_date ? new Date(r.requester_work_date).toISOString().slice(0, 10) : null;
+      const cd = r.counterparty_work_date ? new Date(r.counterparty_work_date).toISOString().slice(0, 10) : null;
+      [rd, cd].filter(Boolean).forEach((d) => {
+        if (!m[d]) m[d] = [];
+        m[d].push(r);
+      });
+    });
+    return m;
+  }, [swapRequests]);
+
+  const activeTenantId = user?.tenant_id;
+
   const loadMySchedule = useCallback(() => {
     pm.mySchedule({ month: calendarMonth, year: calendarYear })
       .then((d) => setScheduleEntries(d.entries || []))
       .catch(() => setScheduleEntries([]));
-  }, [calendarMonth, calendarYear]);
+  }, [calendarMonth, calendarYear, activeTenantId]);
+
+  const refreshSwapRequests = useCallback(() => {
+    pm.shiftSwaps.my(calendarMonth, calendarYear)
+      .then((d) => setSwapRequests(d.requests || []))
+      .catch(() => setSwapRequests([]));
+  }, [calendarMonth, calendarYear, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'schedule') {
       loadMySchedule();
+      refreshSwapRequests();
+      pm.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
       pm.scheduleEvents.list(calendarMonth, calendarYear).then((d) => setScheduleEvents(d.events || [])).catch(() => setScheduleEvents([]));
       tasksApi.list({ assigned_to_me: 'true', limit: 100 }).then((d) => setMyTasks(d.tasks || [])).catch(() => setMyTasks([]));
     }
-  }, [activeTab, loadMySchedule, calendarMonth, calendarYear]);
+  }, [activeTab, loadMySchedule, refreshSwapRequests, calendarMonth, calendarYear, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'leave') {
@@ -84,29 +121,29 @@ export default function Profile() {
       pm.leave.balance().then((d) => setLeaveBalance(d.balance || [])).catch(() => setLeaveBalance([]));
       pm.leave.applications().then((d) => setLeaveApplications(d.applications || [])).catch(() => setLeaveApplications([]));
     }
-  }, [activeTab]);
+  }, [activeTab, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'documents') pm.documents.list().then((d) => setDocuments(d.documents || [])).catch(() => setDocuments([]));
-  }, [activeTab]);
+  }, [activeTab, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'disciplinary') {
       pm.warnings.list().then((d) => setWarnings(d.warnings || [])).catch(() => setWarnings([]));
       pm.rewards.list().then((d) => setRewards(d.rewards || [])).catch(() => setRewards([]));
     }
-  }, [activeTab]);
+  }, [activeTab, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'queries') pm.queries.list().then((d) => setQueries(d.queries || [])).catch(() => setQueries([]));
-  }, [activeTab]);
+  }, [activeTab, activeTenantId]);
 
   useEffect(() => {
     if (activeTab === 'growth') {
       pm.evaluations.list().then((d) => setEvaluations(d.evaluations || [])).catch(() => setEvaluations([]));
       pm.pip.list().then((d) => setPipPlans(d.plans || [])).catch(() => setPipPlans([]));
     }
-  }, [activeTab]);
+  }, [activeTab, activeTenantId]);
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
@@ -157,8 +194,13 @@ export default function Profile() {
           {activeTab === 'schedule' && (
             <div className="flex gap-4 flex-1 min-w-0">
               <div className="flex-1 min-w-0 space-y-6">
-              <h1 className="text-xl font-semibold text-surface-900">Work schedule</h1>
-              <p className="text-sm text-surface-600">Click a date to see shift details, tasks due, and events in the side panel.</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold text-surface-900">Work schedule</h1>
+                <InfoHint
+                  title="Work schedule help"
+                  text="Click a date for shift details, tasks, and events. Request a shift swap from the side panel when you have a scheduled shift. Pending swaps appear on the calendar; colleagues can approve or decline on their schedule before management finalizes."
+                />
+              </div>
               <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
                   <button
@@ -211,15 +253,29 @@ export default function Profile() {
                       const isWeekend = date.getDay() === 0 || date.getDay() === 6;
                       const shiftLabel = shift?.shift_type === 'night' ? SHIFT_NIGHT : shift?.shift_type === 'day' ? SHIFT_DAY : null;
                       const isSelected = selectedScheduleDate === dateStr;
+                      const daySwaps = swapBadgesByDate[dateStr] || [];
+                      const hasSwap = daySwaps.length > 0;
                       return (
                         <button
                           key={day}
                           type="button"
                           onClick={() => setSelectedScheduleDate((prev) => (prev === dateStr ? null : dateStr))}
-                          className={`aspect-square rounded-lg border p-1 flex flex-col items-center justify-center text-xs cursor-pointer transition-colors ${
+                          className={`aspect-square rounded-lg border p-1 flex flex-col items-center justify-center text-xs cursor-pointer transition-colors relative ${
                             isToday ? 'border-brand-500 bg-brand-50' : 'border-surface-200 bg-white'
-                          } ${isWeekend ? 'bg-surface-50' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1' : ''} hover:bg-surface-50`}
+                          } ${isWeekend ? 'bg-surface-50' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1' : ''} ${hasSwap ? 'border-violet-300' : ''} hover:bg-surface-50`}
                         >
+                          {hasSwap && (
+                            <span className="absolute top-0.5 right-0.5 flex gap-0.5" title="Shift swap activity">
+                              {daySwaps.slice(0, 3).map((sw) => (
+                                <span
+                                  key={sw.id}
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    sw.status === 'pending_peer' ? 'bg-amber-500' : sw.status === 'pending_management' ? 'bg-violet-500' : 'bg-surface-400'
+                                  }`}
+                                />
+                              ))}
+                            </span>
+                          )}
                           <span className="text-surface-700 font-medium">{day}</span>
                           {shiftLabel && (
                             <span className={`text-[10px] mt-0.5 ${shift?.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
@@ -231,9 +287,11 @@ export default function Profile() {
                     })}
                   </div>
                 </div>
-                <div className="px-4 py-2 border-t border-surface-100 flex gap-4 text-xs text-surface-500">
+                <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap gap-3 text-xs text-surface-500">
                   <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day: {SHIFT_DAY}</span>
                   <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night: {SHIFT_NIGHT}</span>
+                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap: peer pending</span>
+                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap: management</span>
                 </div>
               </div>
               </div>
@@ -244,8 +302,34 @@ export default function Profile() {
                 scheduleEvents={scheduleEvents}
                 myTasks={myTasks}
                 pipPlans={pipPlans}
+                swapRequests={swapRequests}
+                currentUserId={user?.id}
+                onOpenSwapModal={(shift) => setSwapModal({ shift })}
+                onSwapHandled={() => {
+                  refreshSwapRequests();
+                  loadMySchedule();
+                }}
+                onError={setError}
               />
             </div>
+          )}
+          {activeTab === 'schedule' && swapModal && (
+            <ShiftSwapRequestModal
+              shift={swapModal.shift}
+              calendarMonth={calendarMonth}
+              calendarYear={calendarYear}
+              tenantId={activeTenantId}
+              tenantUsers={tenantUsers}
+              currentUserId={user?.id}
+              swapRequests={swapRequests}
+              onClose={() => setSwapModal(null)}
+              onSuccess={() => {
+                setSwapModal(null);
+                refreshSwapRequests();
+                loadMySchedule();
+              }}
+              onError={setError}
+            />
           )}
 
           {activeTab === 'leave' && (
@@ -505,7 +589,30 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
   );
 }
 
-function ScheduleSidePanel({ selectedDate, onClose, scheduleEntries, scheduleEvents, myTasks, pipPlans }) {
+function swapBlocksEntry(swapRequests, entryId) {
+  if (!entryId || !swapRequests?.length) return false;
+  return swapRequests.some(
+    (r) =>
+      ['pending_peer', 'pending_management'].includes(r.status) &&
+      (r.requester_entry_id === entryId || r.counterparty_entry_id === entryId)
+  );
+}
+
+function ScheduleSidePanel({
+  selectedDate,
+  onClose,
+  scheduleEntries,
+  scheduleEvents,
+  myTasks,
+  pipPlans,
+  swapRequests = [],
+  currentUserId,
+  onOpenSwapModal,
+  onSwapHandled,
+  onError,
+}) {
+  const [peerNotesById, setPeerNotesById] = useState({});
+  const [peerBusy, setPeerBusy] = useState(null);
   if (!selectedDate) {
     return (
       <div className="w-full lg:w-80 shrink-0 bg-surface-50 rounded-xl border border-surface-200 p-4 flex flex-col items-center justify-center text-center text-surface-500 text-sm min-h-[160px]">
@@ -513,12 +620,45 @@ function ScheduleSidePanel({ selectedDate, onClose, scheduleEntries, scheduleEve
       </div>
     );
   }
-  const shift = (scheduleEntries || []).find((e) => e.work_date && new Date(e.work_date).toISOString().slice(0, 10) === selectedDate);
-  const tasksOnDate = (myTasks || []).filter((t) => t.due_date && new Date(t.due_date).toISOString().slice(0, 10) === selectedDate);
-  const eventsOnDate = (scheduleEvents || []).filter((e) => e.event_date && new Date(e.event_date).toISOString().slice(0, 10) === selectedDate);
+  const shift = (scheduleEntries || []).find((e) => e.work_date && isoDate(e.work_date) === selectedDate);
+  const tasksOnDate = (myTasks || []).filter((t) => t.due_date && isoDate(t.due_date) === selectedDate);
+  const eventsOnDate = (scheduleEvents || []).filter((e) => e.event_date && isoDate(e.event_date) === selectedDate);
   const dateLabel = formatDate(selectedDate);
+  const swapsToday = (swapRequests || []).filter(
+    (r) => isoDate(r.requester_work_date) === selectedDate || isoDate(r.counterparty_work_date) === selectedDate
+  );
+  const entryBlocked = shift?.entry_id && swapBlocksEntry(swapRequests, shift.entry_id);
+
+  const runPeer = async (swapId, approve) => {
+    setPeerBusy(swapId);
+    onError('');
+    try {
+      await pm.shiftSwaps.peerReview(swapId, { approve, notes: peerNotesById[swapId]?.trim() || undefined });
+      setPeerNotesById((m) => {
+        const next = { ...m };
+        delete next[swapId];
+        return next;
+      });
+      onSwapHandled?.();
+    } catch (err) {
+      onError(err?.message || 'Could not update swap');
+    } finally {
+      setPeerBusy(null);
+    }
+  };
+
+  const runCancel = async (swapId) => {
+    onError('');
+    try {
+      await pm.shiftSwaps.cancel(swapId);
+      onSwapHandled?.();
+    } catch (err) {
+      onError(err?.message || 'Could not cancel');
+    }
+  };
+
   return (
-    <div className="w-full lg:w-80 shrink-0 bg-white rounded-xl border border-surface-200 overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
+    <div className="w-full lg:w-96 shrink-0 bg-white rounded-xl border border-surface-200 overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
       <div className="px-4 py-3 border-b border-surface-100 flex justify-between items-center">
         <span className="font-medium text-surface-900">{dateLabel}</span>
         <button type="button" onClick={onClose} className="p-1 rounded text-surface-500 hover:bg-surface-100" aria-label="Close">×</button>
@@ -527,14 +667,139 @@ function ScheduleSidePanel({ selectedDate, onClose, scheduleEntries, scheduleEve
         <div>
           <p className="text-xs font-medium text-surface-500 uppercase mb-1">Shift</p>
           {shift ? (
-            <p className="text-surface-800">
-              {shift.shift_type === 'night' ? 'Night' : 'Day'} ({shift.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
-              {shift.notes && <span className="block text-surface-600 mt-0.5">{shift.notes}</span>}
-            </p>
+            <div className="space-y-2">
+              <p className="text-surface-800">
+                {shift.shift_type === 'night' ? 'Night' : 'Day'} ({shift.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                {shift.notes && <span className="block text-surface-600 mt-0.5">{shift.notes}</span>}
+              </p>
+              {shift.entry_id && (
+                <button
+                  type="button"
+                  disabled={entryBlocked}
+                  onClick={() => onOpenSwapModal?.(shift)}
+                  className="w-full px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {entryBlocked ? 'Swap already in progress for this shift' : 'Request shift swap'}
+                </button>
+              )}
+              {!shift.entry_id && (
+                <p className="text-xs text-amber-700">This shift has no entry id (refresh after an app update). Contact admin if this persists.</p>
+              )}
+            </div>
           ) : (
             <p className="text-surface-500">No shift this day</p>
           )}
         </div>
+
+        {swapsToday.length > 0 && (
+          <div className="rounded-lg border border-violet-100 bg-violet-50/50 p-3 space-y-3">
+            <p className="text-xs font-semibold text-violet-900 uppercase tracking-wide">Shift swaps</p>
+            {swapsToday.map((r) => {
+              const iAmRequester = String(r.requester_user_id) === String(currentUserId);
+              const iAmCounterparty = String(r.counterparty_user_id) === String(currentUserId);
+              const other = iAmRequester ? r.counterparty_name : r.requester_name;
+              const myOfferDate = iAmRequester ? r.requester_work_date : r.counterparty_work_date;
+              const myOfferShift = iAmRequester ? r.requester_shift_type : r.counterparty_shift_type;
+              const theirOfferDate = iAmRequester ? r.counterparty_work_date : r.requester_work_date;
+              const theirOfferShift = iAmRequester ? r.counterparty_shift_type : r.requester_shift_type;
+              const onMyOfferDay = isoDate(myOfferDate) === selectedDate;
+              const onTheirOfferDay = isoDate(theirOfferDate) === selectedDate;
+
+              return (
+                <div key={r.id} className="text-xs border border-violet-100 rounded-md bg-white p-2.5 space-y-2">
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span
+                      className={`px-1.5 py-0.5 rounded font-medium ${
+                        r.status === 'pending_peer'
+                          ? 'bg-amber-100 text-amber-900'
+                          : r.status === 'pending_management'
+                            ? 'bg-violet-100 text-violet-900'
+                            : r.status === 'management_approved'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'bg-surface-100 text-surface-700'
+                      }`}
+                    >
+                      {r.status === 'pending_peer' && 'Awaiting colleague'}
+                      {r.status === 'pending_management' && 'Awaiting management'}
+                      {r.status === 'peer_declined' && 'Declined by colleague'}
+                      {r.status === 'management_declined' && 'Declined by management'}
+                      {r.status === 'management_approved' && 'Approved — shifts updated'}
+                      {r.status === 'cancelled' && 'Cancelled'}
+                    </span>
+                  </div>
+                  <p className="text-surface-800 leading-relaxed">
+                    {onMyOfferDay && (
+                      <span>
+                        <strong>Your shift:</strong> {formatDate(myOfferDate)} ({myOfferShift === 'night' ? 'Night' : 'Day'})
+                      </span>
+                    )}
+                    {onTheirOfferDay && !onMyOfferDay && (
+                      <span>
+                        <strong>Their shift:</strong> {formatDate(theirOfferDate)} ({theirOfferShift === 'night' ? 'Night' : 'Day'})
+                      </span>
+                    )}
+                    {onMyOfferDay && onTheirOfferDay && (
+                      <span>
+                        Same calendar day — <strong>you</strong> {myOfferShift}/{theirOfferShift} swap context with <strong>{other || 'colleague'}</strong>.
+                      </span>
+                    )}
+                    {!onMyOfferDay && !onTheirOfferDay && (
+                      <span>
+                        Linked swap with <strong>{other || 'colleague'}</strong> (other date on this request).
+                      </span>
+                    )}
+                  </p>
+                  {r.message && <p className="text-surface-600 italic">&ldquo;{r.message}&rdquo;</p>}
+                  {r.status === 'pending_peer' && iAmCounterparty && isoDate(r.counterparty_work_date) !== selectedDate && (
+                    <p className="text-violet-800 text-[11px] pt-1">
+                      Select <strong>{formatDate(r.counterparty_work_date)}</strong> on the calendar to approve or decline this swap.
+                    </p>
+                  )}
+                  {r.status === 'pending_peer' && iAmCounterparty && isoDate(r.counterparty_work_date) === selectedDate && (
+                    <div className="space-y-2 pt-1">
+                      <p className="text-surface-700">
+                        <strong>{r.requester_name}</strong> wants your <strong>{r.counterparty_shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
+                        {formatDate(r.counterparty_work_date)} in exchange for their <strong>{r.requester_shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
+                        {formatDate(r.requester_work_date)}.
+                      </p>
+                      <input
+                        type="text"
+                        value={peerNotesById[r.id] || ''}
+                        onChange={(e) => setPeerNotesById((m) => ({ ...m, [r.id]: e.target.value }))}
+                        placeholder="Optional note"
+                        className="w-full px-2 py-1.5 rounded border border-surface-200 text-surface-800"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          disabled={peerBusy === r.id}
+                          onClick={() => runPeer(r.id, true)}
+                          className="flex-1 py-1.5 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          Approve swap
+                        </button>
+                        <button
+                          type="button"
+                          disabled={peerBusy === r.id}
+                          onClick={() => runPeer(r.id, false)}
+                          className="flex-1 py-1.5 rounded-lg border border-surface-300 text-surface-800 hover:bg-surface-50 disabled:opacity-50"
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {r.status === 'pending_peer' && iAmRequester && (
+                    <button type="button" onClick={() => runCancel(r.id)} className="text-xs text-red-600 hover:underline">
+                      Cancel request
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div>
           <p className="text-xs font-medium text-surface-500 uppercase mb-1">Tasks due</p>
           {tasksOnDate.length === 0 ? (
@@ -574,6 +839,163 @@ function ScheduleSidePanel({ selectedDate, onClose, scheduleEntries, scheduleEve
             </ul>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ShiftSwapRequestModal({
+  shift,
+  calendarMonth,
+  calendarYear,
+  tenantId,
+  tenantUsers,
+  currentUserId,
+  swapRequests,
+  onClose,
+  onSuccess,
+  onError,
+}) {
+  const [colleagueId, setColleagueId] = useState('');
+  const [theirEntries, setTheirEntries] = useState([]);
+  const [theirEntryId, setTheirEntryId] = useState('');
+  const [message, setMessage] = useState('');
+  const [loadingEntries, setLoadingEntries] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const colleagues = (tenantUsers || []).filter((u) => String(u.id) !== String(currentUserId));
+
+  useEffect(() => {
+    if (!colleagueId) {
+      setTheirEntries([]);
+      setTheirEntryId('');
+      return;
+    }
+    setLoadingEntries(true);
+    pm.shiftSwaps
+      .colleagueEntries(colleagueId, calendarMonth, calendarYear)
+      .then((d) => {
+        setTheirEntries(d.entries || []);
+        setTheirEntryId('');
+      })
+      .catch(() => {
+        setTheirEntries([]);
+        onError?.('Could not load colleague schedule for this month');
+      })
+      .finally(() => setLoadingEntries(false));
+  }, [colleagueId, calendarMonth, calendarYear, tenantId, onError]);
+
+  const blocked = swapBlocksEntry(swapRequests, shift?.entry_id);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!shift?.entry_id || !colleagueId || !theirEntryId) {
+      onError?.('Choose a colleague and one of their shifts');
+      return;
+    }
+    if (blocked) {
+      onError?.('This shift already has an open swap request');
+      return;
+    }
+    setSubmitting(true);
+    onError?.('');
+    try {
+      await pm.shiftSwaps.create({
+        counterparty_user_id: colleagueId,
+        requester_entry_id: shift.entry_id,
+        counterparty_entry_id: theirEntryId,
+        message: message.trim() || undefined,
+      });
+      onSuccess();
+    } catch (err) {
+      onError?.(err?.message || 'Failed to create swap request');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!shift) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title">
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+        <div className="px-5 py-4 border-b border-surface-100 flex justify-between items-start gap-2">
+          <div>
+            <h2 id="swap-modal-title" className="text-lg font-semibold text-surface-900">Request shift swap</h2>
+            <p className="text-sm text-surface-600 mt-1">
+              You offer <strong>{shift.shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
+              <strong>{formatDate(shift.work_date)}</strong>. Pick a colleague and the shift you want in return. They must approve, then management.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 rounded text-surface-500 hover:bg-surface-100" aria-label="Close">
+            ×
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Swap with</label>
+            <select
+              value={colleagueId}
+              onChange={(e) => setColleagueId(e.target.value)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-900"
+              required
+            >
+              <option value="">Select colleague…</option>
+              {colleagues.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.full_name || u.email}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Their shift you want (same calendar month)</label>
+            {loadingEntries ? (
+              <p className="text-sm text-surface-500">Loading…</p>
+            ) : colleagueId && theirEntries.length === 0 ? (
+              <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                No shifts found for this person in {new Date(calendarYear, calendarMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}. Try another month or ask management to add shifts.
+              </p>
+            ) : (
+              <select
+                value={theirEntryId}
+                onChange={(e) => setTheirEntryId(e.target.value)}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-900"
+                required
+                disabled={!colleagueId}
+              >
+                <option value="">Select date & shift…</option>
+                {theirEntries.map((en) => (
+                  <option key={en.entry_id} value={en.entry_id}>
+                    {formatDate(en.work_date)} — {en.shift_type === 'night' ? 'Night' : 'Day'}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Note to colleague (optional)</label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-900"
+              placeholder="e.g. Family event — happy to return favour another week."
+            />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 py-2 rounded-lg border border-surface-300 text-surface-800 hover:bg-surface-50">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || blocked || !theirEntryId}
+              className="flex-1 py-2 rounded-lg bg-violet-600 text-white font-medium hover:bg-violet-700 disabled:opacity-50"
+            >
+              {submitting ? 'Sending…' : 'Send request'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

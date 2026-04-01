@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from './AuthContext';
 import { transportOperations as toApi, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 
 const TABS = [
   { id: 'shift_report', label: 'Shift Report', icon: 'clipboard', section: 'Operations' },
@@ -1161,8 +1162,10 @@ export default function TransportOperations() {
 
           {activeTab === 'reports_approvals' && (
             <div className="space-y-6">
-              <h2 className="text-lg font-semibold text-surface-900">Reports and approvals</h2>
-              <p className="text-sm text-surface-600">View shift reports submitted for your approval. Complete the evaluation, then approve. Once approved, the report is available for PDF download (evaluation results appear on a separate page in the PDF).</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-surface-900">Reports and approvals</h2>
+                <InfoHint title="Reports and approvals help" text="View shift reports submitted for your approval. Complete the evaluation, then approve. Once approved, the report is available for PDF download (evaluation results appear on a separate page in the PDF)." />
+              </div>
 
               <div className="flex gap-2 items-center">
                 <span className="text-sm text-surface-600">Show:</span>
@@ -1601,8 +1604,10 @@ export default function TransportOperations() {
 
           {activeTab === 'operations_presentations' && (
             <div className="space-y-8">
-              <h2 className="text-lg font-semibold text-surface-900">Operations Insights</h2>
-              <p className="text-sm text-surface-600">AI-powered insights from approved shift reports. Get recommendations and hold your team accountable when they are not applied.</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-surface-900">Operations Insights</h2>
+                <InfoHint title="Operations insights help" text="AI-powered insights from approved shift reports. Get recommendations and hold your team accountable when they are not applied." />
+              </div>
 
               <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
                 <h3 className="text-sm font-semibold text-surface-800 mb-4">Generate insights</h3>
@@ -1901,8 +1906,10 @@ export default function TransportOperations() {
 
           {activeTab === 'truck_driver_registration' && (
             <div className="space-y-8">
-              <h2 className="text-lg font-semibold text-surface-900">Truck and driver registration</h2>
-              <p className="text-sm text-surface-600">Register trucks and drivers here. They appear in the Shift Report tab for selection.</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-surface-900">Truck and driver registration</h2>
+                <InfoHint title="Truck and driver registration help" text="Register trucks and drivers here. They appear in the Shift Report tab for selection." />
+              </div>
 
               <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex items-center justify-between">
@@ -2032,8 +2039,10 @@ export default function TransportOperations() {
 
           {activeTab === 'accounting' && (
             <div className="space-y-6">
-              <h2 className="text-lg font-semibold text-surface-900">Accounting</h2>
-              <p className="text-sm text-surface-600">Create routes with collection point and destination, set rates and targets (delivery target and amount target) for calculations.</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-surface-900">Accounting</h2>
+                <InfoHint title="Accounting setup help" text="Create routes with collection point and destination, set rates and targets (delivery target and amount target) for calculations." />
+              </div>
 
               <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex items-center justify-between">

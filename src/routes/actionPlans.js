@@ -25,6 +25,55 @@ function parseJson(val) {
   }
 }
 
+function normalizeIds(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
+}
+
+function csvToIds(csv) {
+  if (!csv) return [];
+  return normalizeIds(String(csv).split(','));
+}
+
+function hasAccessManagement(req) {
+  if (req.user?.role === 'super_admin') return true;
+  return Array.isArray(req.user?.page_roles) && req.user.page_roles.includes('access_management');
+}
+
+async function getRectorRouteIds(req, tenantId) {
+  const result = await query(
+    `SELECT DISTINCT route_id FROM access_route_factors
+     WHERE tenant_id = @tenantId AND user_id = @userId AND route_id IS NOT NULL`,
+    { tenantId, userId: req.user?.id || null }
+  );
+  return normalizeIds((result.recordset || []).map((r) => getRow(r, 'route_id')));
+}
+
+async function resolveValidRouteIds(tenantId, routeIds) {
+  const ids = normalizeIds(routeIds);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map((_, i) => `@rid${i}`).join(',');
+  const params = { tenantId };
+  ids.forEach((id, i) => { params[`rid${i}`] = id; });
+  const result = await query(
+    `SELECT id FROM contractor_routes WHERE tenant_id = @tenantId AND id IN (${placeholders})`,
+    params
+  );
+  return normalizeIds((result.recordset || []).map((r) => getRow(r, 'id')));
+}
+
+async function replacePlanRoutes(planId, tenantId, routeIds) {
+  await query(`DELETE FROM project_action_plan_routes WHERE plan_id = @planId`, { planId });
+  const validRouteIds = await resolveValidRouteIds(tenantId, routeIds);
+  for (const routeId of validRouteIds) {
+    await query(
+      `INSERT INTO project_action_plan_routes (plan_id, route_id) VALUES (@planId, @routeId)`,
+      { planId, routeId }
+    );
+  }
+  return validRouteIds;
+}
+
 router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess(['access_management', 'rector']));
@@ -58,12 +107,29 @@ router.get('/', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const scopedRectorRouteIds = !hasAccessManagement(req) ? await getRectorRouteIds(req, tenantId) : [];
+    const routePlaceholders = scopedRectorRouteIds.map((_, i) => `@routeId${i}`).join(',');
+    const params = { tenantId };
+    scopedRectorRouteIds.forEach((id, i) => { params[`routeId${i}`] = id; });
+    const rectorScopeSql = scopedRectorRouteIds.length > 0
+      ? `AND (
+          NOT EXISTS (SELECT 1 FROM project_action_plan_routes rr0 WHERE rr0.plan_id = p.id)
+          OR EXISTS (
+            SELECT 1 FROM project_action_plan_routes rr1
+            WHERE rr1.plan_id = p.id AND rr1.route_id IN (${routePlaceholders})
+          )
+        )`
+      : '';
     const result = await query(
-      `SELECT id, tenant_id, title, project_name, document_date, document_id, items_json, created_at, updated_at
-       FROM project_action_plans
-       WHERE tenant_id = @tenantId
-       ORDER BY document_date DESC, updated_at DESC`,
-      { tenantId }
+      `SELECT p.id, p.tenant_id, p.title, p.project_name, p.document_date, p.document_id, p.items_json, p.created_at, p.updated_at,
+              STRING_AGG(CONVERT(NVARCHAR(36), rr.route_id), ',') AS route_ids_csv
+       FROM project_action_plans p
+       LEFT JOIN project_action_plan_routes rr ON rr.plan_id = p.id
+       WHERE p.tenant_id = @tenantId
+       ${rectorScopeSql}
+       GROUP BY p.id, p.tenant_id, p.title, p.project_name, p.document_date, p.document_id, p.items_json, p.created_at, p.updated_at
+       ORDER BY p.document_date DESC, p.updated_at DESC`,
+      params
     );
     const list = (result.recordset || []).map((r) => ({
       id: getRow(r, 'id'),
@@ -73,6 +139,7 @@ router.get('/', async (req, res, next) => {
       document_date: getRow(r, 'document_date'),
       document_id: getRow(r, 'document_id'),
       items: parseJson(getRow(r, 'items_json')),
+      route_ids: csvToIds(getRow(r, 'route_ids_csv')),
       created_at: getRow(r, 'created_at'),
       updated_at: getRow(r, 'updated_at'),
     }));
@@ -88,11 +155,28 @@ router.get('/:id', async (req, res, next) => {
     const { id } = req.params;
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const scopedRectorRouteIds = !hasAccessManagement(req) ? await getRectorRouteIds(req, tenantId) : [];
+    const routePlaceholders = scopedRectorRouteIds.map((_, i) => `@routeId${i}`).join(',');
+    const params = { id, tenantId };
+    scopedRectorRouteIds.forEach((rid, i) => { params[`routeId${i}`] = rid; });
+    const rectorScopeSql = scopedRectorRouteIds.length > 0
+      ? `AND (
+          NOT EXISTS (SELECT 1 FROM project_action_plan_routes rr0 WHERE rr0.plan_id = p.id)
+          OR EXISTS (
+            SELECT 1 FROM project_action_plan_routes rr1
+            WHERE rr1.plan_id = p.id AND rr1.route_id IN (${routePlaceholders})
+          )
+        )`
+      : '';
     const result = await query(
-      `SELECT id, tenant_id, title, project_name, document_date, document_id, items_json, created_at, updated_at
-       FROM project_action_plans
-       WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId }
+      `SELECT p.id, p.tenant_id, p.title, p.project_name, p.document_date, p.document_id, p.items_json, p.created_at, p.updated_at,
+              STRING_AGG(CONVERT(NVARCHAR(36), rr.route_id), ',') AS route_ids_csv
+       FROM project_action_plans p
+       LEFT JOIN project_action_plan_routes rr ON rr.plan_id = p.id
+       WHERE p.id = @id AND p.tenant_id = @tenantId
+       ${rectorScopeSql}
+       GROUP BY p.id, p.tenant_id, p.title, p.project_name, p.document_date, p.document_id, p.items_json, p.created_at, p.updated_at`,
+      params
     );
     const r = result.recordset?.[0];
     if (!r) return res.status(404).json({ error: 'Action plan not found' });
@@ -105,6 +189,7 @@ router.get('/:id', async (req, res, next) => {
         document_date: getRow(r, 'document_date'),
         document_id: getRow(r, 'document_id'),
         items: parseJson(getRow(r, 'items_json')),
+        route_ids: csvToIds(getRow(r, 'route_ids_csv')),
         created_at: getRow(r, 'created_at'),
         updated_at: getRow(r, 'updated_at'),
       },
@@ -128,6 +213,7 @@ router.post('/', async (req, res, next) => {
     const documentDate = body.document_date || new Date().toISOString().slice(0, 10);
     const documentId = (body.document_id || '').toString().trim() || null;
     const items = Array.isArray(body.items) ? body.items : [];
+    const routeIds = normalizeIds(body.route_ids);
     const itemsJson = JSON.stringify(items);
 
     const result = await query(
@@ -145,11 +231,13 @@ router.post('/', async (req, res, next) => {
       }
     );
     const row = result.recordset?.[0];
+    const savedRouteIds = await replacePlanRoutes(getRow(row, 'id'), tenantId, routeIds);
     res.status(201).json({
       plan: {
         id: getRow(row, 'id'),
         title: getRow(row, 'title'),
         document_date: getRow(row, 'document_date'),
+        route_ids: savedRouteIds,
         created_at: getRow(row, 'created_at'),
       },
     });
@@ -175,20 +263,33 @@ router.patch('/:id', async (req, res, next) => {
     if (body.document_date !== undefined) { updates.push('document_date = @documentDate'); params.documentDate = body.document_date; }
     if (body.document_id !== undefined) { updates.push('document_id = @documentId'); params.documentId = (body.document_id || '').toString().trim() || null; }
     if (body.items !== undefined) { updates.push('items_json = @itemsJson'); params.itemsJson = JSON.stringify(Array.isArray(body.items) ? body.items : []); }
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    updates.push('updated_at = SYSUTCDATETIME()');
-
-    const result = await query(
-      `UPDATE project_action_plans SET ${updates.join(', ')} OUTPUT INSERTED.id WHERE id = @id AND tenant_id = @tenantId`,
-      params
-    );
-    if (!result.recordset?.[0]) return res.status(404).json({ error: 'Action plan not found' });
+    const routeIdsProvided = body.route_ids !== undefined;
+    const routeIds = normalizeIds(body.route_ids);
+    if (updates.length === 0 && !routeIdsProvided) return res.status(400).json({ error: 'No fields to update' });
+    if (updates.length > 0) {
+      updates.push('updated_at = SYSUTCDATETIME()');
+      const result = await query(
+        `UPDATE project_action_plans SET ${updates.join(', ')} OUTPUT INSERTED.id WHERE id = @id AND tenant_id = @tenantId`,
+        params
+      );
+      if (!result.recordset?.[0]) return res.status(404).json({ error: 'Action plan not found' });
+    } else {
+      const exists = await query(`SELECT id FROM project_action_plans WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+      if (!exists.recordset?.[0]) return res.status(404).json({ error: 'Action plan not found' });
+    }
     const getResult = await query(
       `SELECT id, title, project_name, document_date, document_id, items_json, updated_at
        FROM project_action_plans WHERE id = @id`,
       { id }
     );
     const r = getResult.recordset?.[0];
+    const planId = getRow(r, 'id');
+    const savedRouteIds = routeIdsProvided
+      ? await replacePlanRoutes(planId, tenantId, routeIds)
+      : await (async () => {
+        const rr = await query(`SELECT route_id FROM project_action_plan_routes WHERE plan_id = @planId`, { planId });
+        return normalizeIds((rr.recordset || []).map((x) => getRow(x, 'route_id')));
+      })();
     res.json({
       plan: {
         id: getRow(r, 'id'),
@@ -197,6 +298,7 @@ router.patch('/:id', async (req, res, next) => {
         document_date: getRow(r, 'document_date'),
         document_id: getRow(r, 'document_id'),
         items: parseJson(getRow(r, 'items_json')),
+        route_ids: savedRouteIds,
         updated_at: getRow(r, 'updated_at'),
       },
     });

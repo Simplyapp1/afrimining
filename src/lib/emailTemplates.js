@@ -555,6 +555,132 @@ export function rewardIssuedHtml({ rewardType, description, issuedByName, appUrl
   return taskEmailLayout('Reward issued', content);
 }
 
+function shiftLabelForEmail(shiftType) {
+  return String(shiftType).toLowerCase() === 'night' ? 'Night' : 'Day';
+}
+
+function dateLabelForEmail(date) {
+  if (!date) return '—';
+  const d = typeof date === 'string' && date.length === 10 ? new Date(date + 'T12:00:00') : new Date(date);
+  if (Number.isNaN(d.getTime())) return String(date);
+  return d.toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
+/** Shift swap requested: notify selected colleague to review in Profile. */
+export function shiftSwapRequestedHtml({ requesterName, requesterDate, requesterShift, yourDate, yourShift, message, appUrl }) {
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      <strong>${escapeHtml(requesterName || 'A colleague')}</strong> requested to swap shifts with you.
+    </p>
+    ${taskSectionBar('Swap request details')}
+    ${taskKeyValueTable([
+      ['Requested by', requesterName || '—'],
+      ['Their shift', `${dateLabelForEmail(requesterDate)} · ${shiftLabelForEmail(requesterShift)}`],
+      ['Your shift', `${dateLabelForEmail(yourDate)} · ${shiftLabelForEmail(yourShift)}`],
+      ...(message ? [['Message', message]] : []),
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/profile')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Review in Profile →</a>
+    </p>
+  `;
+  return taskEmailLayout('Shift swap request', content, 'Work schedule');
+}
+
+/** Shift swap peer-approved: notify management to approve/decline in Management page. */
+export function shiftSwapPendingManagementHtml({ requesterName, counterpartyName, requesterDate, requesterShift, counterpartyDate, counterpartyShift, appUrl }) {
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      A shift swap has been accepted by the colleague and is waiting for management approval.
+    </p>
+    ${taskSectionBar('Swap request details')}
+    ${taskKeyValueTable([
+      ['Requester', requesterName || '—'],
+      ['Colleague', counterpartyName || '—'],
+      ['Requester gives', `${dateLabelForEmail(requesterDate)} · ${shiftLabelForEmail(requesterShift)}`],
+      ['Colleague gives', `${dateLabelForEmail(counterpartyDate)} · ${shiftLabelForEmail(counterpartyShift)}`],
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/management')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Approve in Management →</a>
+    </p>
+  `;
+  return taskEmailLayout('Shift swap awaiting management approval', content, 'Work schedule');
+}
+
+/** Shift swap approved by management: notify both employees that schedule is updated. */
+export function shiftSwapApprovedHtml({ counterpartyName, yourOldDate, yourOldShift, yourNewDate, yourNewShift, appUrl }) {
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      Your shift swap with <strong>${escapeHtml(counterpartyName || 'your colleague')}</strong> has been approved by management and your schedule is now updated.
+    </p>
+    ${taskSectionBar('Updated schedule')}
+    ${taskKeyValueTable([
+      ['Previous shift', `${dateLabelForEmail(yourOldDate)} · ${shiftLabelForEmail(yourOldShift)}`],
+      ['New shift', `${dateLabelForEmail(yourNewDate)} · ${shiftLabelForEmail(yourNewShift)}`],
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/profile')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View updated schedule →</a>
+    </p>
+  `;
+  return taskEmailLayout('Shift swap approved', content, 'Work schedule');
+}
+
+/** Colleague declined the swap: notify requester. */
+export function shiftSwapPeerDeclinedHtml({ counterpartyName, requesterDate, requesterShift, counterpartyDate, counterpartyShift, peerNotes, appUrl }) {
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      <strong>${escapeHtml(counterpartyName || 'Your colleague')}</strong> declined your shift swap request. Your schedule is unchanged.
+    </p>
+    ${taskSectionBar('Request details')}
+    ${taskKeyValueTable([
+      ['Your shift offered', `${dateLabelForEmail(requesterDate)} · ${shiftLabelForEmail(requesterShift)}`],
+      ['Their shift', `${dateLabelForEmail(counterpartyDate)} · ${shiftLabelForEmail(counterpartyShift)}`],
+      ...(peerNotes ? [['Colleague note', peerNotes]] : []),
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/profile')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View schedule in Profile →</a>
+    </p>
+  `;
+  return taskEmailLayout('Shift swap declined', content, 'Work schedule');
+}
+
+/** Management declined the swap: notify requester and colleague (same body; both schedules unchanged). */
+export function shiftSwapManagementDeclinedHtml({ otherPartyName, requesterDate, requesterShift, counterpartyDate, counterpartyShift, managementNotes, appUrl }) {
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      Management has declined the shift swap between you and <strong>${escapeHtml(otherPartyName || 'your colleague')}</strong>. No changes were made to either schedule.
+    </p>
+    ${taskSectionBar('Request details')}
+    ${taskKeyValueTable([
+      ['Requester shift', `${dateLabelForEmail(requesterDate)} · ${shiftLabelForEmail(requesterShift)}`],
+      ['Colleague shift', `${dateLabelForEmail(counterpartyDate)} · ${shiftLabelForEmail(counterpartyShift)}`],
+      ...(managementNotes ? [['Management note', managementNotes]] : []),
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/profile')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View schedule in Profile →</a>
+    </p>
+  `;
+  return taskEmailLayout('Shift swap not approved', content, 'Work schedule');
+}
+
+/** Command Centre reminder due: notify owner at reminder time. */
+export function commandCentreReminderHtml({ noteText, reminderAt, appUrl }) {
+  const reminderLabel = reminderAt ? new Date(reminderAt).toLocaleString() : 'Now';
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">
+      This is your reminder from <strong>Command Centre · Notes & reminders</strong>.
+    </p>
+    ${taskSectionBar('Reminder details')}
+    ${taskKeyValueTable([
+      ['When', reminderLabel],
+      ['Note', noteText || '—'],
+    ])}
+    <p style="margin: 16px 0 0;">
+      <a href="${escapeHtml((appUrl || '') + '/command-centre')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Command Centre →</a>
+    </p>
+  `;
+  return taskEmailLayout('Reminder due', content, 'Notes & reminders');
+}
+
 // —— Gold template for super admin notifications (new user / new tenant) ——
 const GOLD_ROW_STYLE = `padding:10px 12px;border:1px solid #fde68a;vertical-align:top;`;
 const GOLD_LABEL_STYLE = `width:38%;font-weight:bold;color:#1f2937;font-size:13px;${GOLD_ROW_STYLE}`;

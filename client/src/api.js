@@ -420,6 +420,12 @@ export const commandCentre = {
     markRead: (id) => request(`/contractor/messages/${id}/read`, { method: 'PATCH' }),
     attachmentUrl: (messageId, attachmentId) => `${API}/contractor/messages/${messageId}/attachments/${attachmentId}`,
   },
+  notesReminders: {
+    list: (onlyMine = false) => request(`/command-centre/notes-reminders${onlyMine ? '?only_mine=1' : ''}`),
+    create: (body) => request('/command-centre/notes-reminders', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/command-centre/notes-reminders/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => request(`/command-centre/notes-reminders/${id}`, { method: 'DELETE' }),
+  },
   libraryDocuments: {
     list: () => request('/command-centre/library/documents'),
     upload: (file) => {
@@ -797,6 +803,21 @@ export const profileManagement = {
   scheduleEvents: {
     list: (month, year) => pm(`/schedule-events${month != null && year != null ? `?month=${month}&year=${year}` : ''}`),
     create: (body) => pm('/schedule-events', { method: 'POST', body: JSON.stringify(body) }),
+  },
+  shiftSwaps: {
+    colleagueEntries: (userId, month, year) => {
+      const q = new URLSearchParams({ user_id: userId, month: String(month), year: String(year) });
+      return pm(`/shift-swaps/colleague-entries?${q}`);
+    },
+    my: (month, year) => {
+      const q = new URLSearchParams({ month: String(month), year: String(year) });
+      return pm(`/shift-swaps/my?${q}`);
+    },
+    create: (body) => pm('/shift-swaps', { method: 'POST', body: JSON.stringify(body) }),
+    cancel: (id) => pm(`/shift-swaps/${id}/cancel`, { method: 'PATCH', body: JSON.stringify({}) }),
+    peerReview: (id, body) => pm(`/shift-swaps/${id}/peer`, { method: 'PATCH', body: JSON.stringify(body) }),
+    managementQueue: (status) => pm(`/shift-swaps/management-queue${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    managementReview: (id, body) => pm(`/shift-swaps/${id}/management`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   tenantUsers: () => pm('/users/tenant'),
 };

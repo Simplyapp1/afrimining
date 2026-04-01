@@ -204,6 +204,36 @@ CREATE TABLE schedule_events (
 );
 GO
 
+-- Shift swap requests: peer approval then management approval; on final approve, entry dates/shifts are swapped.
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'shift_swap_requests')
+CREATE TABLE shift_swap_requests (
+  id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+  tenant_id UNIQUEIDENTIFIER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  requester_user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE NO ACTION,
+  counterparty_user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE NO ACTION,
+  requester_entry_id UNIQUEIDENTIFIER NOT NULL REFERENCES work_schedule_entries(id) ON DELETE NO ACTION,
+  counterparty_entry_id UNIQUEIDENTIFIER NOT NULL REFERENCES work_schedule_entries(id) ON DELETE NO ACTION,
+  message NVARCHAR(500) NULL,
+  status NVARCHAR(30) NOT NULL DEFAULT N'pending_peer',
+  peer_reviewed_at DATETIME2 NULL,
+  peer_review_notes NVARCHAR(500) NULL,
+  management_reviewed_at DATETIME2 NULL,
+  management_review_notes NVARCHAR(500) NULL,
+  management_reviewed_by UNIQUEIDENTIFIER NULL REFERENCES users(id) ON DELETE NO ACTION,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT CK_shift_swap_status CHECK (status IN (N'pending_peer', N'peer_declined', N'pending_management', N'management_approved', N'management_declined', N'cancelled'))
+);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_shift_swap_requests_tenant_status' AND object_id = OBJECT_ID('shift_swap_requests'))
+  CREATE INDEX IX_shift_swap_requests_tenant_status ON shift_swap_requests(tenant_id, status);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_shift_swap_requests_requester' AND object_id = OBJECT_ID('shift_swap_requests'))
+  CREATE INDEX IX_shift_swap_requests_requester ON shift_swap_requests(requester_user_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_shift_swap_requests_counterparty' AND object_id = OBJECT_ID('shift_swap_requests'))
+  CREATE INDEX IX_shift_swap_requests_counterparty ON shift_swap_requests(counterparty_user_id);
+GO
+
 -- Ensure work_schedules has user_id (for DBs where table existed before per-employee change)
 IF EXISTS (SELECT * FROM sys.tables WHERE name = 'work_schedules')
    AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('work_schedules') AND name = 'user_id')

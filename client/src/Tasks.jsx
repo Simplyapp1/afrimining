@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', section: 'Overview' },
@@ -1145,8 +1146,13 @@ function TabLibrary() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Library</h1>
-      <p className="text-sm text-surface-600">Upload files and organise them in folders. Select a folder on the left to view or add files.</p>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Library</h1>
+        <InfoHint
+          title="Library help"
+          text="Upload files and organize them in folders. Select a folder on the left to view or add files."
+        />
+      </div>
 
       {migrationRequired && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-800 px-4 py-2 text-sm">

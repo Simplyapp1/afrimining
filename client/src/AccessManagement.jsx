@@ -123,6 +123,38 @@ function formatDateTime(d) {
   return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
+function normalizeIds(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
+}
+
+function RouteChecklist({ routes, selectedIds, onToggle }) {
+  const normalized = Array.isArray(selectedIds) ? selectedIds.map((id) => String(id)) : [];
+  return (
+    <div className="rounded-lg border border-surface-300 p-3 max-h-48 overflow-auto space-y-2 bg-white">
+      {routes.length === 0 ? (
+        <p className="text-sm text-surface-500">No routes available yet.</p>
+      ) : (
+        routes.map((r) => {
+          const routeId = String(r.id);
+          const checked = normalized.includes(routeId);
+          return (
+            <label key={routeId} className="flex items-center gap-2 text-sm text-surface-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => onToggle(routeId)}
+                className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+              />
+              <span>{r.name || 'Unnamed route'}</span>
+            </label>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 export default function AccessManagement() {
   const { user, loading: authLoading } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -219,6 +251,7 @@ export default function AccessManagement() {
     title: '',
     report_date: new Date().toISOString().slice(0, 10),
     reporting_status: '',
+    route_ids: [],
     narrative_updates: '',
     phases: [{ name: '', description: '' }],
     contractor_status: [{ contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }],
@@ -246,6 +279,7 @@ export default function AccessManagement() {
     project_name: '',
     document_date: new Date().toISOString().slice(0, 10),
     document_id: '',
+    route_ids: [],
     items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
   });
   const [editingActionPlanId, setEditingActionPlanId] = useState(null);
@@ -270,6 +304,7 @@ export default function AccessManagement() {
     reporting_period_end: '',
     submitted_date: new Date().toISOString().slice(0, 10),
     prepared_by: 'Tihlo (Thinkers Afrika)',
+    route_ids: [],
     executive_summary: '',
     key_metrics: [{ metric: '', value: '', commentary: '' }],
     sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }],
@@ -282,6 +317,10 @@ export default function AccessManagement() {
   const monthlyPerfExecSummaryRef = useRef(null);
   const monthlyPerfBlockRefs = useRef({});
   const [monthlyPerfCursor, setMonthlyPerfCursor] = useState(null); // { type: 'executive'|'block', sectionIdx?, subIdx?, blockIdx?, start, end }
+  const routeNameById = useMemo(
+    () => Object.fromEntries((routes || []).map((r) => [String(r.id), r.name || 'Unnamed route'])),
+    [routes]
+  );
 
   const hasTenant = user?.tenant_id;
 
@@ -2683,6 +2722,7 @@ export default function AccessManagement() {
                         <th className="text-left p-3 font-medium text-surface-700">Title</th>
                         <th className="text-left p-3 font-medium text-surface-700">Report date</th>
                         <th className="text-left p-3 font-medium text-surface-700">Reporting status</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Routes</th>
                         <th className="p-3 font-medium text-surface-700">Actions</th>
                       </tr>
                     </thead>
@@ -2692,6 +2732,11 @@ export default function AccessManagement() {
                           <td className="p-3 text-surface-800">{r.title || 'Untitled report'}</td>
                           <td className="p-3 text-surface-600">{r.report_date ? formatDate(r.report_date) : '—'}</td>
                           <td className="p-3 text-surface-600">{r.reporting_status || '—'}</td>
+                          <td className="p-3 text-surface-600">
+                            {Array.isArray(r.route_ids) && r.route_ids.length > 0
+                              ? r.route_ids.map((id) => routeNameById[String(id)] || 'Unknown route').join(', ')
+                              : 'All routes'}
+                          </td>
                           <td className="p-3 flex flex-wrap gap-2">
                             <button
                               type="button"
@@ -2712,6 +2757,7 @@ export default function AccessManagement() {
                                     title: rep.title || '',
                                     report_date: rep.report_date ? rep.report_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
                                     reporting_status: rep.reporting_status || '',
+                                    route_ids: normalizeIds(rep.route_ids || []),
                                     narrative_updates: rep.narrative_updates || '',
                                     phases: Array.isArray(rep.phases) && rep.phases.length ? rep.phases.map((p) => ({ name: p.name || '', description: p.description || '' })) : [{ name: '', description: '' }],
                                     contractor_status: Array.isArray(rep.contractor_status) && rep.contractor_status.length ? rep.contractor_status.map((c) => ({
@@ -2822,6 +2868,7 @@ export default function AccessManagement() {
                     title: '',
                     report_date: new Date().toISOString().slice(0, 10),
                     reporting_status: '',
+                    route_ids: [],
                     narrative_updates: '',
                     phases: [{ name: '', description: '' }],
                     contractor_status: [{ contractor_name: '', operational_total: '', integrated_count_1: '', integrated_date_1: '', integrated_count_2: '', integrated_date_2: '', percent_increase: '', narrative: '' }],
@@ -2849,6 +2896,24 @@ export default function AccessManagement() {
                 <label className="block text-sm font-medium text-surface-700 mb-1">Reporting status (e.g. Phase 4 & Phase 5)</label>
                 <input type="text" value={progressReportForm.reporting_status} onChange={(e) => setProgressReportForm((f) => ({ ...f, reporting_status: e.target.value }))} placeholder="Phase 4 (Continuous Monitoring) & Phase 5 (Feedback)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
               </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Applicable route(s) for rector visibility</label>
+              <RouteChecklist
+                routes={routes}
+                selectedIds={progressReportForm.route_ids}
+                onToggle={(routeId) =>
+                  setProgressReportForm((f) => {
+                    const next = new Set((f.route_ids || []).map((id) => String(id)));
+                    if (next.has(routeId)) next.delete(routeId);
+                    else next.add(routeId);
+                    return { ...f, route_ids: Array.from(next) };
+                  })
+                }
+              />
+              <p className="text-xs text-surface-500 mt-1">
+                Leave empty to publish to all rectors. {progressReportForm.route_ids?.length ? `${progressReportForm.route_ids.length} selected.` : ''}
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Executive Summary</label>
@@ -2937,6 +3002,7 @@ export default function AccessManagement() {
                       percent_increase: c.percent_increase,
                       narrative: c.narrative || null,
                     })),
+                    route_ids: normalizeIds(progressReportForm.route_ids),
                     conclusion_text: progressReportForm.conclusion_text.trim() || null,
                   };
                   (editingProgressReportId ? progressReportsApi.update(editingProgressReportId, payload) : progressReportsApi.create(payload))
@@ -2998,6 +3064,7 @@ export default function AccessManagement() {
                         <th className="text-left p-3 font-medium text-surface-700">Project name</th>
                         <th className="text-left p-3 font-medium text-surface-700">Document date</th>
                         <th className="text-left p-3 font-medium text-surface-700">Document ID</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Routes</th>
                         <th className="p-3 font-medium text-surface-700">Actions</th>
                       </tr>
                     </thead>
@@ -3008,6 +3075,11 @@ export default function AccessManagement() {
                           <td className="p-3 text-surface-600">{p.project_name || '—'}</td>
                           <td className="p-3 text-surface-600">{p.document_date ? formatDate(p.document_date) : '—'}</td>
                           <td className="p-3 text-surface-600">{p.document_id || '—'}</td>
+                          <td className="p-3 text-surface-600">
+                            {Array.isArray(p.route_ids) && p.route_ids.length > 0
+                              ? p.route_ids.map((id) => routeNameById[String(id)] || 'Unknown route').join(', ')
+                              : 'All routes'}
+                          </td>
                           <td className="p-3 flex flex-wrap gap-2">
                             <button
                               type="button"
@@ -3029,6 +3101,7 @@ export default function AccessManagement() {
                                     project_name: plan.project_name || '',
                                     document_date: plan.document_date ? plan.document_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
                                     document_id: plan.document_id || '',
+                                    route_ids: normalizeIds(plan.route_ids || []),
                                     items: Array.isArray(plan.items) && plan.items.length
                                       ? plan.items.map((it) => ({
                                           phase: it.phase ?? '',
@@ -3137,6 +3210,7 @@ export default function AccessManagement() {
                           project_name: '',
                           document_date: new Date().toISOString().slice(0, 10),
                           document_id: '',
+                          route_ids: [],
                           items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
                         });
                       }}
@@ -3167,6 +3241,24 @@ export default function AccessManagement() {
                         <label className="block text-sm font-medium text-surface-700 mb-1">Document ID</label>
                         <input type="text" value={actionPlanForm.document_id} onChange={(e) => setActionPlanForm((f) => ({ ...f, document_id: e.target.value }))} placeholder="e.g. Doc-ASOP0024" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                       </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-surface-700 mb-1">Applicable route(s) for rector visibility</label>
+                      <RouteChecklist
+                        routes={routes}
+                        selectedIds={actionPlanForm.route_ids}
+                        onToggle={(routeId) =>
+                          setActionPlanForm((f) => {
+                            const next = new Set((f.route_ids || []).map((id) => String(id)));
+                            if (next.has(routeId)) next.delete(routeId);
+                            else next.add(routeId);
+                            return { ...f, route_ids: Array.from(next) };
+                          })
+                        }
+                      />
+                      <p className="text-xs text-surface-500 mt-1">
+                        Leave empty to publish to all rectors. {actionPlanForm.route_ids?.length ? `${actionPlanForm.route_ids.length} selected.` : ''}
+                      </p>
                     </div>
 
                     <div>
@@ -3220,6 +3312,7 @@ export default function AccessManagement() {
                             project_name: actionPlanForm.project_name.trim(),
                             document_date: actionPlanForm.document_date || new Date().toISOString().slice(0, 10),
                             document_id: actionPlanForm.document_id.trim() || null,
+                            route_ids: normalizeIds(actionPlanForm.route_ids),
                             items: actionPlanForm.items.map((it) => ({
                               phase: (it.phase || '').toString().trim(),
                               start_date: it.start_date || null,
@@ -3272,6 +3365,7 @@ export default function AccessManagement() {
                         <th className="text-left p-3 font-medium text-surface-700">Title</th>
                         <th className="text-left p-3 font-medium text-surface-700">Reporting period</th>
                         <th className="text-left p-3 font-medium text-surface-700">Submitted</th>
+                        <th className="text-left p-3 font-medium text-surface-700">Routes</th>
                         <th className="p-3 font-medium text-surface-700">Actions</th>
                       </tr>
                     </thead>
@@ -3281,8 +3375,13 @@ export default function AccessManagement() {
                           <td className="p-3 text-surface-800">{r.title || 'Monthly Performance Report'}</td>
                           <td className="p-3 text-surface-600">{r.reporting_period_start && r.reporting_period_end ? `${formatDate(r.reporting_period_start)} – ${formatDate(r.reporting_period_end)}` : '—'}</td>
                           <td className="p-3 text-surface-600">{r.submitted_date ? formatDate(r.submitted_date) : '—'}</td>
+                          <td className="p-3 text-surface-600">
+                            {Array.isArray(r.route_ids) && r.route_ids.length > 0
+                              ? r.route_ids.map((id) => routeNameById[String(id)] || 'Unknown route').join(', ')
+                              : 'All routes'}
+                          </td>
                           <td className="p-3">
-                            <button type="button" onClick={() => { setMonthlyPerfSubTab('creation'); setEditingMonthlyPerfId(r.id); monthlyPerformanceReportsApi.get(r.id).then((res) => { const rep = res.report || {}; setMonthlyPerfForm({ title: rep.title || '', reporting_period_start: rep.reporting_period_start ? rep.reporting_period_start.slice(0, 10) : '', reporting_period_end: rep.reporting_period_end ? rep.reporting_period_end.slice(0, 10) : '', submitted_date: rep.submitted_date ? rep.submitted_date.slice(0, 10) : new Date().toISOString().slice(0, 10), prepared_by: rep.prepared_by || '', executive_summary: rep.executive_summary || '', key_metrics: Array.isArray(rep.key_metrics) && rep.key_metrics.length ? rep.key_metrics.map((m) => ({ metric: m.metric ?? '', value: m.value ?? '', commentary: m.commentary ?? '' })) : [{ metric: '', value: '', commentary: '' }], sections: normalizeSectionsForForm(rep.sections || []), breakdowns: Array.isArray(rep.breakdowns) && rep.breakdowns.length ? rep.breakdowns.map((b) => ({ date: b.date ?? '', time: b.time ?? '', route: b.route ?? '', truck_reg: b.truck_reg ?? '', description: b.description ?? '', company: b.company ?? '' })) : [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: Array.isArray(rep.fleet_performance) && rep.fleet_performance.length ? rep.fleet_performance.map((f) => ({ haulier: f.haulier ?? '', trips: f.trips ?? '', pct_trips: f.pct_trips ?? '', tonnage: f.tonnage ?? '', pct_tonnage: f.pct_tonnage ?? '', avg_t_per_trip: f.avg_t_per_trip ?? '', trucks_deployed: f.trucks_deployed ?? '' })) : [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }).catch(() => setError('Failed to load report')); }} className="text-brand-600 hover:text-brand-800 text-sm font-medium">Edit</button>
+                            <button type="button" onClick={() => { setMonthlyPerfSubTab('creation'); setEditingMonthlyPerfId(r.id); monthlyPerformanceReportsApi.get(r.id).then((res) => { const rep = res.report || {}; setMonthlyPerfForm({ title: rep.title || '', reporting_period_start: rep.reporting_period_start ? rep.reporting_period_start.slice(0, 10) : '', reporting_period_end: rep.reporting_period_end ? rep.reporting_period_end.slice(0, 10) : '', submitted_date: rep.submitted_date ? rep.submitted_date.slice(0, 10) : new Date().toISOString().slice(0, 10), prepared_by: rep.prepared_by || '', route_ids: normalizeIds(rep.route_ids || []), executive_summary: rep.executive_summary || '', key_metrics: Array.isArray(rep.key_metrics) && rep.key_metrics.length ? rep.key_metrics.map((m) => ({ metric: m.metric ?? '', value: m.value ?? '', commentary: m.commentary ?? '' })) : [{ metric: '', value: '', commentary: '' }], sections: normalizeSectionsForForm(rep.sections || []), breakdowns: Array.isArray(rep.breakdowns) && rep.breakdowns.length ? rep.breakdowns.map((b) => ({ date: b.date ?? '', time: b.time ?? '', route: b.route ?? '', truck_reg: b.truck_reg ?? '', description: b.description ?? '', company: b.company ?? '' })) : [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: Array.isArray(rep.fleet_performance) && rep.fleet_performance.length ? rep.fleet_performance.map((f) => ({ haulier: f.haulier ?? '', trips: f.trips ?? '', pct_trips: f.pct_trips ?? '', tonnage: f.tonnage ?? '', pct_tonnage: f.pct_tonnage ?? '', avg_t_per_trip: f.avg_t_per_trip ?? '', trucks_deployed: f.trucks_deployed ?? '' })) : [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }).catch(() => setError('Failed to load report')); }} className="text-brand-600 hover:text-brand-800 text-sm font-medium">Edit</button>
                           </td>
                         </tr>
                       ))}
@@ -3298,7 +3397,7 @@ export default function AccessManagement() {
               {monthlyPerfListLoading ? <p className="text-surface-500">Loading…</p> : (
                 <>
                   <div className="flex flex-wrap gap-2 mb-4">
-                    <button type="button" onClick={() => { setEditingMonthlyPerfId(null); setMonthlyPerfForm({ title: '', reporting_period_start: '', reporting_period_end: '', submitted_date: new Date().toISOString().slice(0, 10), prepared_by: 'Tihlo (Thinkers Afrika)', executive_summary: '', key_metrics: [{ metric: '', value: '', commentary: '' }], sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }], breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }} className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50">New report</button>
+                    <button type="button" onClick={() => { setEditingMonthlyPerfId(null); setMonthlyPerfForm({ title: '', reporting_period_start: '', reporting_period_end: '', submitted_date: new Date().toISOString().slice(0, 10), prepared_by: 'Tihlo (Thinkers Afrika)', route_ids: [], executive_summary: '', key_metrics: [{ metric: '', value: '', commentary: '' }], sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }], breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }} className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50">New report</button>
                     <span className="text-sm text-surface-500 self-center">To edit an existing report, go to Published reports and click Edit.</span>
                   </div>
 
@@ -3324,6 +3423,24 @@ export default function AccessManagement() {
                         <label className="block text-sm font-medium text-surface-700 mb-1">Prepared by</label>
                         <input type="text" value={monthlyPerfForm.prepared_by} onChange={(e) => setMonthlyPerfForm((f) => ({ ...f, prepared_by: e.target.value }))} placeholder="e.g. Tihlo (Thinkers Afrika)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                       </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-surface-700 mb-1">Applicable route(s) for rector visibility</label>
+                      <RouteChecklist
+                        routes={routes}
+                        selectedIds={monthlyPerfForm.route_ids}
+                        onToggle={(routeId) =>
+                          setMonthlyPerfForm((f) => {
+                            const next = new Set((f.route_ids || []).map((id) => String(id)));
+                            if (next.has(routeId)) next.delete(routeId);
+                            else next.add(routeId);
+                            return { ...f, route_ids: Array.from(next) };
+                          })
+                        }
+                      />
+                      <p className="text-xs text-surface-500 mt-1">
+                        Leave empty to publish to all rectors. {monthlyPerfForm.route_ids?.length ? `${monthlyPerfForm.route_ids.length} selected.` : ''}
+                      </p>
                     </div>
 
                     <div>
@@ -3633,6 +3750,7 @@ export default function AccessManagement() {
                             reporting_period_end: monthlyPerfForm.reporting_period_end,
                             submitted_date: monthlyPerfForm.submitted_date,
                             prepared_by: monthlyPerfForm.prepared_by.trim() || null,
+                            route_ids: normalizeIds(monthlyPerfForm.route_ids),
                             executive_summary: monthlyPerfForm.executive_summary.trim() || null,
                             key_metrics: monthlyPerfForm.key_metrics.map((m) => ({ metric: (m.metric || '').toString().trim(), value: (m.value || '').toString().trim(), commentary: (m.commentary || '').toString().trim() })),
                             sections: serializeSectionsForApi(monthlyPerfForm.sections),

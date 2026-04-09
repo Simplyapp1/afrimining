@@ -602,6 +602,19 @@ async function nextQuotationNumber(tenantId) {
   return `Q-${y}-${String(n).padStart(3, '0')}`;
 }
 
+async function quotationNumberTaken(tenantId, number, excludeQuotationId = null) {
+  const num = String(number || '').trim();
+  if (!num) return false;
+  let sql = `SELECT 1 AS x FROM accounting_quotations WHERE tenant_id = @tenantId AND number = @number`;
+  const params = { tenantId, number: num };
+  if (excludeQuotationId) {
+    sql += ` AND id <> @excludeId`;
+    params.excludeId = excludeQuotationId;
+  }
+  const r = await query(sql, params);
+  return (r.recordset?.length ?? 0) > 0;
+}
+
 router.get('/quotations', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
@@ -715,11 +728,20 @@ router.patch('/quotations/:id', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     const { id } = req.params;
-    const { customer_id, customer_name, customer_address, customer_email, date, valid_until, status, notes, discount_percent, tax_percent, lines } = req.body || {};
+    const { customer_id, customer_name, customer_address, customer_email, date, valid_until, status, notes, discount_percent, tax_percent, lines, number } = req.body || {};
     const existing = await query(`SELECT id FROM accounting_quotations WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
     if (!existing.recordset?.[0]) return res.status(404).json({ error: 'Quotation not found' });
     const updates = [];
     const params = { id, tenantId };
+    if (number !== undefined) {
+      const num = String(number ?? '').trim();
+      if (!num) return res.status(400).json({ error: 'Quotation reference number cannot be empty' });
+      if (await quotationNumberTaken(tenantId, num, id)) {
+        return res.status(400).json({ error: 'Another quotation already uses this reference number' });
+      }
+      updates.push('number = @number');
+      params.number = num;
+    }
     if (customer_id !== undefined) { updates.push('customer_id = @customer_id'); params.customer_id = customer_id || null; }
     if (customer_name !== undefined) { updates.push('customer_name = @customer_name'); params.customer_name = customer_name ?? ''; }
     if (customer_address !== undefined) { updates.push('customer_address = @customer_address'); params.customer_address = customer_address ?? ''; }

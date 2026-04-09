@@ -3,6 +3,7 @@ import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { getApiBase } from './lib/apiBase.js';
+import { buildAccountingPdfFilename } from './lib/accountingDocumentPdfFilename.js';
 import InfoHint from './components/InfoHint.jsx';
 
 const NAV_SECTIONS = [
@@ -64,6 +65,20 @@ function TabIcon({ name, className }) {
 function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
+}
+
+async function downloadAccountingCommercialPdf(url, { partyName, reference, issueDate, companyName: companyNameOpt }) {
+  let companyName = companyNameOpt;
+  if (!companyName) {
+    try {
+      const c = await accountingApi.companySettings.get();
+      companyName = c?.company_name;
+    } catch (_) {
+      companyName = '';
+    }
+  }
+  const filename = buildAccountingPdfFilename({ partyName, reference, companyName, issueDate });
+  await downloadAttachmentWithAuth(url, filename);
 }
 
 function CompanySettingsTab() {
@@ -683,6 +698,23 @@ function DocumentLinesEditor({ lines, setLines, itemsLibrary = [], vatColumnLabe
   );
 }
 
+const QUOTATION_STATUSES = [
+  { value: 'draft', label: 'Draft' },
+  { value: 'sent', label: 'Sent' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'expired', label: 'Expired' },
+  { value: 'cancelled', label: 'Cancelled' },
+];
+
+function quotationStatusSelectOptions(current) {
+  const known = new Set(QUOTATION_STATUSES.map((o) => o.value));
+  const out = [];
+  if (current && !known.has(String(current))) out.push({ value: current, label: String(current) });
+  out.push(...QUOTATION_STATUSES);
+  return out;
+}
+
 function QuotationsTab() {
   const [list, setList] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -692,8 +724,11 @@ function QuotationsTab() {
   const [formOpen, setFormOpen] = useState(false);
   const [viewId, setViewId] = useState(null);
   const [viewQuotation, setViewQuotation] = useState(null);
+  const [viewMeta, setViewMeta] = useState({ number: '', status: 'draft', date: '' });
+  const [viewMetaSaving, setViewMetaSaving] = useState(false);
   const [emailModal, setEmailModal] = useState(null);
   const [form, setForm] = useState({
+    number: '',
     customer_id: '',
     customer_name: '',
     customer_address: '',
@@ -728,9 +763,19 @@ function QuotationsTab() {
     accountingApi.quotations.get(viewId).then((d) => setViewQuotation(d.quotation)).catch(() => setViewQuotation(null));
   }, [viewId]);
 
+  useEffect(() => {
+    if (!viewQuotation) return;
+    setViewMeta({
+      number: viewQuotation.number ?? '',
+      status: viewQuotation.status ?? 'draft',
+      date: viewQuotation.date ? new Date(viewQuotation.date).toISOString().slice(0, 10) : '',
+    });
+  }, [viewQuotation]);
+
   const openNew = () => {
     setEditingId(null);
     setForm({
+      number: '',
       customer_id: '',
       customer_name: '',
       customer_address: '',
@@ -755,6 +800,7 @@ function QuotationsTab() {
     accountingApi.quotations.get(q.id).then((d) => {
       const qq = d.quotation;
       setForm({
+        number: qq.number ?? '',
         customer_id: qq.customer_id || '',
         customer_name: qq.customer_name ?? '',
         customer_address: qq.customer_address ?? '',
@@ -772,6 +818,13 @@ function QuotationsTab() {
   };
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (editingId) {
+      const ref = String(form.number || '').trim();
+      if (!ref) {
+        alert('Reference number is required.');
+        return;
+      }
+    }
     setSaving(true);
     const payload = {
       customer_id: form.customer_id || null,
@@ -786,9 +839,32 @@ function QuotationsTab() {
       tax_percent: Number(form.tax_percent) || 0,
       lines: form.lines.map((l) => ({ ...l, discount_percent: Number(l.discount_percent) || 0, tax_percent: Number(l.tax_percent) || 0 })),
     };
+    if (editingId) payload.number = String(form.number || '').trim();
     (editingId ? accountingApi.quotations.update(editingId, payload) : accountingApi.quotations.create(payload))
       .then(() => { setFormOpen(false); load(); })
       .finally(() => setSaving(false));
+  };
+
+  const saveViewQuotationMeta = () => {
+    if (!viewId) return;
+    const ref = String(viewMeta.number || '').trim();
+    if (!ref) {
+      alert('Reference number cannot be empty.');
+      return;
+    }
+    setViewMetaSaving(true);
+    accountingApi.quotations
+      .update(viewId, {
+        number: ref,
+        status: viewMeta.status,
+        date: viewMeta.date || null,
+      })
+      .then((d) => {
+        setViewQuotation(d.quotation);
+        load();
+      })
+      .catch((err) => alert(err?.message || 'Failed to update quotation'))
+      .finally(() => setViewMetaSaving(false));
   };
   const createInvoiceFromQuotation = (quotationId) => {
     accountingApi.quotations.createInvoice(quotationId)
@@ -816,6 +892,17 @@ function QuotationsTab() {
         <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm w-full max-w-full">
           <h3 className="font-medium text-surface-900 mb-4">{editingId ? 'Edit quotation' : 'New quotation'}</h3>
           <form onSubmit={handleSubmit} className="space-y-4 w-full max-w-6xl">
+            {editingId && (
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Reference number</label>
+                <input
+                  value={form.number}
+                  onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900"
+                  placeholder="e.g. Q-2025-001"
+                />
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Customer</label>
               <select value={form.customer_id || ''} onChange={(e) => selectCustomer(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900">
@@ -829,9 +916,27 @@ function QuotationsTab() {
             </div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Address</label><textarea value={form.customer_address} onChange={(e) => setForm((f) => ({ ...f, customer_address: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Email</label><input type="email" value={form.customer_email} onChange={(e) => setForm((f) => ({ ...f, customer_email: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Date</label><input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Valid until</label><input type="date" value={form.valid_until} onChange={(e) => setForm((f) => ({ ...f, valid_until: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Issue date</label>
+                <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Valid until</label>
+                <input type="date" value={form.valid_until} onChange={(e) => setForm((f) => ({ ...f, valid_until: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Status</label>
+                <select
+                  value={form.status}
+                  onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900"
+                >
+                  {quotationStatusSelectOptions(form.status).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, discount_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
@@ -878,9 +983,53 @@ function QuotationsTab() {
       {viewId && viewQuotation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] overflow-auto p-6">
-            <h3 className="font-semibold text-surface-900 mb-4">Quotation {viewQuotation.number}</h3>
+            <h3 className="font-semibold text-surface-900 mb-2">Quotation</h3>
+            <div className="rounded-lg border border-surface-200 bg-surface-50/80 p-4 mb-4 space-y-3">
+              <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">Header (save changes)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Reference number</label>
+                  <input
+                    value={viewMeta.number}
+                    onChange={(e) => setViewMeta((m) => ({ ...m, number: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Issue date</label>
+                  <input
+                    type="date"
+                    value={viewMeta.date}
+                    onChange={(e) => setViewMeta((m) => ({ ...m, date: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Status</label>
+                  <select
+                    value={viewMeta.status}
+                    onChange={(e) => setViewMeta((m) => ({ ...m, status: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900"
+                  >
+                    {quotationStatusSelectOptions(viewMeta.status).map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={viewMetaSaving}
+                onClick={saveViewQuotationMeta}
+                className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+              >
+                {viewMetaSaving ? 'Saving…' : 'Save reference, date & status'}
+              </button>
+            </div>
             <p className="text-sm text-surface-600">Customer: {viewQuotation.customer_name_from_book || viewQuotation.customer_name || '—'}</p>
-            <p className="text-sm text-surface-600">Date: {formatDate(viewQuotation.date)}</p>
+            {viewQuotation.valid_until && (
+              <p className="text-sm text-surface-600">Valid until: {formatDate(viewQuotation.valid_until)}</p>
+            )}
             <div className="mt-4 border rounded-lg overflow-x-auto">
               <table className="w-full text-sm min-w-[500px]">
                 <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">Tax %</th><th className="text-right p-2">Line total</th></tr></thead>
@@ -938,6 +1087,19 @@ function QuotationsTab() {
             })()}
             <div className="mt-4 flex gap-2 flex-wrap">
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.quotations.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
+              <button
+                type="button"
+                onClick={() =>
+                  downloadAccountingCommercialPdf(accountingApi.quotations.pdfUrl(viewId), {
+                    partyName: viewQuotation.customer_name_from_book || viewQuotation.customer_name,
+                    reference: viewQuotation.number,
+                    issueDate: viewQuotation.date,
+                  }).catch((e) => alert(e?.message || 'Download failed'))
+                }
+                className="px-4 py-2 rounded-lg border border-surface-300 text-sm font-medium text-surface-800 hover:bg-surface-50"
+              >
+                Download PDF
+              </button>
               <button type="button" onClick={() => openEmailModal(viewQuotation)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Email</button>
               <button type="button" onClick={() => createInvoiceFromQuotation(viewQuotation.id)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Create invoice</button>
               <button type="button" onClick={() => setViewId(null)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Close</button>
@@ -956,7 +1118,7 @@ function QuotationsTab() {
               <tr>
                 <th className="text-left p-3 font-medium text-surface-700">Number</th>
                 <th className="text-left p-3 font-medium text-surface-700">Customer</th>
-                <th className="text-left p-3 font-medium text-surface-700">Date</th>
+                <th className="text-left p-3 font-medium text-surface-700">Issue date</th>
                 <th className="text-left p-3 font-medium text-surface-700">Status</th>
                 <th className="p-3" />
               </tr>
@@ -971,6 +1133,19 @@ function QuotationsTab() {
                   <td className="p-3">
                     <button type="button" onClick={() => setViewId(q.id)} className="text-brand-600 hover:text-brand-700 mr-2">View</button>
                     <button type="button" onClick={() => openEdit(q)} className="text-brand-600 hover:text-brand-700 mr-2">Edit</button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadAccountingCommercialPdf(accountingApi.quotations.pdfUrl(q.id), {
+                          partyName: q.customer_display_name || q.customer_name,
+                          reference: q.number,
+                          issueDate: q.date,
+                        }).catch((e) => alert(e?.message || 'Download failed'))
+                      }
+                      className="text-surface-600 hover:text-surface-800 mr-2"
+                    >
+                      Download PDF
+                    </button>
                     <button type="button" onClick={() => createInvoiceFromQuotation(q.id)} className="text-surface-600 hover:text-surface-700 mr-2">Create invoice</button>
                   </td>
                 </tr>
@@ -1393,6 +1568,19 @@ function InvoicesTab() {
                 <button type="button" onClick={() => openMarkPaid(viewInvoice)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">Mark paid</button>
               ) : null}
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.invoices.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
+              <button
+                type="button"
+                onClick={() =>
+                  downloadAccountingCommercialPdf(accountingApi.invoices.pdfUrl(viewId), {
+                    partyName: viewInvoice.customer_name_from_book || viewInvoice.customer_name,
+                    reference: viewInvoice.number,
+                    issueDate: viewInvoice.date,
+                  }).catch((e) => alert(e?.message || 'Download failed'))
+                }
+                className="px-4 py-2 rounded-lg border border-surface-300 text-sm font-medium text-surface-800 hover:bg-surface-50"
+              >
+                Download PDF
+              </button>
               <button type="button" onClick={() => openEmailModal(viewInvoice)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Email</button>
               <button type="button" onClick={() => setViewId(null)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Close</button>
             </div>
@@ -1434,7 +1622,20 @@ function InvoicesTab() {
                       <button type="button" onClick={() => openMarkPaid(inv)} className="text-emerald-700 hover:text-emerald-800 mr-2 font-medium">Mark paid</button>
                     ) : null}
                     <button type="button" onClick={() => setViewId(inv.id)} className="text-brand-600 hover:text-brand-700 mr-2">View</button>
-                    <button type="button" onClick={() => openEdit(inv)} className="text-brand-600 hover:text-brand-700">Edit</button>
+                    <button type="button" onClick={() => openEdit(inv)} className="text-brand-600 hover:text-brand-700 mr-2">Edit</button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadAccountingCommercialPdf(accountingApi.invoices.pdfUrl(inv.id), {
+                          partyName: inv.customer_display_name || inv.customer_name,
+                          reference: inv.number,
+                          issueDate: inv.date,
+                        }).catch((e) => alert(e?.message || 'Download failed'))
+                      }
+                      className="text-surface-600 hover:text-surface-800"
+                    >
+                      Download PDF
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1705,6 +1906,19 @@ function PurchaseOrdersTab() {
             })()}
             <div className="mt-4 flex gap-2 flex-wrap">
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.purchaseOrders.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
+              <button
+                type="button"
+                onClick={() =>
+                  downloadAccountingCommercialPdf(accountingApi.purchaseOrders.pdfUrl(viewId), {
+                    partyName: viewPO.supplier_name_from_book || viewPO.supplier_name,
+                    reference: viewPO.number,
+                    issueDate: viewPO.date,
+                  }).catch((e) => alert(e?.message || 'Download failed'))
+                }
+                className="px-4 py-2 rounded-lg border border-surface-300 text-sm font-medium text-surface-800 hover:bg-surface-50"
+              >
+                Download PDF
+              </button>
               <button type="button" onClick={() => openEmailModal(viewPO)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Email</button>
               <button type="button" onClick={() => setViewId(null)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Close</button>
             </div>
@@ -1736,7 +1950,20 @@ function PurchaseOrdersTab() {
                   <td className="p-3 text-surface-600">{po.status}</td>
                   <td className="p-3">
                     <button type="button" onClick={() => setViewId(po.id)} className="text-brand-600 hover:text-brand-700 mr-2">View</button>
-                    <button type="button" onClick={() => openEdit(po)} className="text-brand-600 hover:text-brand-700">Edit</button>
+                    <button type="button" onClick={() => openEdit(po)} className="text-brand-600 hover:text-brand-700 mr-2">Edit</button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadAccountingCommercialPdf(accountingApi.purchaseOrders.pdfUrl(po.id), {
+                          partyName: po.supplier_display_name || po.supplier_name,
+                          reference: po.number,
+                          issueDate: po.date,
+                        }).catch((e) => alert(e?.message || 'Download failed'))
+                      }
+                      className="text-surface-600 hover:text-surface-800"
+                    >
+                      Download PDF
+                    </button>
                   </td>
                 </tr>
               ))}

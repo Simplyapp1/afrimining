@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { toYmdInAppZone } from '../lib/appTime.js';
 import ExcelJS from 'exceljs';
 
 /** Normalize header for matching: lowercase, trim, collapse spaces */
@@ -116,7 +117,7 @@ function mapDriverRow(obj) {
         try {
           if (typeof value === 'number' && value > 1000) {
             const date = new Date((value - 25569) * 86400 * 1000);
-            out[apiKey] = date.toISOString().slice(0, 10);
+            out[apiKey] = toYmdInAppZone(date);
           } else {
             out[apiKey] = String(value).trim();
           }

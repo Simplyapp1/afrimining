@@ -3,6 +3,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { actionPlanSharedHtml } from '../lib/emailTemplates.js';
+import { todayYmd } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -210,7 +211,7 @@ router.post('/', async (req, res, next) => {
     const body = req.body || {};
     const title = (body.title || '').toString().trim() || 'Action Plan';
     const projectName = (body.project_name || '').toString().trim() || '';
-    const documentDate = body.document_date || new Date().toISOString().slice(0, 10);
+    const documentDate = body.document_date || todayYmd();
     const documentId = (body.document_id || '').toString().trim() || null;
     const items = Array.isArray(body.items) ? body.items : [];
     const routeIds = normalizeIds(body.route_ids);

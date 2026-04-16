@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import { addCalendarDays, todayYmd } from './lib/appTime.js';
+import { buildDeskForecast } from './lib/ccForecasting.js';
 import { Link } from 'react-router-dom';
 import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
-import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, shiftClock } from './api';
+import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -212,12 +215,22 @@ export default function CommandCentre() {
       })
       .catch(() => {
         if (cancelled) return;
-        setShiftClockGate({ loading: false, allowed: true, message: '' });
+        // Fail closed: if we cannot verify shift status, do not grant Command Centre (was fail-open and hid a broken gate).
+        if (isSuperAdmin) {
+          setShiftClockGate({ loading: false, allowed: true, message: '' });
+          return;
+        }
+        setShiftClockGate({
+          loading: false,
+          allowed: false,
+          message:
+            'Could not verify shift clock status. Refresh the page. If you have a shift today, clock in on Profile → Work schedule before using Command Centre.',
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     try {
@@ -732,6 +745,189 @@ function TabNotesReminders({ onClose }) {
 const CC_DASHBOARD_NO_TAB_HINT =
   'You do not have access to open this section. A super admin can grant it under Command Centre → Manage tab access.';
 
+const DASHBOARD_INSIGHTS_ROTATE_MS = 60_000;
+
+/** Single “command deck” slot: completed deliveries and forecasting lab alternate every minute (manual tabs reset the timer). */
+function DeliveryInsightsRotator({
+  timelineDays,
+  setTimelineDays,
+  deliveryTimeline,
+  dashboardShiftReports,
+  loading,
+  isDark,
+}) {
+  const [activeDeck, setActiveDeck] = useState('timeline');
+  const [phaseStartedAt, setPhaseStartedAt] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    setPhaseStartedAt(Date.now());
+  }, [activeDeck]);
+
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setActiveDeck((d) => (d === 'timeline' ? 'forecast' : 'timeline'));
+    }, DASHBOARD_INSIGHTS_ROTATE_MS);
+    return () => clearTimeout(id);
+  }, [activeDeck]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 200);
+    return () => clearInterval(id);
+  }, []);
+
+  const elapsed = Math.min(DASHBOARD_INSIGHTS_ROTATE_MS, Math.max(0, nowTick - phaseStartedAt));
+  const progress = DASHBOARD_INSIGHTS_ROTATE_MS > 0 ? elapsed / DASHBOARD_INSIGHTS_ROTATE_MS : 0;
+
+  const ringR = 17;
+  const ringC = 2 * Math.PI * ringR;
+  const dashLen = ringC * progress;
+
+  const pillActive =
+    'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md ring-1 ring-white/25';
+  const pillIdle =
+    'text-slate-600 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-800/80';
+
+  return (
+    <section className="relative overflow-hidden rounded-2xl border border-slate-200/85 dark:border-slate-700/75 bg-gradient-to-br from-slate-50 via-indigo-50/35 to-violet-50/45 dark:from-slate-950 dark:via-indigo-950/25 dark:to-violet-950/20 shadow-[0_4px_32px_-8px_rgba(79,70,229,0.18)] dark:shadow-[0_10px_44px_-12px_rgba(0,0,0,0.5)]">
+      <div
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_100%_55%_at_100%_-15%,rgba(99,102,241,0.11),transparent_50%),radial-gradient(ellipse_80%_50%_at_0%_0%,rgba(168,85,247,0.1),transparent_48%)] dark:bg-[radial-gradient(ellipse_90%_55%_at_90%_0%,rgba(99,102,241,0.14),transparent_46%),radial-gradient(ellipse_70%_45%_at_0%_0%,rgba(192,132,252,0.12),transparent_45%)]"
+        aria-hidden
+      />
+      <div className="relative px-4 py-3.5 sm:px-5 sm:py-4 border-b border-slate-200/70 dark:border-slate-700/55 bg-gradient-to-r from-white/92 via-indigo-50/35 to-violet-50/40 dark:from-slate-900/95 dark:via-slate-900/85 dark:to-violet-950/30">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+          <div className="flex flex-wrap items-start sm:items-center gap-3 sm:gap-4 min-w-0 flex-1">
+            <div className="relative shrink-0" title="Rotation cadence · 60 seconds per view">
+              <svg width="48" height="48" viewBox="0 0 48 48" className="shrink-0 -rotate-90 drop-shadow-sm">
+                <circle cx="24" cy="24" r={ringR} fill="none" className="stroke-slate-200/95 dark:stroke-slate-600/90" strokeWidth="5" />
+                <circle
+                  cx="24"
+                  cy="24"
+                  r={ringR}
+                  fill="none"
+                  className="stroke-indigo-500 dark:stroke-violet-400 transition-[stroke-dasharray] duration-200 ease-linear"
+                  strokeWidth="5"
+                  strokeLinecap="round"
+                  strokeDasharray={`${dashLen} ${ringC}`}
+                />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-slate-500 dark:text-slate-400 pointer-events-none">
+                60s
+              </span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span className="text-indigo-600 dark:text-indigo-300">Command deck</span>
+                <span className="text-slate-400 dark:text-slate-500">·</span>
+                <span>Temporal duplex</span>
+                <span className="rounded-md bg-slate-900/[0.06] dark:bg-white/[0.06] px-1.5 py-px text-[9px] tracking-normal font-semibold text-slate-600 dark:text-slate-300 border border-slate-200/60 dark:border-slate-600/50">
+                  auto-rotate
+                </span>
+              </p>
+              <div className="mt-2 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2 sm:gap-3">
+                <div className="inline-flex rounded-2xl p-1 bg-slate-900/[0.04] dark:bg-white/[0.05] ring-1 ring-slate-200/80 dark:ring-slate-600/55 shadow-inner w-fit max-w-full">
+                  <button
+                    type="button"
+                    onClick={() => setActiveDeck('timeline')}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      activeDeck === 'timeline' ? pillActive : pillIdle
+                    }`}
+                  >
+                    Completed deliveries
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDeck('forecast')}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      activeDeck === 'forecast' ? pillActive : pillIdle
+                    }`}
+                  >
+                    Forecasting lab
+                  </button>
+                </div>
+                <h2 className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 tracking-tight min-w-0">
+                  {activeDeck === 'timeline' ? (
+                    <span className="block truncate">Live timeline · {timelineDays} days</span>
+                  ) : (
+                    <span className="block truncate">Outlook · Holt–Winters & seasonal bands</span>
+                  )}
+                </h2>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4 shrink-0 justify-start xl:justify-end">
+            {activeDeck === 'timeline' ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={timelineDays}
+                  onChange={(e) => setTimelineDays(parseInt(e.target.value, 10))}
+                  className="rounded-xl border border-slate-200 dark:border-slate-600 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 shadow-sm focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                >
+                  <option value={7}>Weekly</option>
+                  <option value={30}>Monthly</option>
+                  <option value={90}>Quarterly</option>
+                  <option value={365}>Yearly</option>
+                </select>
+                <div className="text-right rounded-xl bg-white/75 dark:bg-slate-800/65 border border-slate-200/80 dark:border-slate-600/60 px-3 py-2 backdrop-blur-sm">
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total completed</p>
+                  <p className="text-base font-bold bg-gradient-to-r from-indigo-600 to-teal-600 dark:from-indigo-400 dark:to-teal-400 bg-clip-text text-transparent tabular-nums">
+                    {deliveryTimeline?.summary?.total_completed_deliveries || 0}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-300 px-2 py-1 rounded-lg bg-violet-500/10 border border-violet-500/15">
+                  Analytics
+                </span>
+                <InfoHint
+                  title="About this forecast"
+                  text="Projected completed deliveries and controller throughput (loads per approved shift report) from your recent history. Horizons: next week, month, or year (monthly buckets). Bands widen with lead time — indicative only."
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="relative min-h-[min(28rem,72vh)] sm:min-h-[30rem]">
+        {loading ? (
+          <div className="p-6 sm:p-8">
+            <div className="h-80 rounded-xl border border-slate-200/50 dark:border-slate-700/50 bg-gradient-to-br from-slate-100/70 to-indigo-50/40 dark:from-slate-800/50 dark:to-slate-900/80 animate-pulse" />
+          </div>
+        ) : (
+          <>
+            <div
+              className={`absolute inset-0 overflow-y-auto overflow-x-hidden p-4 sm:p-5 transition-all duration-[850ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                activeDeck === 'timeline'
+                  ? 'opacity-100 z-10 translate-y-0 blur-0'
+                  : 'opacity-0 z-0 pointer-events-none translate-y-3 blur-[1px]'
+              }`}
+              aria-hidden={activeDeck !== 'timeline'}
+            >
+              <div className="rounded-xl border border-slate-200/50 dark:border-slate-700/40 bg-white/30 dark:bg-slate-900/20 p-1 sm:p-2">
+                <DeliveryTimelineChart timeline={deliveryTimeline} loading={false} isDark={isDark} />
+              </div>
+            </div>
+            <div
+              className={`absolute inset-0 overflow-y-auto overflow-x-hidden p-4 sm:p-5 transition-all duration-[850ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                activeDeck === 'forecast'
+                  ? 'opacity-100 z-10 translate-y-0 blur-0'
+                  : 'opacity-0 z-0 pointer-events-none -translate-y-3 blur-[1px]'
+              }`}
+              aria-hidden={activeDeck !== 'forecast'}
+            >
+              <div className="rounded-xl border border-violet-200/40 dark:border-violet-800/35 bg-violet-50/20 dark:bg-violet-950/15 p-1 sm:p-2">
+                <DeliveryForecastChart deliveryTimeline={deliveryTimeline} shiftReports={dashboardShiftReports} loading={false} isDark={isDark} />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function TabDashboard({ setActiveTab, canSeeTab }) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -744,18 +940,18 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [timelineDays, setTimelineDays] = useState(30);
   const [deliveryTimeline, setDeliveryTimeline] = useState({ dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } });
+  const [dashboardShiftReports, setDashboardShiftReports] = useState([]);
+  const [shiftScoreDash, setShiftScoreDash] = useState(null);
 
   const buildTimelineFromReports = (reports, days = timelineDays) => {
     const toNum = (v) => {
       const n = parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
       return Number.isFinite(n) ? n : 0;
     };
-    const today = new Date();
+    const endYmd = todayYmd();
     const dayKeys = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      dayKeys.push(d.toISOString().slice(0, 10));
+      dayKeys.push(addCalendarDays(endYmd, -i));
     }
     const daySet = new Set(dayKeys);
     const byRoute = {};
@@ -807,6 +1003,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
     promises.push(ccApi.shiftReports.list(true).then((r) => ({ requests: (r.reports || []).length })).catch(() => ({ requests: 0 })));
     promises.push(ccApi.deliveryTimeline(timelineDays).then((r) => ({ timeline: r })).catch(() => ({ timeline: { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } } })));
     promises.push(ccApi.shiftReports.list(false).then((r) => ({ allReports: r.reports || [] })).catch(() => ({ allReports: [] })));
+    promises.push(shiftScore.commandCentreDashboard({ days: 30 }).then((r) => ({ shiftDash: r })).catch(() => ({ shiftDash: null })));
 
     Promise.all(promises).then((results) => {
       if (cancelled) return;
@@ -817,6 +1014,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       let reqCount = 0;
       let timeline = { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } };
       let allReports = [];
+      let shiftDash = null;
       results.forEach((r) => {
         if (r.applications !== undefined) appCount = r.applications;
         if (r.breakdowns) breakdownsList = r.breakdowns;
@@ -825,7 +1023,9 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
         if (r.requests !== undefined) reqCount = r.requests;
         if (r.timeline) timeline = r.timeline;
         if (r.allReports) allReports = r.allReports;
+        if (r.shiftDash !== undefined) shiftDash = r.shiftDash;
       });
+      setShiftScoreDash(shiftDash);
       setPendingApplications(appCount);
       setUnresolvedBreakdowns(breakdownsList);
       setRecentBreakdowns(breakdownsList.slice(0, 5));
@@ -834,6 +1034,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       setPendingRequestsCount(reqCount);
       const hasTimelineData = Array.isArray(timeline?.routes) && timeline.routes.length > 0;
       setDeliveryTimeline(hasTimelineData ? timeline : buildTimelineFromReports(allReports, timelineDays));
+      setDashboardShiftReports(Array.isArray(allReports) ? allReports : []);
     }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [timelineDays]);
@@ -848,6 +1049,20 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
     { label: 'Compliance pending', value: pendingCompliance, sub: 'Inspections / response due', tab: 'compliance', icon: 'shield', color: 'blue', bg: 'bg-blue-500/10', border: 'border-blue-200', text: 'text-blue-700' },
     { label: 'Report requests', value: pendingRequestsCount, sub: 'Awaiting approval', tab: 'requests', icon: 'inbox', color: 'emerald', bg: 'bg-emerald-500/10', border: 'border-emerald-200', text: 'text-emerald-700' },
   ];
+  const shiftProductivityKpi = {
+    key: 'shift_productivity',
+    label: 'Shift productivity',
+    value: shiftScoreDash == null ? '—' : String(shiftScoreDash.personalTotal ?? 0),
+    sub:
+      shiftScoreDash != null
+        ? `Team avg ${shiftScoreDash.groupAverage} · ${shiftScoreDash.windowDays}d window`
+        : 'Clock · evaluation · tasks · reports',
+    profileHref: '/profile?tab=productivity_score',
+    icon: 'chart',
+    border: 'border-indigo-200',
+    bg: 'bg-indigo-500/10',
+    text: 'text-indigo-700',
+  };
 
   const quickActionDefs = [
     { label: 'Report composition', tab: 'reports', desc: 'Create shift reports', icon: 'file' },
@@ -869,22 +1084,32 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
         <section>
           <h2 className="text-sm font-semibold text-surface-500 uppercase tracking-wider mb-3">Live metrics</h2>
           {loading ? (
-            <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-              {[1, 2, 3, 4, 5].map((i) => (
+            <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
                 <div key={i} className="bg-white rounded-xl border border-surface-200 p-5 h-28 animate-pulse" />
               ))}
             </div>
           ) : (
-            <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-              {kpiCards.map((k) => {
-                const navigable = canSeeTab?.(k.tab);
+            <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              {[...kpiCards, shiftProductivityKpi].map((k) => {
+                const key = k.key || k.tab;
+                const navigable = k.profileHref ? true : canSeeTab?.(k.tab);
                 const body = (
                   <>
-                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{k.label}</p>
+                    <div className="flex items-center gap-2">
+                      {k.icon && (
+                        <span className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${k.bg} ${k.text}`}>
+                          <CCIcon name={k.icon} className="w-4 h-4" />
+                        </span>
+                      )}
+                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wider min-w-0">{k.label}</p>
+                    </div>
                     <p className="mt-2 text-3xl font-bold text-surface-900 tabular-nums">{k.value}</p>
                     <p className="text-sm text-surface-500 mt-0.5">{k.sub}</p>
                     {navigable ? (
-                      <span className="inline-block mt-2 text-xs font-medium text-brand-600 group-hover:text-brand-700">View →</span>
+                      <span className="inline-block mt-2 text-xs font-medium text-brand-600 group-hover:text-brand-700">
+                        {k.profileHref ? 'Profile →' : 'View →'}
+                      </span>
                     ) : (
                       <span className="inline-block mt-2 text-xs text-surface-400" title={CC_DASHBOARD_NO_TAB_HINT}>No tab access</span>
                     )}
@@ -893,12 +1118,19 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
                 const shell = navigable
                   ? 'text-left bg-white rounded-xl border p-5 shadow-sm hover:shadow-md hover:border-surface-300 transition-all duration-200 group cursor-pointer'
                   : 'text-left bg-white rounded-xl border border-dashed border-surface-200 p-5 shadow-sm transition-all duration-200 cursor-default';
+                if (k.profileHref) {
+                  return (
+                    <Link key={key} to={k.profileHref} className={`${shell} ${k.border}`}>
+                      {body}
+                    </Link>
+                  );
+                }
                 return navigable ? (
-                  <button key={k.tab} type="button" onClick={() => setActiveTab?.(k.tab)} className={`${shell} ${k.border}`}>
+                  <button key={key} type="button" onClick={() => setActiveTab?.(k.tab)} className={`${shell} ${k.border}`}>
                     {body}
                   </button>
                 ) : (
-                  <div key={k.tab} className={shell} title={CC_DASHBOARD_NO_TAB_HINT}>
+                  <div key={key} className={shell} title={CC_DASHBOARD_NO_TAB_HINT}>
                     {body}
                   </div>
                 );
@@ -907,34 +1139,14 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           )}
         </section>
 
-        {/* Delivery timeline by route (30 days) */}
-        <section className="bg-white dark:!bg-surface-900 rounded-xl border border-surface-200 dark:!border-surface-700 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-700 bg-gradient-to-r from-brand-50/70 to-white dark:from-surface-900 dark:to-surface-950 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="font-semibold text-surface-900 dark:text-surface-50">Completed deliveries timeline ({timelineDays} days)</h2>
-              <p className="text-xs text-surface-500 dark:text-surface-400 mt-0.5">Each route has its own line</p>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-3 shrink-0">
-              <select
-                value={timelineDays}
-                onChange={(e) => setTimelineDays(parseInt(e.target.value, 10))}
-                className="rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-2.5 py-1.5 text-xs text-surface-700 dark:text-surface-100"
-              >
-                <option value={7}>Weekly</option>
-                <option value={30}>Monthly</option>
-                <option value={90}>Quarterly</option>
-                <option value={365}>Yearly</option>
-              </select>
-              <div className="text-right">
-              <p className="text-xs text-surface-500 dark:text-surface-400 uppercase tracking-wider">Total completed</p>
-              <p className="text-lg font-bold text-brand-700 tabular-nums">{deliveryTimeline?.summary?.total_completed_deliveries || 0}</p>
-              </div>
-            </div>
-          </div>
-          <div className="p-4">
-            <DeliveryTimelineChart timeline={deliveryTimeline} loading={loading} isDark={isDark} />
-          </div>
-        </section>
+        <DeliveryInsightsRotator
+          timelineDays={timelineDays}
+          setTimelineDays={setTimelineDays}
+          deliveryTimeline={deliveryTimeline}
+          dashboardShiftReports={dashboardShiftReports}
+          loading={loading}
+          isDark={isDark}
+        />
 
         {/* Quick actions */}
         <section>
@@ -1117,44 +1329,134 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
   );
 }
 
-/** Fixed-position tooltip so it is not clipped by overflow on chart ancestors. */
-function TimelinePointTooltip({ tooltip, shortDate }) {
-  const pad = 10;
-  const estW = 220;
-  const estH = 82;
+/** Viewport-safe fixed popover position (avoids edges; flips above cursor when needed). */
+function clampChartPopoverXY(clientX, clientY, estW, estH, offsetX = 14, offsetY = 14) {
+  const pad = 12;
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
-  let left = tooltip.x + pad;
-  let top = tooltip.y + pad;
-  if (left + estW > vw - pad) left = tooltip.x - estW - pad;
-  if (top + estH > vh - pad) top = tooltip.y - estH - pad;
+  let left = clientX + offsetX;
+  let top = clientY + offsetY;
+  if (left + estW > vw - pad) left = clientX - estW - offsetX;
+  if (top + estH > vh - pad) top = clientY - estH - offsetY;
+  if (left < pad) left = pad;
+  if (top < pad) top = pad;
+  if (left + estW > vw - pad) left = Math.max(pad, vw - estW - pad);
+  if (top + estH > vh - pad) top = Math.max(pad, vh - estH - pad);
+  return { left, top };
+}
+
+/** Prefer anchoring under the clicked bar (viewport coords); fallback to cursor. */
+function positionPopoverFromBarRect(rect, estW, estH) {
+  if (!rect || typeof rect.left !== 'number') return null;
+  const pad = 12;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const cx = rect.left + rect.width / 2;
+  let left = cx - estW / 2;
+  let top = rect.bottom + 10;
+  if (top + estH > vh - pad) top = rect.top - estH - 10;
+  if (top < pad) top = rect.bottom + 10;
+  if (top + estH > vh - pad) top = Math.max(pad, vh - estH - pad);
   left = Math.max(pad, Math.min(left, vw - estW - pad));
-  top = Math.max(pad, Math.min(top, vh - estH - pad));
+  return { left, top };
+}
+
+function chartPopoverPortal(node) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(node, document.body);
+}
+
+/** Fixed-position tooltip / selection panel — hover preview or click-pinned figures. */
+function TimelinePointTooltip({ tooltip, shortDate, pinned, onClose }) {
+  useEffect(() => {
+    if (!pinned || !onClose) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pinned, onClose]);
+
+  const estW = pinned ? 300 : 236;
+  const estH = pinned ? 132 : 88;
+  const fromBar = pinned && tooltip.anchorRect ? positionPopoverFromBarRect(tooltip.anchorRect, estW, estH) : null;
+  const { left, top } = fromBar || clampChartPopoverXY(tooltip.x, tooltip.y, estW, estH);
+
   return (
     <div
-      className="fixed z-[200] pointer-events-none bg-surface-900 dark:bg-surface-800 text-white text-xs rounded-md px-2.5 py-2 shadow-lg border border-surface-700 max-w-[min(240px,calc(100vw-24px))]"
-      style={{ left, top }}
-      role="tooltip"
+      className={`fixed rounded-2xl text-xs text-white shadow-2xl border backdrop-blur-md transition-[box-shadow] duration-150 ${
+        pinned
+          ? 'z-[260] pointer-events-auto min-w-[260px] max-w-[min(320px,calc(100vw-24px))] border-cyan-400/25 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ring-1 ring-cyan-500/20 px-4 py-3.5'
+          : 'z-[200] pointer-events-none max-w-[min(240px,calc(100vw-24px))] border-white/10 bg-slate-900/95 px-3 py-2.5'
+      }`}
+      style={{ left, top, width: pinned ? estW : undefined }}
+      role={pinned ? 'dialog' : 'tooltip'}
+      aria-label={pinned ? 'Selected bar details' : undefined}
     >
-      <div className="font-semibold flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tooltip.color }} />
-        <span className="truncate">{tooltip.route}</span>
+      <div className={`flex items-start justify-between gap-2 ${pinned ? 'border-b border-white/10 pb-2.5 mb-2' : ''}`}>
+        <div className="min-w-0 flex-1">
+          {pinned && (
+            <p className="text-[10px] font-bold uppercase tracking-wider text-cyan-300/90 mb-1">Selected · delivery</p>
+          )}
+          <div className={`font-semibold flex items-center gap-2 ${pinned ? 'text-sm' : ''}`}>
+            <span className="w-2 h-2 rounded-full shrink-0 ring-2 ring-white/20" style={{ backgroundColor: tooltip.color }} />
+            <span className="truncate text-slate-50">{tooltip.route}</span>
+          </div>
+          <div className={`text-slate-400 font-medium ${pinned ? 'text-xs mt-1' : 'mt-1'}`}>{shortDate(tooltip.date)}</div>
+        </div>
+        {pinned && onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-100 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
+          >
+            Close
+          </button>
+        )}
       </div>
-      <div className="text-surface-200 mt-0.5">{shortDate(tooltip.date)}</div>
-      <div className="text-surface-100 mt-0.5 tabular-nums">Deliveries: {tooltip.delivered}</div>
+      <div className={`tabular-nums ${pinned ? 'rounded-xl bg-black/25 px-3 py-2.5 border border-white/5' : 'text-slate-100 mt-1'}`}>
+        <div className={`flex justify-between gap-4 ${pinned ? 'text-sm' : ''}`}>
+          <span className="text-slate-400">Delivered loads</span>
+          <span className="font-bold text-teal-200">{tooltip.delivered}</span>
+        </div>
+      </div>
+      {pinned && <p className="text-[10px] text-slate-500 mt-2 leading-snug">Press Esc or Close. Click the same bar again to clear.</p>}
     </div>
   );
 }
 
 function DeliveryTimelineChart({ timeline, loading, isDark }) {
   const [hiddenRoutes, setHiddenRoutes] = useState(new Set());
-  const [tooltip, setTooltip] = useState(null);
+  const [hoverTooltip, setHoverTooltip] = useState(null);
+  const [pinnedTooltip, setPinnedTooltip] = useState(null);
   const [exporting, setExporting] = useState(false);
   const svgRef = useRef(null);
-  if (loading) return <div className="h-72 rounded-lg bg-surface-100 animate-pulse" />;
+
+  const timelineTipKey = (t) => (t ? `${t.route}|${t.date}|${t.pointIndex}` : '');
+  const clearPinned = () => setPinnedTooltip(null);
+  if (loading) {
+    return (
+      <div className="h-72 rounded-xl border border-slate-200/60 dark:border-slate-700/50 bg-gradient-to-br from-slate-100/80 to-indigo-50/30 dark:from-slate-800/50 dark:to-slate-900/80 animate-pulse overflow-hidden">
+        <div className="h-full flex flex-col justify-end gap-2 p-4 opacity-60">
+          <div className="flex gap-1 items-end flex-1">
+            {Array.from({ length: 24 }).map((_, i) => (
+              <div key={i} className="flex-1 rounded-t-md bg-gradient-to-t from-slate-300/80 to-slate-200/40 dark:from-slate-600 dark:to-slate-700/50" style={{ height: `${20 + (i % 5) * 12}%` }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
   const dates = Array.isArray(timeline?.dates) ? timeline.dates : [];
   const routes = Array.isArray(timeline?.routes) ? timeline.routes : [];
-  if (!dates.length || !routes.length) return <div className="h-72 flex items-center justify-center text-sm text-surface-500">No delivery timeline data in the last 30 days.</div>;
+  if (!dates.length || !routes.length) {
+    return (
+      <div className="h-72 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300/80 dark:border-slate-600 bg-slate-50/80 dark:bg-slate-900/40 text-center px-4">
+        <p className="text-sm font-medium text-slate-600 dark:text-slate-300">No delivery timeline data</p>
+        <p className="text-xs text-slate-500 dark:text-slate-500 mt-1 max-w-sm">Try a longer period above, or check that approved shift reports include delivery totals for this range.</p>
+      </div>
+    );
+  }
 
   const seriesAll = routes.slice(0, 8); // keep chart readable
   const series = seriesAll.filter((r) => !hiddenRoutes.has(r.route));
@@ -1162,19 +1464,29 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
   const yMaxRaw = Math.max(1, ...(allValues.length ? allValues : [1]));
   const yMax = Math.ceil(yMaxRaw / 5) * 5;
 
-  const W = 980;
-  const H = 320;
-  const P = { t: 20, r: 24, b: 42, l: 48 };
+  const W = 1000;
+  const H = 340;
+  const P = { t: 28, r: 28, b: 52, l: 52 };
   const innerW = W - P.l - P.r;
   const innerH = H - P.t - P.b;
-  const x = (i) => P.l + (i * innerW) / Math.max(1, dates.length - 1);
+  const nDates = Math.max(1, dates.length);
+  const bandW = innerW / nDates;
+  const groupPadX = Math.min(12, bandW * 0.12);
+  const usableW = Math.max(4, bandW - 2 * groupPadX);
+  const nSeries = Math.max(1, series.length);
+  const barGap = nSeries > 5 ? 1 : 2;
+  const barW = Math.max(2.5, (usableW - (nSeries - 1) * barGap) / nSeries);
+  const xBandLeft = (i) => P.l + i * bandW + groupPadX;
+  const barLeft = (i, ri) => xBandLeft(i) + ri * (barW + barGap);
   const y = (v) => P.t + innerH - (Math.max(0, v) / yMax) * innerH;
+  const y0 = y(0);
   const colors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
   const colorByRoute = Object.fromEntries(seriesAll.map((r, i) => [r.route, colors[i % colors.length]]));
-  const chartBgTop = isDark ? '#0b1220' : '#fff7ed';
-  const chartBgBottom = isDark ? '#0f172a' : '#ffffff';
-  const gridStroke = isDark ? '#334155' : '#e5e7eb';
-  const axisText = isDark ? '#94a3b8' : '#6b7280';
+  const chartBgStops = isDark
+    ? { a: '#0b1120', b: '#111c33', c: '#0a0f1a' }
+    : { a: '#f4f7ff', b: '#fafcff', c: '#ffffff' };
+  const gridStroke = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.35)';
+  const axisText = isDark ? '#a8b9d4' : '#475569';
 
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((k) => Math.round(k * yMax));
   const shortDate = (d) => {
@@ -1206,12 +1518,12 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
         canvas.height = H;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = isDark ? chartBgStops.c : chartBgStops.c;
           ctx.fillRect(0, 0, W, H);
           ctx.drawImage(img, 0, 0, W, H);
           const a = document.createElement('a');
           a.href = canvas.toDataURL('image/png');
-          a.download = `completed-deliveries-timeline-${new Date().toISOString().slice(0, 10)}.png`;
+          a.download = `completed-deliveries-timeline-${todayYmd()}.png`;
           a.click();
         }
         URL.revokeObjectURL(blobUrl);
@@ -1228,80 +1540,136 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 pr-28 sm:pr-32">
-        <p className="text-xs text-surface-500 dark:text-surface-400 min-w-0 flex-1">Toggle routes to focus lines; hover points for details.</p>
-        <button type="button" onClick={exportPng} disabled={exporting} className="shrink-0 px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-xs font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-60">
-          {exporting ? 'Exporting...' : 'Export PNG'}
+        <p className="text-xs text-slate-600 dark:text-slate-400 min-w-0 flex-1 leading-relaxed">
+          Toggle routes to compare deliveries. Hover a bar for a quick preview, or click to pin figures (Esc or Close to dismiss).
+        </p>
+        <button
+          type="button"
+          onClick={exportPng}
+          disabled={exporting}
+          className="shrink-0 px-3.5 py-2 rounded-xl border border-slate-200/90 dark:border-slate-600 bg-white/90 dark:bg-slate-800/90 text-xs font-semibold text-slate-700 dark:text-slate-100 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-700/90 hover:border-indigo-300/60 dark:hover:border-slate-500 disabled:opacity-60 transition-colors"
+        >
+          {exporting ? 'Exporting…' : 'Export PNG'}
         </button>
       </div>
-      <div className="w-full overflow-x-auto overflow-y-visible">
-        <div className="relative min-w-[780px] min-h-[320px]">
-          <svg key={`timeline-${isDark ? 'dark' : 'light'}`} ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" onMouseLeave={() => setTooltip(null)}>
+      <div className="w-full overflow-x-auto overflow-y-visible rounded-xl ring-1 ring-slate-200/60 dark:ring-slate-700/50">
+        <div className="relative min-w-[800px] min-h-[340px] p-1 sm:p-2 bg-gradient-to-br from-white/50 to-slate-50/30 dark:from-slate-900/20 dark:to-transparent rounded-xl">
+          <svg
+            key={`timeline-${isDark ? 'dark' : 'light'}`}
+            ref={svgRef}
+            viewBox={`0 0 ${W} ${H}`}
+            className="w-full h-auto rounded-lg shadow-[0_2px_16px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_4px_24px_-6px_rgba(0,0,0,0.35)]"
+            onMouseLeave={() => setHoverTooltip(null)}
+          >
             <defs>
-              <linearGradient id="ccTimelineBg" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={chartBgTop} />
-                <stop offset="100%" stopColor={chartBgBottom} />
+              <linearGradient id="ccTimelineBg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={chartBgStops.a} />
+                <stop offset="48%" stopColor={chartBgStops.b} />
+                <stop offset="100%" stopColor={chartBgStops.c} />
               </linearGradient>
+              {series.map((route, ri) => {
+                const c = colorByRoute[route.route] || '#ef4444';
+                return (
+                  <linearGradient key={`tlg-${ri}-${route.route}`} id={`tlg-${ri}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={c} stopOpacity={isDark ? 1 : 0.98} />
+                    <stop offset="45%" stopColor={c} stopOpacity={isDark ? 0.88 : 0.9} />
+                    <stop offset="100%" stopColor={c} stopOpacity={isDark ? 0.42 : 0.52} />
+                  </linearGradient>
+                );
+              })}
             </defs>
-            <rect x="0" y="0" width={W} height={H} fill="url(#ccTimelineBg)" />
+            <rect x="0" y="0" width={W} height={H} fill="url(#ccTimelineBg)" rx="14" />
 
             {yTicks.map((tick) => (
               <g key={tick}>
-                <line x1={P.l} x2={W - P.r} y1={y(tick)} y2={y(tick)} stroke={gridStroke} strokeDasharray="4 6" />
-                <text x={P.l - 8} y={y(tick) + 4} textAnchor="end" fontSize="11" fill={axisText}>{tick}</text>
+                <line x1={P.l} x2={W - P.r} y1={y(tick)} y2={y(tick)} stroke={gridStroke} strokeDasharray="4 7" strokeOpacity={0.85} />
+                <text x={P.l - 10} y={y(tick) + 4} textAnchor="end" fontSize="11" fill={axisText} fontWeight="500">{tick}</text>
               </g>
             ))}
+            <line x1={P.l} x2={W - P.r} y1={y0} y2={y0} stroke={isDark ? 'rgba(148,163,184,0.45)' : 'rgba(100,116,139,0.4)'} strokeWidth={1.35} />
 
-            {series.map((route) => {
-              const color = colorByRoute[route.route] || '#ef4444';
-              const points = (route.points || []).map((p, i) => `${x(i)},${y(Number(p.delivered || 0))}`).join(' ');
+            {series.map((route, ri) => {
+              const strokeHi = isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.55)';
               return (
                 <g key={route.route}>
-                  <polyline fill="none" stroke={color} strokeWidth="2.6" points={points} />
-                  {(route.points || []).map((p, i) => (
-                    <circle
-                      key={`${route.route}-${i}`}
-                      cx={x(i)}
-                      cy={y(Number(p.delivered || 0))}
-                      r="4.5"
-                      fill={color}
-                      fillOpacity="0.001"
-                      onMouseEnter={(e) => {
-                        setTooltip({
-                          x: e.clientX,
-                          y: e.clientY,
-                          route: route.route,
-                          pointIndex: i,
-                          date: dates[i],
-                          delivered: Number(p.delivered || 0),
-                          color,
-                        });
-                      }}
-                      onMouseMove={(e) => {
-                        setTooltip((prev) => {
-                          if (!prev || prev.route !== route.route || prev.pointIndex !== i) return prev;
-                          return { ...prev, x: e.clientX, y: e.clientY };
-                        });
-                      }}
-                    />
-                  ))}
+                  {(route.points || []).map((p, i) => {
+                    const val = Number(p.delivered || 0);
+                    const hRaw = y0 - y(val);
+                    const h = val > 0 ? Math.max(3, hRaw) : 0;
+                    const top = y0 - h;
+                    return (
+                      <rect
+                        key={`${route.route}-${i}`}
+                        x={barLeft(i, ri)}
+                        y={top}
+                        width={barW}
+                        height={h}
+                        rx={5}
+                        ry={5}
+                        fill={`url(#tlg-${ri})`}
+                        stroke={strokeHi}
+                        strokeWidth={0.85}
+                        style={{ cursor: 'crosshair' }}
+                        onMouseEnter={(e) => {
+                          setHoverTooltip({
+                            x: e.clientX,
+                            y: e.clientY,
+                            route: route.route,
+                            pointIndex: i,
+                            date: dates[i],
+                            delivered: val,
+                            color: colorByRoute[route.route] || '#ef4444',
+                          });
+                        }}
+                        onMouseMove={(e) => {
+                          setHoverTooltip((prev) => {
+                            if (!prev || prev.route !== route.route || prev.pointIndex !== i) return prev;
+                            return { ...prev, x: e.clientX, y: e.clientY };
+                          });
+                        }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          const anchorRect = e.currentTarget.getBoundingClientRect();
+                          const payload = {
+                            x: e.clientX,
+                            y: e.clientY,
+                            anchorRect,
+                            route: route.route,
+                            pointIndex: i,
+                            date: dates[i],
+                            delivered: val,
+                            color: colorByRoute[route.route] || '#ef4444',
+                          };
+                          const k = `${payload.route}|${payload.date}|${payload.pointIndex}`;
+                          setPinnedTooltip((prev) => (timelineTipKey(prev) === k ? null : payload));
+                          setHoverTooltip(null);
+                        }}
+                      />
+                    );
+                  })}
                 </g>
               );
             })}
 
             {dates.filter((_, i) => i % 5 === 0 || i === dates.length - 1).map((d, i) => {
               const originalIdx = dates.indexOf(d);
-              return <text key={`${d}-${i}`} x={x(originalIdx)} y={H - 14} textAnchor="middle" fontSize="11" fill={axisText}>{shortDate(d)}</text>;
+              const cx = P.l + (originalIdx + 0.5) * bandW;
+              return <text key={`${d}-${i}`} x={cx} y={H - 18} textAnchor="middle" fontSize="11" fill={axisText} fontWeight="500">{shortDate(d)}</text>;
             })}
           </svg>
-          {tooltip && (
-            <TimelinePointTooltip tooltip={tooltip} shortDate={shortDate} />
-          )}
+          {pinnedTooltip &&
+            chartPopoverPortal(
+              <TimelinePointTooltip tooltip={pinnedTooltip} shortDate={shortDate} pinned onClose={clearPinned} />
+            )}
+          {!pinnedTooltip &&
+            hoverTooltip &&
+            chartPopoverPortal(<TimelinePointTooltip tooltip={hoverTooltip} shortDate={shortDate} />)}
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-2">
         {seriesAll.map((r) => {
           const hidden = hiddenRoutes.has(r.route);
           const color = colorByRoute[r.route] || '#ef4444';
@@ -1310,17 +1678,512 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
               key={r.route}
               type="button"
               onClick={() => toggleRoute(r.route)}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-left ${hidden ? 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 text-surface-400 dark:text-surface-500' : 'border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800 text-surface-700 dark:text-surface-200'}`}
-              title={hidden ? 'Show route line' : 'Hide route line'}
+              className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${
+                hidden
+                  ? 'border-slate-200/80 dark:border-slate-700 bg-white/60 dark:bg-slate-900/40 text-slate-400 dark:text-slate-500 opacity-80 hover:opacity-100'
+                  : 'border-slate-200/90 dark:border-slate-600 bg-gradient-to-b from-white to-slate-50/90 dark:from-slate-800 dark:to-slate-900 text-slate-800 dark:text-slate-100 shadow-sm ring-1 ring-slate-200/40 dark:ring-slate-600/30 hover:border-indigo-300/70 dark:hover:border-indigo-500/30'
+              }`}
+              title={hidden ? 'Show route in chart' : 'Hide route from chart'}
             >
-              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color, opacity: hidden ? 0.35 : 1 }} />
-              <span className="text-xs font-medium">{r.route}</span>
-              <span className="text-xs text-surface-500">({r.total || 0})</span>
+              <span className="w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white/50 dark:ring-slate-900/50" style={{ backgroundColor: color, opacity: hidden ? 0.35 : 1 }} />
+              <span className="text-xs font-semibold">{r.route}</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">({r.total || 0})</span>
             </button>
           );
         })}
       </div>
-      {series.length === 0 && <p className="text-xs text-surface-500 dark:text-surface-400">All routes are hidden. Enable at least one route to display lines.</p>}
+      {series.length === 0 && <p className="text-xs text-surface-500 dark:text-surface-400">All routes are hidden. Enable at least one route to display the chart.</p>}
+    </div>
+  );
+}
+
+function ForecastTooltip({ tooltip, fmtLabel, pinned, onClose }) {
+  useEffect(() => {
+    if (!pinned || !onClose) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pinned, onClose]);
+
+  const estW = pinned ? 320 : 276;
+  const estH = tooltip.kind === 'fc' ? (pinned ? 168 : 128) : pinned ? 138 : 102;
+  const fromBar = pinned && tooltip.anchorRect ? positionPopoverFromBarRect(tooltip.anchorRect, estW, estH) : null;
+  const { left, top } = fromBar || clampChartPopoverXY(tooltip.x, tooltip.y, estW, estH);
+
+  return (
+    <div
+      className={`fixed text-xs text-white shadow-2xl border backdrop-blur-md rounded-2xl ${
+        pinned
+          ? 'z-[260] pointer-events-auto w-[min(320px,calc(100vw-24px))] border-fuchsia-400/25 bg-gradient-to-br from-violet-950 via-slate-950 to-violet-950 ring-1 ring-violet-400/25 px-4 py-3.5'
+          : 'z-[200] pointer-events-none max-w-[min(280px,calc(100vw-24px))] border-white/10 bg-violet-950/95 px-3 py-2.5'
+      }`}
+      style={{ left, top }}
+      role={pinned ? 'dialog' : 'tooltip'}
+      aria-label={pinned ? 'Selected forecast point' : undefined}
+    >
+      <div className={`flex items-start justify-between gap-2 ${pinned ? 'border-b border-white/10 pb-2.5 mb-2' : ''}`}>
+        <div className="min-w-0">
+          {pinned && (
+            <p className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-300/90 mb-1">
+              {tooltip.kind === 'fc' ? 'Selected · forecast' : 'Selected · actual'}
+            </p>
+          )}
+          <div className={`font-bold text-violet-100 ${pinned ? 'text-sm' : ''}`}>{fmtLabel(tooltip.date)}</div>
+        </div>
+        {pinned && onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-100 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-fuchsia-400/40"
+          >
+            Close
+          </button>
+        )}
+      </div>
+      <div className={`space-y-2 tabular-nums ${pinned ? 'rounded-xl bg-black/30 px-3 py-2.5 border border-white/5' : 'text-violet-200/90 mt-1.5 space-y-0.5'}`}>
+        <div className="flex justify-between gap-3 text-[11px] sm:text-xs">
+          <span className="text-violet-300/90">Deliveries</span>
+          <span className="font-semibold text-violet-50">
+            {tooltip.delivered.toFixed(tooltip.kind === 'fc' ? 1 : 0)}
+            {tooltip.kind === 'fc' && tooltip.delLo != null && (
+              <span className="text-violet-300/80 font-normal"> ({tooltip.delLo.toFixed(0)}–{tooltip.delHi.toFixed(0)})</span>
+            )}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3 text-[11px] sm:text-xs">
+          <span className="text-fuchsia-300/90">Throughput</span>
+          <span className="font-semibold text-fuchsia-100">
+            {tooltip.productivity.toFixed(2)} <span className="text-fuchsia-300/70 font-normal">loads / report</span>
+            {tooltip.kind === 'fc' && tooltip.prLo != null && (
+              <span className="text-fuchsia-200/70 font-normal"> ({tooltip.prLo.toFixed(2)}–{tooltip.prHi.toFixed(2)})</span>
+            )}
+          </span>
+        </div>
+      </div>
+      {tooltip.kind === 'fc' && (
+        <p className={`text-[10px] text-violet-300/70 leading-snug ${pinned ? 'mt-2' : 'mt-2'}`}>
+          Forecast interval from recent volatility; not a performance target.
+        </p>
+      )}
+      {pinned && (
+        <p className="text-[10px] text-slate-500 mt-2 leading-snug">Esc or Close · click the same bar again to clear.</p>
+      )}
+    </div>
+  );
+}
+
+function DeliveryForecastChart({ deliveryTimeline, shiftReports, loading, isDark }) {
+  const [horizon, setHorizon] = useState('week');
+  const [hoverTooltip, setHoverTooltip] = useState(null);
+  const [pinnedTooltip, setPinnedTooltip] = useState(null);
+
+  const forecastPinKey = (t) => (t && t.date != null && t.kind != null ? `${t.date}|${t.kind}` : '');
+
+  const forecast = useMemo(() => {
+    if (loading || !deliveryTimeline?.dates?.length) return null;
+    try {
+      return buildDeskForecast({
+        timeline: deliveryTimeline,
+        shiftReports: shiftReports || [],
+        horizon,
+      });
+    } catch {
+      return null;
+    }
+  }, [deliveryTimeline, shiftReports, horizon, loading]);
+
+  const chartRows = useMemo(() => {
+    if (!forecast) return null;
+    if (forecast.mode === 'year') {
+      const hist = forecast.monthlyHistory.slice(-8);
+      const fcM = forecast.forecastMonths || [];
+      const rows = [];
+      hist.forEach((m) => {
+        rows.push({
+          kind: 'hist',
+          date: `${m.month}-01`,
+          label: m.month,
+          delivered: m.delivered,
+          delLo: null,
+          delHi: null,
+          productivity: m.productivity,
+          prLo: null,
+          prHi: null,
+        });
+      });
+      for (let i = 0; i < fcM.length; i++) {
+        rows.push({
+          kind: 'fc',
+          date: `${fcM[i]}-01`,
+          label: fcM[i],
+          delivered: forecast.deliveries.point[i] ?? 0,
+          delLo: forecast.deliveries.low[i] ?? 0,
+          delHi: forecast.deliveries.high[i] ?? 0,
+          productivity: forecast.productivity.point[i] ?? 0,
+          prLo: forecast.productivity.low[i] ?? 0,
+          prHi: forecast.productivity.high[i] ?? 0,
+        });
+      }
+      return { rows, splitIndex: hist.length, mode: 'year' };
+    }
+    const histN = horizon === 'week' ? 14 : 21;
+    const hist = forecast.daily.slice(-histN);
+    const fcDates = forecast.forecastDates || [];
+    const rows = [];
+    hist.forEach((d) => {
+      rows.push({
+        kind: 'hist',
+        date: d.date,
+        label: d.date,
+        delivered: d.delivered,
+        delLo: null,
+        delHi: null,
+        productivity: d.productivity,
+        prLo: null,
+        prHi: null,
+      });
+    });
+    fcDates.forEach((date, i) => {
+      rows.push({
+        kind: 'fc',
+        date,
+        label: date,
+        delivered: forecast.deliveries.point[i] ?? 0,
+        delLo: forecast.deliveries.low[i] ?? 0,
+        delHi: forecast.deliveries.high[i] ?? 0,
+        productivity: forecast.productivity.point[i] ?? 0,
+        prLo: forecast.productivity.low[i] ?? 0,
+        prHi: forecast.productivity.high[i] ?? 0,
+      });
+    });
+    return { rows, splitIndex: hist.length, mode: forecast.mode };
+  }, [forecast, horizon]);
+
+  if (loading) {
+    return (
+      <div className="h-80 rounded-xl border border-violet-200/50 dark:border-violet-900/40 bg-gradient-to-br from-violet-100/50 to-fuchsia-50/30 dark:from-slate-800/50 dark:to-violet-950/40 animate-pulse" />
+    );
+  }
+
+  if (!forecast || !chartRows?.rows?.length) {
+    return (
+      <div className="h-64 flex flex-col items-center justify-center rounded-xl border border-dashed border-violet-300/60 dark:border-violet-800/50 bg-violet-50/30 dark:bg-slate-900/40 text-center px-4">
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Not enough history to forecast</p>
+        <p className="text-xs text-slate-500 dark:text-slate-500 mt-1 max-w-md">Load approved shift reports with delivery totals, or widen the completed-deliveries period above.</p>
+      </div>
+    );
+  }
+
+  const { rows, splitIndex } = chartRows;
+  const W = 1000;
+  const H = 400;
+  const P = { t: 36, r: 58, b: 58, l: 56 };
+  const innerW = W - P.l - P.r;
+  const innerH = H - P.t - P.b;
+  const n = rows.length;
+  const bandW = innerW / Math.max(1, n);
+  const barW = Math.max(3, Math.min(22, bandW * 0.55));
+  const xCenter = (i) => P.l + (i + 0.5) * bandW;
+
+  let yMaxDel = 1;
+  let yMaxPr = 1;
+  rows.forEach((r) => {
+    yMaxDel = Math.max(yMaxDel, r.delivered, r.delHi ?? 0);
+    yMaxPr = Math.max(yMaxPr, r.productivity, r.prHi ?? 0);
+  });
+  yMaxDel = Math.ceil(yMaxDel / 5) * 5;
+  yMaxPr = Math.ceil(yMaxPr * 10) / 10 || 1;
+
+  const yDel = (v) => P.t + innerH - (Math.max(0, v) / yMaxDel) * innerH;
+  const yPr = (v) => P.t + innerH - (Math.max(0, v) / yMaxPr) * innerH;
+  const y0d = yDel(0);
+
+  const fmtLabel = (d) => {
+    if (chartRows.mode === 'year') {
+      const s = String(d || '').slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(s)) {
+        const dt = new Date(`${s}-01T12:00:00`);
+        return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+      }
+    }
+    return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
+  const fcIndices = rows.map((_, i) => i).filter((i) => rows[i].kind === 'fc');
+  const deliveryRibbonD = (() => {
+    if (!fcIndices.length) return '';
+    const hiPts = fcIndices.map((i) => `${xCenter(i).toFixed(1)},${yDel(rows[i].delHi ?? rows[i].delivered).toFixed(1)}`);
+    const loPts = fcIndices.map((i) => `${xCenter(i).toFixed(1)},${yDel(rows[i].delLo ?? rows[i].delivered).toFixed(1)}`);
+    return `M ${hiPts.join(' L ')} L ${[...loPts].reverse().join(' L ')} Z`;
+  })();
+
+  const lineMidDel = fcIndices.length
+    ? `M ${fcIndices.map((i) => `${xCenter(i).toFixed(1)},${yDel(rows[i].delivered).toFixed(1)}`).join(' L ')}`
+    : '';
+  const lastHistIdx = Math.max(0, splitIndex - 1);
+  const bridgeDel =
+    splitIndex > 0 && fcIndices.length
+      ? `M ${xCenter(lastHistIdx).toFixed(1)},${yDel(rows[lastHistIdx].delivered).toFixed(1)} L ${xCenter(fcIndices[0]).toFixed(1)},${yDel(rows[fcIndices[0]].delivered).toFixed(1)}`
+      : '';
+
+  const linePrHist = rows
+    .map((r, i) => (r.kind === 'hist' ? `${xCenter(i).toFixed(1)},${yPr(r.productivity).toFixed(1)}` : null))
+    .filter(Boolean);
+  const linePrHistPath = linePrHist.length > 1 ? `M ${linePrHist.join(' L ')}` : '';
+
+  const linePrFc = fcIndices.length
+    ? `M ${splitIndex > 0 ? `${xCenter(lastHistIdx).toFixed(1)},${yPr(rows[lastHistIdx].productivity).toFixed(1)} L ` : ''}${fcIndices.map((i) => `${xCenter(i).toFixed(1)},${yPr(rows[i].productivity).toFixed(1)}`).join(' L ')}`
+    : '';
+
+  const gridStroke = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(139,92,246,0.18)';
+  const axisText = isDark ? '#c4b5fd' : '#5b21b6';
+  const chartBg = isDark
+    ? { a: '#0c0518', b: '#1a1033', c: '#0f0a1c' }
+    : { a: '#faf5ff', b: '#ffffff', c: '#fdf4ff' };
+  const splitX = splitIndex > 0 ? xCenter(splitIndex - 0.5) : P.l;
+
+  const yTicksDel = [0, 0.25, 0.5, 0.75, 1].map((k) => Math.round(k * yMaxDel));
+  const yTicksPr = [0, 0.25, 0.5, 0.75, 1].map((k) => Math.round(k * yMaxPr * 10) / 10);
+
+  const showHoverTooltip = (e, row) => {
+    setHoverTooltip({
+      x: e.clientX,
+      y: e.clientY,
+      date: row.label,
+      kind: row.kind,
+      delivered: row.delivered,
+      delLo: row.delLo,
+      delHi: row.delHi,
+      productivity: row.productivity,
+      prLo: row.prLo,
+      prHi: row.prHi,
+    });
+  };
+
+  const onForecastBarClick = (e, row) => {
+    e.preventDefault();
+    const anchorRect = e.currentTarget.getBoundingClientRect();
+    const payload = {
+      x: e.clientX,
+      y: e.clientY,
+      anchorRect,
+      date: row.label,
+      kind: row.kind,
+      delivered: row.delivered,
+      delLo: row.delLo,
+      delHi: row.delHi,
+      productivity: row.productivity,
+      prLo: row.prLo,
+      prHi: row.prHi,
+    };
+    const k = forecastPinKey(payload);
+    setPinnedTooltip((prev) => (forecastPinKey(prev) === k ? null : payload));
+    setHoverTooltip(null);
+  };
+
+  const step = chartRows.mode === 'year' ? 2 : Math.max(1, Math.floor(n / 10));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        {[
+          { id: 'week', label: 'Next week' },
+          { id: 'month', label: 'Next month' },
+          { id: 'year', label: 'Next year' },
+        ].map((h) => (
+          <button
+            key={h.id}
+            type="button"
+            onClick={() => setHorizon(h.id)}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
+              horizon === h.id
+                ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white border-transparent shadow-md'
+                : 'bg-white/80 dark:bg-slate-800/80 border-violet-200/80 dark:border-violet-800/60 text-slate-700 dark:text-slate-200 hover:border-violet-400/60'
+            }`}
+          >
+            {h.label}
+          </button>
+        ))}
+        <span className="text-[11px] text-slate-500 dark:text-slate-400 ml-auto">
+          Training: {forecast.meta.trainingDays}d · {forecast.deliveries.method?.replace(/_/g, ' ')}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+        {(() => {
+          const sumDel = (forecast.deliveries.point || []).reduce((s, x) => s + x, 0);
+          const avgPr =
+            (forecast.productivity.point || []).reduce((s, x) => s + x, 0) / Math.max(1, (forecast.productivity.point || []).length);
+          return (
+            <>
+              <div className="rounded-xl border border-violet-200/70 dark:border-violet-800/50 bg-white/70 dark:bg-slate-900/60 px-3 py-2.5">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-violet-600/80 dark:text-violet-300/90">Σ projected deliveries</p>
+                <p className="text-lg font-bold text-slate-900 dark:text-white tabular-nums">{sumDel.toFixed(0)}</p>
+              </div>
+              <div className="rounded-xl border border-fuchsia-200/70 dark:border-fuchsia-900/40 bg-white/70 dark:bg-slate-900/60 px-3 py-2.5">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700/80 dark:text-fuchsia-300/90">Avg throughput</p>
+                <p className="text-lg font-bold text-slate-900 dark:text-white tabular-nums">{avgPr.toFixed(2)}</p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">loads / approved report</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white/70 dark:bg-slate-900/60 px-3 py-2.5 col-span-2 sm:col-span-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Model</p>
+                <p className="text-xs text-slate-700 dark:text-slate-300 leading-snug">{forecast.meta.description}</p>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+
+      <div className="w-full overflow-x-auto rounded-xl ring-1 ring-violet-200/50 dark:ring-violet-900/40">
+        <div className="relative min-w-[820px] min-h-[400px] p-1 sm:p-2">
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto rounded-lg" onMouseLeave={() => setHoverTooltip(null)}>
+            <defs>
+              <linearGradient id="ccFcBg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={chartBg.a} />
+                <stop offset="50%" stopColor={chartBg.b} />
+                <stop offset="100%" stopColor={chartBg.c} />
+              </linearGradient>
+              <linearGradient id="ccFcRibbon" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#8b5cf6" stopOpacity={isDark ? 0.45 : 0.35} />
+                <stop offset="100%" stopColor="#c026d3" stopOpacity={isDark ? 0.12 : 0.08} />
+              </linearGradient>
+              <linearGradient id="ccFcBar" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#7c3aed" />
+                <stop offset="100%" stopColor="#6d28d9" />
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width={W} height={H} fill="url(#ccFcBg)" rx="14" />
+            <rect x={P.l} y={P.t} width={innerW} height={innerH} fill={isDark ? 'rgba(15,23,42,0.35)' : 'rgba(255,255,255,0.45)'} rx="10" />
+
+            <line x1={splitX} x2={splitX} y1={P.t} y2={y0d} stroke={isDark ? 'rgba(196,181,253,0.35)' : 'rgba(109,40,217,0.25)'} strokeDasharray="6 5" strokeWidth={1.2} />
+            <text x={splitX - 6} y={P.t + 12} textAnchor="end" fontSize="10" fill={axisText} fontWeight="700" opacity={0.85}>ACTUAL</text>
+            <text x={splitX + 6} y={P.t + 12} textAnchor="start" fontSize="10" fill={axisText} fontWeight="700" opacity={0.85}>FORECAST</text>
+
+            {yTicksDel.map((tick) => (
+              <g key={`d-${tick}`}>
+                <line x1={P.l} x2={W - P.r} y1={yDel(tick)} y2={yDel(tick)} stroke={gridStroke} strokeDasharray="4 6" />
+                <text x={P.l - 8} y={yDel(tick) + 4} textAnchor="end" fontSize="10" fill={axisText} fontWeight="600">{tick}</text>
+              </g>
+            ))}
+            {yTicksPr.map((tick) => (
+              <g key={`p-${tick}`}>
+                <text x={W - P.r + 8} y={yPr(tick) + 4} textAnchor="start" fontSize="10" fill={isDark ? '#f0abfc' : '#a21caf'} fontWeight="600">{tick}</text>
+              </g>
+            ))}
+            <text x={P.l - 44} y={P.t + innerH / 2} textAnchor="middle" fontSize="10" fill={axisText} fontWeight="700" transform={`rotate(-90,${P.l - 44},${P.t + innerH / 2})`}>Deliveries</text>
+            <text x={W - 12} y={P.t + innerH / 2} textAnchor="middle" fontSize="10" fill={isDark ? '#f0abfc' : '#a21caf'} fontWeight="700" transform={`rotate(90,${W - 12},${P.t + innerH / 2})`}>Loads / report</text>
+
+            <line x1={P.l} x2={W - P.r} y1={y0d} y2={y0d} stroke={isDark ? 'rgba(148,163,184,0.4)' : 'rgba(100,116,139,0.35)'} strokeWidth={1.2} />
+
+            {deliveryRibbonD && (
+              <path d={deliveryRibbonD} fill="url(#ccFcRibbon)" opacity={0.95} style={{ pointerEvents: 'none' }} />
+            )}
+            {rows.map((row, i) => {
+              if (row.kind === 'hist') {
+                const h = y0d - yDel(row.delivered);
+                const top = yDel(row.delivered);
+                return (
+                  <rect
+                    key={`h-${i}`}
+                    x={xCenter(i) - barW / 2}
+                    y={top}
+                    width={barW}
+                    height={Math.max(0, h)}
+                    rx={4}
+                    fill="url(#ccFcBar)"
+                    fillOpacity={0.85}
+                    stroke={isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.5)'}
+                    strokeWidth={0.6}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => showHoverTooltip(e, row)}
+                    onMouseMove={(e) => setHoverTooltip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev))}
+                    onClick={(e) => onForecastBarClick(e, row)}
+                  />
+                );
+              }
+              return (
+                <g key={`f-${i}`}>
+                  <rect
+                    x={xCenter(i) - bandW * 0.45}
+                    y={P.t}
+                    width={bandW * 0.9}
+                    height={innerH}
+                    fill="transparent"
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => showHoverTooltip(e, row)}
+                    onMouseMove={(e) => setHoverTooltip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev))}
+                    onClick={(e) => onForecastBarClick(e, row)}
+                  />
+                  <line
+                    x1={xCenter(i) - barW * 0.28}
+                    x2={xCenter(i) + barW * 0.28}
+                    y1={yDel(row.delivered)}
+                    y2={yDel(row.delivered)}
+                    stroke="#5b21b6"
+                    strokeWidth={2.4}
+                    strokeLinecap="round"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                </g>
+              );
+            })}
+
+            {linePrHistPath && (
+              <path d={linePrHistPath} fill="none" stroke={isDark ? '#f9a8d4' : '#db2777'} strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round" opacity={0.92} style={{ pointerEvents: 'none' }} />
+            )}
+            {linePrFc && (
+              <path
+                d={linePrFc}
+                fill="none"
+                stroke={isDark ? '#f472b6' : '#be185d'}
+                strokeWidth={2.2}
+                strokeDasharray="7 5"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                opacity={0.95}
+                style={{ pointerEvents: 'none' }}
+              />
+            )}
+
+            {bridgeDel && (
+              <path d={bridgeDel} fill="none" stroke="#7c3aed" strokeWidth={1.8} strokeDasharray="5 4" opacity={0.65} />
+            )}
+            {lineMidDel && (
+              <path d={lineMidDel} fill="none" stroke="#6d28d9" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" opacity={0.75} style={{ pointerEvents: 'none' }} />
+            )}
+
+            {rows.map((row, i) => {
+              if (i % step !== 0 && i !== n - 1) return null;
+              return (
+                <text key={`lx-${i}`} x={xCenter(i)} y={H - 18} textAnchor="middle" fontSize="10" fill={axisText} fontWeight="600">
+                  {fmtLabel(chartRows.mode === 'year' ? row.label : row.date)}
+                </text>
+              );
+            })}
+          </svg>
+          {pinnedTooltip &&
+            chartPopoverPortal(
+              <ForecastTooltip tooltip={pinnedTooltip} fmtLabel={fmtLabel} pinned onClose={() => setPinnedTooltip(null)} />
+            )}
+          {!pinnedTooltip &&
+            hoverTooltip &&
+            chartPopoverPortal(<ForecastTooltip tooltip={hoverTooltip} fmtLabel={fmtLabel} />)}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-4 text-[11px] text-slate-600 dark:text-slate-400">
+        <span className="inline-flex items-center gap-2">
+          <span className="w-3 h-3 rounded-sm bg-violet-600 opacity-85" /> Actual deliveries
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="w-3 h-3 rounded-sm bg-violet-300/80 border border-violet-500/40" /> Forecast deliveries + band
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="w-5 h-0.5 bg-pink-600" style={{ opacity: 0.85 }} /> Throughput (solid actual, dashed forecast)
+        </span>
+      </div>
     </div>
   );
 }
@@ -2700,13 +3563,219 @@ function TabSavedReports() {
   );
 }
 
+/** Polished bar chart for Trends → loads delivered per day (single series). */
+function TrendsDeliveredBarChart({ timeSeries, maxDelivered }) {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+  const [hoverTip, setHoverTip] = useState(null);
+  const [pinnedTip, setPinnedTip] = useState(null);
+
+  const trendsPinKey = (t) => (t?.date != null ? String(t.date).slice(0, 10) : '');
+
+  useEffect(() => {
+    if (!pinnedTip) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setPinnedTip(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pinnedTip]);
+  const n = Math.max(1, timeSeries.length);
+  const W = 960;
+  const H = 300;
+  const P = { t: 26, r: 24, b: 56, l: 50 };
+  const innerW = W - P.l - P.r;
+  const innerH = H - P.t - P.b;
+  const band = innerW / n;
+  const pad = Math.min(10, band * 0.18);
+  const barW = Math.max(4, band - 2 * pad);
+  const yCap = Math.max(maxDelivered * 1.06, 1);
+  const y = (v) => P.t + innerH - (Math.max(0, v) / yCap) * innerH;
+  const y0 = y(0);
+  const gridStroke = isDark ? 'rgba(100,116,139,0.2)' : 'rgba(148,163,184,0.45)';
+  const axis = isDark ? '#94a3b8' : '#475569';
+  const label = (d) => {
+    try {
+      return new Date(`${String(d.date).slice(0, 10)}T12:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch {
+      return String(d.date || '').slice(5);
+    }
+  };
+  const ticks = 4;
+  const tickVals = Array.from({ length: ticks + 1 }, (_, i) => Math.round((yCap * i) / ticks));
+
+  return (
+    <div className="relative">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">Loads delivered</h3>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5 max-w-xl">
+            Daily totals from approved shift reports in your selected range. Hover for a preview, or click a bar to pin the figures.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-teal-200/80 dark:border-teal-800/50 bg-teal-50/80 dark:bg-teal-950/40 px-3 py-1.5 text-xs font-semibold text-teal-900 dark:text-teal-200">
+          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-gradient-to-br from-teal-400 to-cyan-500 shadow-[0_0_8px_rgba(45,212,191,0.5)]" aria-hidden />
+          <span>Delivered loads</span>
+        </div>
+      </div>
+      <div className="relative overflow-hidden rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-gradient-to-br from-white via-slate-50/50 to-teal-50/25 dark:from-slate-900 dark:via-slate-900/90 dark:to-teal-950/20 p-4 sm:p-6 shadow-[0_12px_40px_-16px_rgba(15,23,42,0.15)] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.5)]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_0%_100%,rgba(20,184,166,0.07),transparent_55%)] dark:bg-[radial-gradient(ellipse_70%_45%_at_100%_0%,rgba(45,212,191,0.08),transparent_50%)]" aria-hidden />
+        <svg viewBox={`0 0 ${W} ${H}`} className="relative w-full min-w-[640px] h-auto" onMouseLeave={() => setHoverTip(null)}>
+          <defs>
+            <linearGradient id="trendBarFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={isDark ? '#5eead4' : '#14b8a6'} stopOpacity={isDark ? 1 : 0.98} />
+              <stop offset="55%" stopColor={isDark ? '#2dd4bf' : '#0d9488'} stopOpacity={isDark ? 0.92 : 0.95} />
+              <stop offset="100%" stopColor={isDark ? '#0f766e' : '#0f766e'} stopOpacity={isDark ? 0.5 : 0.85} />
+            </linearGradient>
+            <linearGradient id="trendChartBg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={isDark ? '#0f172a' : '#f8fafc'} />
+              <stop offset="42%" stopColor={isDark ? '#0c1526' : '#f1f5f9'} />
+              <stop offset="100%" stopColor={isDark ? '#020617' : '#ecfdf5'} />
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width={W} height={H} fill="url(#trendChartBg)" rx="16" />
+          {tickVals.map((tv) => (
+            <g key={tv}>
+              <line x1={P.l} x2={W - P.r} y1={y(tv)} y2={y(tv)} stroke={gridStroke} strokeDasharray="3 6" strokeOpacity={0.9} />
+              <text x={P.l - 8} y={y(tv) + 4} textAnchor="end" fontSize="11" fill={axis} fontWeight="500">{tv}</text>
+            </g>
+          ))}
+          <line x1={P.l} x2={W - P.r} y1={y0} y2={y0} stroke={gridStroke} strokeWidth={1.2} />
+          {timeSeries.map((d, i) => {
+            const v = Number(d.loads_delivered || 0);
+            const h = v > 0 ? Math.max(4, y0 - y(v)) : 0;
+            const top = y0 - h;
+            const x = P.l + i * band + pad;
+            const cx = x + barW / 2;
+            return (
+              <g key={`${d.date}-${i}`}>
+                <rect
+                  x={x}
+                  y={top}
+                  width={barW}
+                  height={h}
+                  rx={6}
+                  ry={6}
+                  fill="url(#trendBarFill)"
+                  stroke={isDark ? 'rgba(45,212,191,0.35)' : 'rgba(13,148,136,0.4)'}
+                  strokeWidth={1}
+                  className="transition-[opacity,transform] duration-200 hover:opacity-95"
+                  style={{ transformOrigin: `${cx}px ${y0}px`, cursor: 'pointer' }}
+                  onMouseEnter={(e) => {
+                    setHoverTip({
+                      x: e.clientX,
+                      y: e.clientY,
+                      date: d.date,
+                      loads: v,
+                      reports: d.report_count ?? 0,
+                      incidents: d.incidents ?? 0,
+                    });
+                  }}
+                  onMouseMove={(e) => setHoverTip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev))}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    const anchorRect = e.currentTarget.getBoundingClientRect();
+                    const payload = {
+                      x: e.clientX,
+                      y: e.clientY,
+                      anchorRect,
+                      date: d.date,
+                      loads: v,
+                      reports: d.report_count ?? 0,
+                      incidents: d.incidents ?? 0,
+                    };
+                    const k = trendsPinKey(payload);
+                    setPinnedTip((prev) => (trendsPinKey(prev) === k ? null : payload));
+                    setHoverTip(null);
+                  }}
+                />
+                {v > 0 && h > 22 && (
+                  <text x={cx} y={top - 6} textAnchor="middle" fontSize="10" fontWeight="700" fill={axis} className="tabular-nums">
+                    {v}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+          {timeSeries.map((d, i) => {
+            if (n > 24 && i % 3 !== 0 && i !== n - 1) return null;
+            const cx = P.l + i * band + pad + barW / 2;
+            return (
+              <text key={`lbl-${d.date}-${i}`} x={cx} y={H - 18} textAnchor="middle" fontSize="10" fill={axis} fontWeight="500">
+                {label(d)}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+      {(() => {
+        const tip = pinnedTip || hoverTip;
+        if (!tip) return null;
+        const pinned = !!pinnedTip;
+        const estW = pinned ? 300 : 252;
+        const estH = pinned ? 168 : 96;
+        const fromBar = pinned && tip.anchorRect ? positionPopoverFromBarRect(tip.anchorRect, estW, estH) : null;
+        const { left, top } = fromBar || clampChartPopoverXY(tip.x, tip.y, estW, estH);
+        return chartPopoverPortal(
+          <div
+            className={`fixed text-xs text-white shadow-2xl border backdrop-blur-md rounded-2xl ${
+              pinned
+                ? 'z-[260] pointer-events-auto w-[min(300px,calc(100vw-24px))] border-teal-400/30 bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950/40 ring-1 ring-teal-500/20 px-4 py-3.5'
+                : 'z-[200] pointer-events-none max-w-[min(252px,calc(100vw-24px))] border-white/10 bg-slate-900/95 px-3 py-2.5'
+            }`}
+            style={{ left, top }}
+            role={pinned ? 'dialog' : 'tooltip'}
+            aria-label={pinned ? 'Selected day — loads delivered' : undefined}
+          >
+            <div className={`flex items-start justify-between gap-2 ${pinned ? 'border-b border-white/10 pb-2.5 mb-2' : ''}`}>
+              <div>
+                {pinned && (
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-teal-300/90 mb-1">Selected · day</p>
+                )}
+                <div className={`font-bold text-teal-200 tabular-nums ${pinned ? 'text-base' : 'font-semibold'}`}>
+                  {String(tip.date).slice(0, 10)}
+                </div>
+                {pinned && (
+                  <p className="text-[11px] text-slate-400 mt-1">Approved shift reports in range</p>
+                )}
+              </div>
+              {pinned && (
+                <button
+                  type="button"
+                  onClick={() => setPinnedTip(null)}
+                  className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-100 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-teal-400/40"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+            <div className={`space-y-2 tabular-nums ${pinned ? 'rounded-xl bg-black/30 px-3 py-2.5 border border-white/5' : ''}`}>
+              <div className="flex justify-between gap-4">
+                <span className="text-slate-400">Loads delivered</span>
+                <span className={`font-bold text-white ${pinned ? 'text-lg' : ''}`}>{tip.loads}</span>
+              </div>
+              <div className="flex justify-between gap-4 text-[11px] text-slate-300">
+                <span>Shift reports</span>
+                <span className="font-semibold text-slate-100">{tip.reports}</span>
+              </div>
+              <div className="flex justify-between gap-4 text-[11px] text-slate-300">
+                <span>Incidents recorded</span>
+                <span className="font-semibold text-slate-100">{tip.incidents}</span>
+              </div>
+            </div>
+            {pinned && (
+              <p className="text-[10px] text-slate-500 mt-2 leading-snug">Esc or Close · click the same bar again to clear.</p>
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 function TabTrends() {
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
-  });
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dateFrom, setDateFrom] = useState(() => addCalendarDays(todayYmd(), -30));
+  const [dateTo, setDateTo] = useState(() => todayYmd());
   const [route, setRoute] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2750,97 +3819,94 @@ function TabTrends() {
         </p>
       </CollapsibleSectionHelp>
 
-      <div className="flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-xs font-medium text-surface-500 mb-1">From</label>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+      <div className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-gradient-to-r from-white via-slate-50/40 to-indigo-50/20 dark:from-slate-900 dark:via-slate-900/80 dark:to-indigo-950/20 p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-wrap gap-3 sm:gap-4 items-end">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">From</label>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-inner focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">To</label>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-inner focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400" />
+          </div>
+          <div className="min-w-0 flex-1 sm:flex-initial sm:min-w-[180px]">
+            <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Route</label>
+            <select value={route} onChange={(e) => setRoute(e.target.value)} className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400">
+              <option value="">All routes</option>
+              {routeOptions.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
+          <button type="button" onClick={loadTrends} disabled={loading} className="px-5 py-2.5 text-sm font-semibold rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md hover:from-indigo-500 hover:to-violet-500 disabled:opacity-50 transition-all">
+            Apply
+          </button>
         </div>
-        <div>
-          <label className="block text-xs font-medium text-surface-500 mb-1">To</label>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-surface-500 mb-1">Route</label>
-          <select value={route} onChange={(e) => setRoute(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[160px]">
-            <option value="">All routes</option>
-            {routeOptions.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
-        </div>
-        <button type="button" onClick={loadTrends} disabled={loading} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Apply</button>
       </div>
 
       {error && (
-        <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-3 flex justify-between items-center">
-          {error}
-          <button type="button" onClick={() => setError('')}>Dismiss</button>
+        <div className="rounded-xl bg-gradient-to-r from-red-50 to-amber-50/30 dark:from-red-950/40 dark:to-slate-900 border border-red-200/80 dark:border-red-900/50 text-red-900 dark:text-red-200 text-sm px-4 py-3 flex justify-between items-center gap-3">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} className="shrink-0 text-sm font-semibold text-red-700 dark:text-red-300 hover:underline">Dismiss</button>
         </div>
       )}
 
       {loading ? (
-        <p className="text-surface-500 py-8">Loading trends…</p>
+        <div className="flex flex-col items-center justify-center py-16 rounded-2xl border border-slate-200/60 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40">
+          <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-500 dark:text-slate-400 text-sm mt-4 font-medium">Loading trends…</p>
+        </div>
       ) : !data ? null : (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Shift reports</p>
-              <p className="text-2xl font-bold text-surface-900 mt-1">{summary.report_count ?? 0}</p>
-            </div>
-            <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Loads delivered</p>
-              <p className="text-2xl font-bold text-surface-900 mt-1">{summary.total_loads_delivered ?? 0}</p>
-            </div>
-            <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Incidents</p>
-              <p className="text-2xl font-bold text-surface-900 mt-1">{summary.total_incidents ?? 0}</p>
-            </div>
-            <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Avg loads/report</p>
-              <p className="text-2xl font-bold text-surface-900 mt-1">{summary.avg_loads_delivered_per_report ?? 0}</p>
-            </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+            {[
+              { label: 'Shift reports', value: summary.report_count ?? 0, accent: 'from-sky-400/20 via-sky-500/10 to-transparent', ring: 'ring-sky-500/10' },
+              { label: 'Loads delivered', value: summary.total_loads_delivered ?? 0, accent: 'from-teal-400/20 via-emerald-500/10 to-transparent', ring: 'ring-teal-500/10' },
+              { label: 'Incidents', value: summary.total_incidents ?? 0, accent: 'from-amber-400/25 via-orange-500/10 to-transparent', ring: 'ring-amber-500/10' },
+              { label: 'Avg loads/report', value: summary.avg_loads_delivered_per_report ?? 0, accent: 'from-violet-400/20 via-purple-500/10 to-transparent', ring: 'ring-violet-500/10' },
+            ].map((k) => (
+              <div
+                key={k.label}
+                className={`relative overflow-hidden rounded-2xl border border-slate-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-900/80 p-4 shadow-sm ring-1 ${k.ring} dark:ring-white/5`}
+              >
+                <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${k.accent}`} aria-hidden />
+                <p className="relative text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{k.label}</p>
+                <p className="relative text-2xl font-bold bg-gradient-to-br from-slate-900 to-slate-700 dark:from-white dark:to-slate-200 bg-clip-text text-transparent mt-1 tabular-nums">{k.value}</p>
+              </div>
+            ))}
           </div>
 
           {timeSeries.length > 0 && (
-            <section className="rounded-2xl border border-surface-200 bg-white p-6 shadow-sm">
-              <h3 className="font-semibold text-surface-900 mb-4">Loads delivered over time</h3>
-              <div className="flex items-end gap-1 h-48">
-                {timeSeries.map((d) => (
-                  <div key={d.date} className="flex-1 flex flex-col items-center gap-1" title={`${d.date}: ${d.loads_delivered || 0}`}>
-                    <div className="w-full flex flex-col justify-end flex-1 min-h-[4px]">
-                      <div className="w-full bg-brand-600 rounded-t transition-all" style={{ height: `${Math.max(4, ((d.loads_delivered || 0) / maxDelivered) * 100)}%` }} />
-                    </div>
-                    <span className="text-xs text-surface-500 truncate max-w-full rotate-0 sm:-rotate-45 origin-top-left">{d.date.slice(5)}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
+            <div className="rounded-2xl">
+              <TrendsDeliveredBarChart timeSeries={timeSeries} maxDelivered={maxDelivered} />
+            </div>
           )}
 
           {byRoute.length > 0 && (
-            <section className="rounded-2xl border border-surface-200 bg-white p-6 shadow-sm">
-              <h3 className="font-semibold text-surface-900 mb-4">Reports by route</h3>
-              <div className="space-y-2">
+            <section className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-gradient-to-br from-white to-slate-50/80 dark:from-slate-900 dark:to-slate-950/80 p-6 shadow-sm overflow-hidden">
+              <h3 className="font-bold text-slate-900 dark:text-white mb-1">Reports by route</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">Volume of approved shift reports per route in this period.</p>
+              <div className="space-y-3">
                 {byRoute.slice(0, 10).map((r) => (
                   <div key={r.route} className="flex items-center gap-3">
-                    <span className="text-sm font-medium text-surface-700 w-40 truncate" title={r.route}>{r.route}</span>
-                    <div className="flex-1 h-6 bg-surface-100 rounded overflow-hidden">
-                      <div className="h-full bg-brand-500 rounded" style={{ width: `${Math.max(5, (r.report_count / maxReports) * 100)}%` }} />
+                    <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 w-40 truncate" title={r.route}>{r.route}</span>
+                    <div className="flex-1 h-7 rounded-lg bg-slate-100/90 dark:bg-slate-800/80 overflow-hidden ring-1 ring-inset ring-slate-200/50 dark:ring-slate-700/50">
+                      <div className="h-full rounded-lg bg-gradient-to-r from-indigo-500 to-violet-500 dark:from-indigo-400 dark:to-violet-500 shadow-sm" style={{ width: `${Math.max(5, (r.report_count / maxReports) * 100)}%` }} />
                     </div>
-                    <span className="text-sm text-surface-600 w-16 text-right">{r.report_count} report(s) · {r.loads_delivered ?? 0} loads</span>
+                    <span className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 w-[8.5rem] sm:w-44 text-right tabular-nums">{r.report_count} rep. · {r.loads_delivered ?? 0} loads</span>
                   </div>
                 ))}
               </div>
             </section>
           )}
 
-          <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
-            <div className="px-6 py-4 border-b border-surface-100 bg-gradient-to-r from-surface-50 to-brand-50">
-              <h3 className="font-semibold text-surface-900 flex items-center gap-2">
+          <section className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-white dark:bg-slate-900 overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-r from-indigo-50/90 via-white to-teal-50/40 dark:from-slate-900 dark:via-indigo-950/30 dark:to-slate-950">
+              <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
                 <span className="text-lg">Insights</span>
-                <span className="text-xs font-normal text-surface-500 bg-surface-200 px-2 py-0.5 rounded-full">Analytics & pattern detection</span>
+                <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-100/90 dark:bg-indigo-950/80 border border-indigo-200/60 dark:border-indigo-800/50 px-2.5 py-0.5 rounded-full">Analytics & pattern detection</span>
               </h3>
-              <p className="text-sm text-surface-600 mt-0.5">AI-powered analysis of shift report data to help managers spot trends and anomalies without opening every report.</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">AI-powered analysis of shift report data to help managers spot trends and anomalies without opening every report.</p>
             </div>
             <div className="p-6 space-y-3">
               {insights.length === 0 ? (
@@ -3178,7 +4244,7 @@ function TabShiftReportExports() {
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = URL.createObjectURL(blob);
       const base = section === 'all' ? 'shift-report-all-sections' : `shift-report-${section.replace(/_/g, '-')}`;
-      const name = `${base}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const name = `${base}-${todayYmd()}.xlsx`;
       const a = document.createElement('a');
       a.href = url;
       a.download = name;
@@ -4149,7 +5215,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const addRow = (setter, empty) => setter((prev) => [...prev, { ...empty }]);
   const updateRow = (setter, index, field, value) => setter((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
   const removeRow = (setter, index) => setter((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
-  const todayDate = () => new Date().toISOString().slice(0, 10);
+  const todayDate = () => todayYmd();
   const selectedController2 =
     controller2Options.find((u) => {
       const selectedEmail = String(formFields.controller2_email || '').trim().toLowerCase();
@@ -7236,7 +8302,7 @@ function TabApplications() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `fleet-applications-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `fleet-applications-${todayYmd()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -7345,7 +8411,7 @@ function TabApplications() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `fleet-applications-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `fleet-applications-${todayYmd()}.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
     setShowExportExcelModal(false);
@@ -7922,7 +8988,7 @@ function TabApplicationsIntegration() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `fleet-integration-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `fleet-integration-${todayYmd()}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
       setShowExportModal(false);

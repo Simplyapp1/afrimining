@@ -1,3 +1,5 @@
+import { toYmdFromDbOrString } from './appTime.js';
+
 /** Safe fragment for a downloaded PDF filename (Windows/macOS). */
 export function sanitizeAccountingPdfPart(value, fallback) {
   const raw = value != null && String(value).trim() ? String(value).trim() : '';
@@ -15,7 +17,7 @@ export function issueDateSlugForPdf(dateValue) {
   if (!dateValue) return 'no-date';
   const d = new Date(dateValue);
   if (Number.isNaN(d.getTime())) return 'no-date';
-  return d.toISOString().slice(0, 10);
+  return toYmdFromDbOrString(d);
 }
 
 /**

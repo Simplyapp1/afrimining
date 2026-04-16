@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { todayYmd } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { users as usersApi, tenants as tenantsApi } from './api';
 
@@ -280,7 +281,7 @@ export default function UserManagement() {
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `thinkers-users-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `thinkers-users-${todayYmd()}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };

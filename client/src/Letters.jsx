@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { todayYmd } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { jsPDF } from 'jspdf';
@@ -100,7 +101,7 @@ export default function Letters() {
   const [accentId, setAccentId] = useState('brand');
   const [recipientName, setRecipientName] = useState('');
   const [recipientAddress, setRecipientAddress] = useState('');
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayYmd());
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [signatoryName, setSignatoryName] = useState(user?.full_name || '');
@@ -316,7 +317,7 @@ export default function Letters() {
     setAccentId(d.accentId ?? 'brand');
     setRecipientName(d.recipientName ?? '');
     setRecipientAddress(d.recipientAddress ?? '');
-    setDate(d.date ?? new Date().toISOString().slice(0, 10));
+    setDate(d.date ?? todayYmd());
     setSubject(d.subject ?? '');
     setBody(d.body ?? '');
     setSignatoryName(d.signatoryName ?? user?.full_name ?? '');
@@ -354,7 +355,7 @@ export default function Letters() {
     setBody('');
     setRecipientName('');
     setRecipientAddress('');
-    setDate(new Date().toISOString().slice(0, 10));
+    setDate(todayYmd());
     setSignatoryName(user?.full_name || '');
     setSignatoryTitle('');
     setSignatureDataUrl('');

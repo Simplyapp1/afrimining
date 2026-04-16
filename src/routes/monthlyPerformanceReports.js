@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { todayYmd } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -205,7 +206,7 @@ router.post('/', async (req, res, next) => {
     const title = (body.title || '').toString().trim() || 'Monthly Performance Report';
     const periodStart = body.reporting_period_start || null;
     const periodEnd = body.reporting_period_end || null;
-    const submittedDate = body.submitted_date || new Date().toISOString().slice(0, 10);
+    const submittedDate = body.submitted_date || todayYmd();
     const preparedBy = (body.prepared_by || '').toString().trim() || null;
     const executiveSummary = (body.executive_summary || '').toString().trim() || null;
     const routeIds = normalizeIds(body.route_ids);

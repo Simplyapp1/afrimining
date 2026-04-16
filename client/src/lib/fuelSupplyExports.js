@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { todayYmd } from '../lib/appTime.js';
 import { jsPDF } from 'jspdf';
 
 function downloadBlob(blob, filename) {
@@ -27,7 +28,7 @@ export function exportFuelActivitiesPdf(activities, title = 'Supply activity log
     doc.text(split, 14, y);
     y += split.length * 4 + 2;
   }
-  doc.save(`fuel-activities-${new Date().toISOString().slice(0, 10)}.pdf`);
+  doc.save(`fuel-activities-${todayYmd()}.pdf`);
 }
 
 export async function exportFuelActivitiesExcel(activities, filename = 'fuel-supply-activities.xlsx') {
@@ -87,7 +88,7 @@ export function exportFuelReconciliationsPdf(rows, title = 'Fuel reconciliations
     doc.text(split, 14, y);
     y += split.length * 4 + 2;
   }
-  doc.save(`fuel-reconciliations-${new Date().toISOString().slice(0, 10)}.pdf`);
+  doc.save(`fuel-reconciliations-${todayYmd()}.pdf`);
 }
 
 export async function exportFuelReconciliationsExcel(rows, filename = 'fuel-supply-reconciliations.xlsx') {
@@ -172,7 +173,7 @@ export function exportProductionVsExpensesPdf({ series, assumedPricePerLiter, fo
     doc.text(price > 0 ? margin.toFixed(2) : '—', 165, y);
     y += 6;
   }
-  doc.save(`fuel-production-vs-expenses-${new Date().toISOString().slice(0, 10)}.pdf`);
+  doc.save(`fuel-production-vs-expenses-${todayYmd()}.pdf`);
 }
 
 export async function exportProductionVsExpensesExcel({ series, assumedPricePerLiter, forecast }, filename) {
@@ -219,6 +220,6 @@ export async function exportProductionVsExpensesExcel({ series, assumedPricePerL
   const buf = await wb.xlsx.writeBuffer();
   downloadBlob(
     new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-    filename || `fuel-production-vs-expenses-${new Date().toISOString().slice(0, 10)}.xlsx`
+    filename || `fuel-production-vs-expenses-${todayYmd()}.xlsx`
   );
 }

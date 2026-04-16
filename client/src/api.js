@@ -1032,6 +1032,30 @@ export const shiftClock = {
     }),
 };
 
+const ss = (path, options = {}) => request(`/shift-score${path}`, options);
+
+/** Shift productivity score — punctuality, evaluations, tasks, report hand-in (rolling window). */
+export const shiftScore = {
+  me: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return ss(`/me${qs ? `?${qs}` : ''}`);
+  },
+  commandCentreDashboard: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return ss(`/command-centre-dashboard${qs ? `?${qs}` : ''}`);
+  },
+  tenant: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return ss(`/tenant${qs ? `?${qs}` : ''}`);
+  },
+};
+
 const to = (path, options = {}) => request(`/transport-operations${path}`, options);
 
 export const transportOperations = {

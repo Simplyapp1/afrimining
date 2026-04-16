@@ -10,6 +10,7 @@ import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js'
 import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
+import { toYmdFromDbOrString } from '../lib/appTime.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -1744,7 +1745,7 @@ router.post('/routes', async (req, res, next) => {
     const cap = capacity != null && Number.isInteger(Number(capacity)) ? Number(capacity) : null;
     const tons = max_tons != null && !Number.isNaN(Number(max_tons)) ? Number(max_tons) : null;
     const exp = route_expiration ? new Date(route_expiration) : null;
-    const expStr = exp && !Number.isNaN(exp.getTime()) ? exp.toISOString().slice(0, 10) : null;
+    const expStr = exp && !Number.isNaN(exp.getTime()) ? toYmdFromDbOrString(exp) : null;
     const result = await query(
       `INSERT INTO contractor_routes (tenant_id, name, [order], starting_point, destination, capacity, max_tons, route_expiration) OUTPUT INSERTED.* VALUES (@tenantId, @name, @order, @starting_point, @destination, @capacity, @max_tons, @route_expiration)`,
       { tenantId, name: String(name).trim(), order, starting_point: startPt, destination: dest, capacity: cap, max_tons: tons, route_expiration: expStr }
@@ -1794,7 +1795,7 @@ router.patch('/routes/:id', async (req, res, next) => {
     if (route_expiration !== undefined) {
       updates.push('route_expiration = @route_expiration');
       const exp = route_expiration ? new Date(route_expiration) : null;
-      params.route_expiration = exp && !Number.isNaN(exp.getTime()) ? exp.toISOString().slice(0, 10) : null;
+      params.route_expiration = exp && !Number.isNaN(exp.getTime()) ? toYmdFromDbOrString(exp) : null;
     }
     if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
     updates.push('updated_at = SYSUTCDATETIME()');
@@ -2559,7 +2560,7 @@ router.get('/distribution-history', async (req, res, next) => {
     }
     if (dateTo) {
       sql += ` AND h.created_at < DATEADD(day, 1, CAST(@dateTo AS DATE))`;
-      params.dateTo = new Date(dateTo).toISOString().slice(0, 10);
+      params.dateTo = toYmdFromDbOrString(new Date(dateTo));
     }
     if (routeId) {
       sql += ` AND (h.route_ids = @routeId OR h.route_ids LIKE @routeIdPrefix OR h.route_ids LIKE @routeIdSuffix OR h.route_ids LIKE @routeIdMid)`;
@@ -3829,7 +3830,7 @@ router.get('/distribution-history/export', async (req, res, next) => {
     let sql = `SELECT h.created_at, h.list_type, h.route_ids, h.format, h.channel, h.recipient_email, h.recipient_phone, h.created_by_name FROM access_distribution_history h WHERE h.tenant_id = @tenantId`;
     const params = { tenantId };
     if (dateFrom) { sql += ` AND h.created_at >= @dateFrom`; params.dateFrom = new Date(dateFrom).toISOString(); }
-    if (dateTo) { sql += ` AND h.created_at < DATEADD(day, 1, CAST(@dateTo AS DATE))`; params.dateTo = new Date(dateTo).toISOString().slice(0, 10); }
+    if (dateTo) { sql += ` AND h.created_at < DATEADD(day, 1, CAST(@dateTo AS DATE))`; params.dateTo = toYmdFromDbOrString(new Date(dateTo)); }
     if (routeId) { sql += ` AND (h.route_ids = @routeId OR h.route_ids LIKE @routeIdPrefix OR h.route_ids LIKE @routeIdSuffix OR h.route_ids LIKE @routeIdMid)`; params.routeId = routeId; params.routeIdPrefix = routeId + ',%'; params.routeIdSuffix = '%,' + routeId; params.routeIdMid = '%,' + routeId + ',%'; }
     if (listType && ['fleet', 'driver', 'both'].includes(listType)) { sql += ` AND h.list_type = @listType`; params.listType = listType; }
     if (channel && ['download', 'email', 'whatsapp'].includes(channel)) { sql += ` AND h.channel = @channel`; params.channel = channel; }

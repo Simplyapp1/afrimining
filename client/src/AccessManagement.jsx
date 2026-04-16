@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { todayYmd } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAuth } from './AuthContext';
 import { contractor as contractorApi, users as usersApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
@@ -249,7 +250,7 @@ export default function AccessManagement() {
   const [progressReportsList, setProgressReportsList] = useState([]);
   const [progressReportForm, setProgressReportForm] = useState({
     title: '',
-    report_date: new Date().toISOString().slice(0, 10),
+    report_date: todayYmd(),
     reporting_status: '',
     route_ids: [],
     narrative_updates: '',
@@ -277,7 +278,7 @@ export default function AccessManagement() {
   const [actionPlanForm, setActionPlanForm] = useState({
     title: 'Action Plan',
     project_name: '',
-    document_date: new Date().toISOString().slice(0, 10),
+    document_date: todayYmd(),
     document_id: '',
     route_ids: [],
     items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
@@ -302,7 +303,7 @@ export default function AccessManagement() {
     title: '',
     reporting_period_start: '',
     reporting_period_end: '',
-    submitted_date: new Date().toISOString().slice(0, 10),
+    submitted_date: todayYmd(),
     prepared_by: 'Tihlo (Thinkers Afrika)',
     route_ids: [],
     executive_summary: '',
@@ -2755,7 +2756,7 @@ export default function AccessManagement() {
                                   const rep = res.report || {};
                                   setProgressReportForm({
                                     title: rep.title || '',
-                                    report_date: rep.report_date ? rep.report_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+                                    report_date: rep.report_date ? rep.report_date.slice(0, 10) : todayYmd(),
                                     reporting_status: rep.reporting_status || '',
                                     route_ids: normalizeIds(rep.route_ids || []),
                                     narrative_updates: rep.narrative_updates || '',
@@ -2866,7 +2867,7 @@ export default function AccessManagement() {
                   setEditingProgressReportId(null);
                   setProgressReportForm({
                     title: '',
-                    report_date: new Date().toISOString().slice(0, 10),
+                    report_date: todayYmd(),
                     reporting_status: '',
                     route_ids: [],
                     narrative_updates: '',
@@ -3099,7 +3100,7 @@ export default function AccessManagement() {
                                   setActionPlanForm({
                                     title: plan.title || 'Action Plan',
                                     project_name: plan.project_name || '',
-                                    document_date: plan.document_date ? plan.document_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+                                    document_date: plan.document_date ? plan.document_date.slice(0, 10) : todayYmd(),
                                     document_id: plan.document_id || '',
                                     route_ids: normalizeIds(plan.route_ids || []),
                                     items: Array.isArray(plan.items) && plan.items.length
@@ -3208,7 +3209,7 @@ export default function AccessManagement() {
                         setActionPlanForm({
                           title: 'Action Plan',
                           project_name: '',
-                          document_date: new Date().toISOString().slice(0, 10),
+                          document_date: todayYmd(),
                           document_id: '',
                           route_ids: [],
                           items: [{ phase: '', start_date: '', action_description: '', participants: '', due_date: '', status: 'not started' }],
@@ -3310,7 +3311,7 @@ export default function AccessManagement() {
                           const payload = {
                             title: actionPlanForm.title.trim(),
                             project_name: actionPlanForm.project_name.trim(),
-                            document_date: actionPlanForm.document_date || new Date().toISOString().slice(0, 10),
+                            document_date: actionPlanForm.document_date || todayYmd(),
                             document_id: actionPlanForm.document_id.trim() || null,
                             route_ids: normalizeIds(actionPlanForm.route_ids),
                             items: actionPlanForm.items.map((it) => ({
@@ -3381,7 +3382,7 @@ export default function AccessManagement() {
                               : 'All routes'}
                           </td>
                           <td className="p-3">
-                            <button type="button" onClick={() => { setMonthlyPerfSubTab('creation'); setEditingMonthlyPerfId(r.id); monthlyPerformanceReportsApi.get(r.id).then((res) => { const rep = res.report || {}; setMonthlyPerfForm({ title: rep.title || '', reporting_period_start: rep.reporting_period_start ? rep.reporting_period_start.slice(0, 10) : '', reporting_period_end: rep.reporting_period_end ? rep.reporting_period_end.slice(0, 10) : '', submitted_date: rep.submitted_date ? rep.submitted_date.slice(0, 10) : new Date().toISOString().slice(0, 10), prepared_by: rep.prepared_by || '', route_ids: normalizeIds(rep.route_ids || []), executive_summary: rep.executive_summary || '', key_metrics: Array.isArray(rep.key_metrics) && rep.key_metrics.length ? rep.key_metrics.map((m) => ({ metric: m.metric ?? '', value: m.value ?? '', commentary: m.commentary ?? '' })) : [{ metric: '', value: '', commentary: '' }], sections: normalizeSectionsForForm(rep.sections || []), breakdowns: Array.isArray(rep.breakdowns) && rep.breakdowns.length ? rep.breakdowns.map((b) => ({ date: b.date ?? '', time: b.time ?? '', route: b.route ?? '', truck_reg: b.truck_reg ?? '', description: b.description ?? '', company: b.company ?? '' })) : [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: Array.isArray(rep.fleet_performance) && rep.fleet_performance.length ? rep.fleet_performance.map((f) => ({ haulier: f.haulier ?? '', trips: f.trips ?? '', pct_trips: f.pct_trips ?? '', tonnage: f.tonnage ?? '', pct_tonnage: f.pct_tonnage ?? '', avg_t_per_trip: f.avg_t_per_trip ?? '', trucks_deployed: f.trucks_deployed ?? '' })) : [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }).catch(() => setError('Failed to load report')); }} className="text-brand-600 hover:text-brand-800 text-sm font-medium">Edit</button>
+                            <button type="button" onClick={() => { setMonthlyPerfSubTab('creation'); setEditingMonthlyPerfId(r.id); monthlyPerformanceReportsApi.get(r.id).then((res) => { const rep = res.report || {}; setMonthlyPerfForm({ title: rep.title || '', reporting_period_start: rep.reporting_period_start ? rep.reporting_period_start.slice(0, 10) : '', reporting_period_end: rep.reporting_period_end ? rep.reporting_period_end.slice(0, 10) : '', submitted_date: rep.submitted_date ? rep.submitted_date.slice(0, 10) : todayYmd(), prepared_by: rep.prepared_by || '', route_ids: normalizeIds(rep.route_ids || []), executive_summary: rep.executive_summary || '', key_metrics: Array.isArray(rep.key_metrics) && rep.key_metrics.length ? rep.key_metrics.map((m) => ({ metric: m.metric ?? '', value: m.value ?? '', commentary: m.commentary ?? '' })) : [{ metric: '', value: '', commentary: '' }], sections: normalizeSectionsForForm(rep.sections || []), breakdowns: Array.isArray(rep.breakdowns) && rep.breakdowns.length ? rep.breakdowns.map((b) => ({ date: b.date ?? '', time: b.time ?? '', route: b.route ?? '', truck_reg: b.truck_reg ?? '', description: b.description ?? '', company: b.company ?? '' })) : [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: Array.isArray(rep.fleet_performance) && rep.fleet_performance.length ? rep.fleet_performance.map((f) => ({ haulier: f.haulier ?? '', trips: f.trips ?? '', pct_trips: f.pct_trips ?? '', tonnage: f.tonnage ?? '', pct_tonnage: f.pct_tonnage ?? '', avg_t_per_trip: f.avg_t_per_trip ?? '', trucks_deployed: f.trucks_deployed ?? '' })) : [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }).catch(() => setError('Failed to load report')); }} className="text-brand-600 hover:text-brand-800 text-sm font-medium">Edit</button>
                           </td>
                         </tr>
                       ))}
@@ -3397,7 +3398,7 @@ export default function AccessManagement() {
               {monthlyPerfListLoading ? <p className="text-surface-500">Loading…</p> : (
                 <>
                   <div className="flex flex-wrap gap-2 mb-4">
-                    <button type="button" onClick={() => { setEditingMonthlyPerfId(null); setMonthlyPerfForm({ title: '', reporting_period_start: '', reporting_period_end: '', submitted_date: new Date().toISOString().slice(0, 10), prepared_by: 'Tihlo (Thinkers Afrika)', route_ids: [], executive_summary: '', key_metrics: [{ metric: '', value: '', commentary: '' }], sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }], breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }} className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50">New report</button>
+                    <button type="button" onClick={() => { setEditingMonthlyPerfId(null); setMonthlyPerfForm({ title: '', reporting_period_start: '', reporting_period_end: '', submitted_date: todayYmd(), prepared_by: 'Tihlo (Thinkers Afrika)', route_ids: [], executive_summary: '', key_metrics: [{ metric: '', value: '', commentary: '' }], sections: [{ heading: '', subsections: [{ subheading: '', blocks: [{ type: 'text', text: '' }] }] }], breakdowns: [{ date: '', time: '', route: '', truck_reg: '', description: '', company: '' }], fleet_performance: [{ haulier: '', trips: '', pct_trips: '', tonnage: '', pct_tonnage: '', avg_t_per_trip: '', trucks_deployed: '' }], }); }} className="px-3 py-2 rounded-lg border border-surface-200 text-surface-700 text-sm font-medium hover:bg-surface-50">New report</button>
                     <span className="text-sm text-surface-500 self-center">To edit an existing report, go to Published reports and click Edit.</span>
                   </div>
 

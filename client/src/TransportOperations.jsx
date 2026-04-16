@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { addCalendarDays, todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { transportOperations as toApi, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
@@ -191,7 +192,7 @@ export default function TransportOperations() {
   const [submitToSearchQuery, setSubmitToSearchQuery] = useState('');
   const [routesSearchQuery, setRoutesSearchQuery] = useState('');
   const [shift, setShift] = useState('Day');
-  const [reportDate, setReportDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reportDate, setReportDate] = useState(() => todayYmd());
   const [availableRoutes, setAvailableRoutes] = useState([]);
   const [activeRows, setActiveRows] = useState([defaultActiveRow()]);
   const [nonParticipatingRows, setNonParticipatingRows] = useState([defaultNonParticipatingRow()]);
@@ -260,12 +261,8 @@ export default function TransportOperations() {
   const [approving, setApproving] = useState(false);
 
   // Operations Insights (insights, recommendations, accountability)
-  const [presentationsDateFrom, setPresentationsDateFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
-  });
-  const [presentationsDateTo, setPresentationsDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [presentationsDateFrom, setPresentationsDateFrom] = useState(() => addCalendarDays(todayYmd(), -30));
+  const [presentationsDateTo, setPresentationsDateTo] = useState(() => todayYmd());
   const [presentationsInsights, setPresentationsInsights] = useState(null);
   const [presentationsLoading, setPresentationsLoading] = useState(false);
   const [presentationsError, setPresentationsError] = useState('');
@@ -275,12 +272,8 @@ export default function TransportOperations() {
   const [savingGeneratedRecs, setSavingGeneratedRecs] = useState(false);
 
   // Presentations (PowerPoint)
-  const [presentationsPptxDateFrom, setPresentationsPptxDateFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
-  });
-  const [presentationsPptxDateTo, setPresentationsPptxDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [presentationsPptxDateFrom, setPresentationsPptxDateFrom] = useState(() => addCalendarDays(todayYmd(), -30));
+  const [presentationsPptxDateTo, setPresentationsPptxDateTo] = useState(() => todayYmd());
   const [presentationsPptxShift, setPresentationsPptxShift] = useState('');
   const [presentationsPptxDownloading, setPresentationsPptxDownloading] = useState(false);
 
@@ -1751,8 +1744,8 @@ export default function TransportOperations() {
                       </thead>
                       <tbody>
                         {presentationsRecs.map((rec) => {
-                          const dueDate = rec.due_by ? new Date(rec.due_by).toISOString().slice(0, 10) : '';
-                          const today = new Date().toISOString().slice(0, 10);
+                          const dueDate = rec.due_by ? toYmdFromDbOrString(rec.due_by) : '';
+                          const today = todayYmd();
                           const isOverdue = rec.status === 'pending' && dueDate && dueDate < today;
                           return (
                             <tr key={rec.id} className={`border-t border-surface-100 ${isOverdue ? 'bg-red-50/50' : ''}`}>
@@ -1823,7 +1816,7 @@ export default function TransportOperations() {
                 <div className="p-6">
                   {presentationsRecsLoading ? <p className="text-surface-500 text-sm">Loading…</p> : (() => {
                     const pending = presentationsRecs.filter((r) => r.status === 'pending');
-                    const today = new Date().toISOString().slice(0, 10);
+                    const today = todayYmd();
                     const overdue = pending.filter((r) => r.due_by && r.due_by < today);
                     const noOwner = pending.filter((r) => !r.assigned_to_user_id);
                     if (pending.length === 0) return <p className="text-sm text-green-700 font-medium">All recommendations have been applied or dismissed.</p>;

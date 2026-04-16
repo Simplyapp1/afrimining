@@ -3,6 +3,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { progressReportSharedHtml } from '../lib/emailTemplates.js';
+import { todayYmd } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -204,7 +205,7 @@ router.post('/', async (req, res, next) => {
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
     const body = req.body || {};
     const title = (body.title || '').toString().trim() || 'Project Progress Report';
-    const reportDate = body.report_date || new Date().toISOString().slice(0, 10);
+    const reportDate = body.report_date || todayYmd();
     const reportingStatus = (body.reporting_status || '').toString().trim() || null;
     const narrativeUpdates = (body.narrative_updates || '').toString().trim() || null;
     const phases = Array.isArray(body.phases) ? body.phases : [];

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
@@ -733,7 +734,7 @@ function QuotationsTab() {
     customer_name: '',
     customer_address: '',
     customer_email: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayYmd(),
     valid_until: '',
     status: 'draft',
     notes: '',
@@ -768,7 +769,7 @@ function QuotationsTab() {
     setViewMeta({
       number: viewQuotation.number ?? '',
       status: viewQuotation.status ?? 'draft',
-      date: viewQuotation.date ? new Date(viewQuotation.date).toISOString().slice(0, 10) : '',
+      date: viewQuotation.date ? toYmdFromDbOrString(viewQuotation.date) : '',
     });
   }, [viewQuotation]);
 
@@ -780,7 +781,7 @@ function QuotationsTab() {
       customer_name: '',
       customer_address: '',
       customer_email: '',
-      date: new Date().toISOString().slice(0, 10),
+      date: todayYmd(),
       valid_until: '',
       status: 'draft',
       notes: '',
@@ -805,8 +806,8 @@ function QuotationsTab() {
         customer_name: qq.customer_name ?? '',
         customer_address: qq.customer_address ?? '',
         customer_email: qq.customer_email ?? '',
-        date: qq.date ? new Date(qq.date).toISOString().slice(0, 10) : '',
-        valid_until: qq.valid_until ? new Date(qq.valid_until).toISOString().slice(0, 10) : '',
+        date: qq.date ? toYmdFromDbOrString(qq.date) : '',
+        valid_until: qq.valid_until ? toYmdFromDbOrString(qq.valid_until) : '',
         status: qq.status ?? 'draft',
         notes: qq.notes ?? '',
         discount_percent: qq.discount_percent ?? 0,
@@ -1174,7 +1175,7 @@ function InvoicesTab() {
     customer_name: '',
     customer_address: '',
     customer_email: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayYmd(),
     due_date: '',
     status: 'draft',
     notes: '',
@@ -1231,7 +1232,7 @@ function InvoicesTab() {
       customer_name: '',
       customer_address: '',
       customer_email: '',
-      date: new Date().toISOString().slice(0, 10),
+      date: todayYmd(),
       due_date: '',
       status: 'draft',
       notes: '',
@@ -1262,8 +1263,8 @@ function InvoicesTab() {
         customer_name: ii.customer_name ?? '',
         customer_address: ii.customer_address ?? '',
         customer_email: ii.customer_email ?? '',
-        date: ii.date ? new Date(ii.date).toISOString().slice(0, 10) : '',
-        due_date: ii.due_date ? new Date(ii.due_date).toISOString().slice(0, 10) : '',
+        date: ii.date ? toYmdFromDbOrString(ii.date) : '',
+        due_date: ii.due_date ? toYmdFromDbOrString(ii.due_date) : '',
         status: ii.status ?? 'draft',
         notes: ii.notes ?? '',
         discount_percent: ii.discount_percent ?? 0,
@@ -1277,7 +1278,7 @@ function InvoicesTab() {
   };
   const openMarkPaid = (inv) => {
     setMarkPaidForm({
-      payment_date: new Date().toISOString().slice(0, 10),
+      payment_date: todayYmd(),
       payment_reference: '',
     });
     setMarkPaidModal(inv);
@@ -1662,7 +1663,7 @@ function PurchaseOrdersTab() {
     supplier_name: '',
     supplier_address: '',
     supplier_email: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayYmd(),
     due_date: '',
     status: 'draft',
     notes: '',
@@ -1703,7 +1704,7 @@ function PurchaseOrdersTab() {
       supplier_name: '',
       supplier_address: '',
       supplier_email: '',
-      date: new Date().toISOString().slice(0, 10),
+      date: todayYmd(),
       due_date: '',
       status: 'draft',
       notes: '',
@@ -1727,8 +1728,8 @@ function PurchaseOrdersTab() {
         supplier_name: pp.supplier_name ?? '',
         supplier_address: pp.supplier_address ?? '',
         supplier_email: pp.supplier_email ?? '',
-        date: pp.date ? new Date(pp.date).toISOString().slice(0, 10) : '',
-        due_date: pp.due_date ? new Date(pp.due_date).toISOString().slice(0, 10) : '',
+        date: pp.date ? toYmdFromDbOrString(pp.date) : '',
+        due_date: pp.due_date ? toYmdFromDbOrString(pp.due_date) : '',
         status: pp.status ?? 'draft',
         notes: pp.notes ?? '',
         discount_percent: pp.discount_percent ?? 0,
@@ -1987,7 +1988,7 @@ function recomputeStatementBalances(opening, lines) {
 
 function mapStatementLinesFromApi(lines) {
   return (lines || []).map((l) => ({
-    txn_date: l.txn_date ? new Date(l.txn_date).toISOString().slice(0, 10) : '',
+    txn_date: l.txn_date ? toYmdFromDbOrString(l.txn_date) : '',
     reference: l.reference ?? '',
     description: l.description ?? '',
     debit: l.debit != null && Number(l.debit) !== 0 ? String(l.debit) : '',
@@ -2016,7 +2017,7 @@ function StatementsTab() {
     statement_ref: '',
     currency: 'ZAR',
     opening_balance: '0',
-    statement_date: new Date().toISOString().slice(0, 10),
+    statement_date: todayYmd(),
     date_from: '',
     date_to: '',
     lines: [{ txn_date: '', reference: '', description: '', debit: '', credit: '' }],
@@ -2061,7 +2062,7 @@ function StatementsTab() {
       statement_ref: '',
       currency: 'ZAR',
       opening_balance: '0',
-      statement_date: new Date().toISOString().slice(0, 10),
+      statement_date: todayYmd(),
       date_from: '',
       date_to: '',
       lines: [{ txn_date: '', reference: '', description: '', debit: '', credit: '' }],
@@ -2081,12 +2082,12 @@ function StatementsTab() {
         statement_ref: s.statement_ref ?? '',
         currency: s.currency || 'ZAR',
         opening_balance: s.opening_balance != null ? String(s.opening_balance) : '0',
-        statement_date: s.statement_date ? new Date(s.statement_date).toISOString().slice(0, 10) : '',
-        date_from: s.date_from ? new Date(s.date_from).toISOString().slice(0, 10) : '',
-        date_to: s.date_to ? new Date(s.date_to).toISOString().slice(0, 10) : '',
+        statement_date: s.statement_date ? toYmdFromDbOrString(s.statement_date) : '',
+        date_from: s.date_from ? toYmdFromDbOrString(s.date_from) : '',
+        date_to: s.date_to ? toYmdFromDbOrString(s.date_to) : '',
         lines: (s.lines && s.lines.length)
           ? s.lines.map((l) => ({
-            txn_date: l.txn_date ? new Date(l.txn_date).toISOString().slice(0, 10) : '',
+            txn_date: l.txn_date ? toYmdFromDbOrString(l.txn_date) : '',
             reference: l.reference ?? '',
             description: l.description ?? '',
             debit: l.debit != null && Number(l.debit) !== 0 ? String(l.debit) : '',

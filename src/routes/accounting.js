@@ -8,6 +8,7 @@ import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { renderCommercialPdf, stampCommercialPdfFooters, formatDate } from '../lib/accountingPdfLayout.js';
 import { renderStatementPdf } from '../lib/statementAccountPdf.js';
 import { computeStatementLineBalances, invoiceGrandTotal } from '../lib/statementLineBalance.js';
+import { todayYmd, toYmdFromDbOrString } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -914,8 +915,8 @@ router.post('/quotations/:id/create-invoice', async (req, res, next) => {
         customer_name: quotation.customer_name ?? '',
         customer_address: quotation.customer_address ?? '',
         customer_email: quotation.customer_email ?? '',
-        date: new Date().toISOString().slice(0, 10),
-        due_date: dueDate.toISOString().slice(0, 10),
+        date: todayYmd(),
+        due_date: toYmdFromDbOrString(dueDate),
         status: 'draft',
         notes: quotation.notes ?? '',
         discount_percent: Number(quotation.discount_percent) || 0,
@@ -1926,9 +1927,9 @@ router.get('/statements/:id/excel', async (req, res, next) => {
     ];
     sheet.addRow({
       title: statement.title,
-      statement_date: statement.statement_date ? new Date(statement.statement_date).toISOString().slice(0, 10) : '',
-      date_from: statement.date_from ? new Date(statement.date_from).toISOString().slice(0, 10) : '',
-      date_to: statement.date_to ? new Date(statement.date_to).toISOString().slice(0, 10) : '',
+      statement_date: statement.statement_date ? toYmdFromDbOrString(statement.statement_date) : '',
+      date_from: statement.date_from ? toYmdFromDbOrString(statement.date_from) : '',
+      date_to: statement.date_to ? toYmdFromDbOrString(statement.date_to) : '',
       customer_name: statement.customer_name || '',
       statement_ref: statement.statement_ref || '',
       currency: statement.currency || 'ZAR',
@@ -1950,7 +1951,7 @@ router.get('/statements/:id/excel', async (req, res, next) => {
     const lines = statement.lines || [];
     for (const l of lines) {
       tx.addRow({
-        txn_date: l.txn_date ? new Date(l.txn_date).toISOString().slice(0, 10) : '',
+        txn_date: l.txn_date ? toYmdFromDbOrString(l.txn_date) : '',
         reference: l.reference || '',
         description: l.description || '',
         debit: l.debit != null ? Number(l.debit) : '',

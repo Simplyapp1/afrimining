@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { canAccessPage } from './lib/pageAccess.js';
@@ -2032,7 +2033,7 @@ export default function Contractor() {
                       const get = (snake, camel) => (d[snake] ?? d[camel]) != null ? String(d[snake] ?? d[camel]).trim() : '';
                       const fullName = get('full_name', 'fullName') || [get('name', 'name'), get('surname', 'surname')].filter(Boolean).join(' ') || '';
                       const licenseExpiry = d.license_expiry ?? d.licenseExpiry;
-                      const expiryStr = licenseExpiry ? (typeof licenseExpiry === 'string' && licenseExpiry.match(/^\d{4}-\d{2}-\d{2}/) ? licenseExpiry : new Date(licenseExpiry).toISOString().slice(0, 10)) : '';
+                      const expiryStr = licenseExpiry ? (typeof licenseExpiry === 'string' && licenseExpiry.match(/^\d{4}-\d{2}-\d{2}/) ? licenseExpiry : toYmdFromDbOrString(licenseExpiry)) : '';
                       return (
                         <>
                           <div className="rounded-lg border border-surface-200 bg-surface-50 p-3 mb-2">

@@ -14,6 +14,7 @@ import {
   recruitmentCongratulationsHtml,
   recruitmentAppointmentRegretHtml,
 } from '../lib/emailTemplates.js';
+import { toYmdInAppZone } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -33,7 +34,7 @@ function dateStringForFilter(val) {
   const s = String(val).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  return Number.isNaN(d.getTime()) ? null : toYmdInAppZone(d);
 }
 
 /** Recruitment tab IDs (must match client TABS) */

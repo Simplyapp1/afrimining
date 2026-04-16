@@ -9,6 +9,12 @@ import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
 import { shiftClockAlertHtml, shiftLocationAuthRequestHtml } from '../lib/emailTemplates.js';
 import { parseClientCoords, haversineMeters, allowedLocationRadiusMeters } from '../lib/geo.js';
+import {
+  todayYmd,
+  yesterdayYmd,
+  isEarlyMorningInAppZone,
+  toYmdFromDbOrString,
+} from '../lib/appTime.js';
 
 const router = Router();
 
@@ -29,31 +35,9 @@ function getRow(row, key) {
   return k ? row[k] : undefined;
 }
 
-function todayISO() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
-}
-
-function yesterdayISO() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
-function dateStr(v) {
-  if (!v) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return String(v).slice(0, 10);
-}
-
-/** Whether current server local time is in 00:00–06:00 (night shift tail). */
-function isEarlyMorning() {
-  return new Date().getHours() < 6;
-}
-
 async function findExpectedScheduleEntries(userId, tenantId) {
-  const t = todayISO();
-  const y = yesterdayISO();
+  const t = todayYmd();
+  const y = yesterdayYmd();
   const r = await query(
     `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes
      FROM work_schedule_entries e
@@ -62,9 +46,9 @@ async function findExpectedScheduleEntries(userId, tenantId) {
     { userId, tenantId, t, y }
   );
   const rows = r.recordset || [];
-  const early = isEarlyMorning();
+  const early = isEarlyMorningInAppZone();
   return rows.filter((row) => {
-    const ds = dateStr(getRow(row, 'work_date'));
+    const ds = toYmdFromDbOrString(getRow(row, 'work_date'));
     const st = getRow(row, 'shift_type');
     if (early) {
       if (ds === t) return true;
@@ -545,7 +529,7 @@ router.get('/team-day', requireProfileOrManagement, async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     const viewerId = req.user.id;
-    const date = String(req.query.date || todayISO()).slice(0, 10);
+    const date = String(req.query.date || todayYmd()).slice(0, 10);
     const scopeRaw = String(req.query.scope || 'command_centre').toLowerCase();
     const pageRoles = req.user?.page_roles || [];
     const isMgmt = req.user?.role === 'super_admin' || pageRoles.includes('management');

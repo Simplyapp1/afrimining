@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { todayYmd } from './lib/appTime.js';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { tracking as trackingApi } from './api';
@@ -1359,7 +1360,7 @@ function TabDeliveryRecords({ setError }) {
   }, []);
 
   const exportCsv = () => {
-    downloadCsv(`deliveries-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+    downloadCsv(`deliveries-${todayYmd()}.csv`, rows, [
       'trip_ref',
       'truck_registration',
       'delivered_at',
@@ -1473,7 +1474,7 @@ function TabAlarmRecords({ setError }) {
   }, []);
 
   const exportCsv = () => {
-    downloadCsv(`alarms-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+    downloadCsv(`alarms-${todayYmd()}.csv`, rows, [
       'occurred_at',
       'truck_registration',
       'alarm_type',

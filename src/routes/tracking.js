@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { todayYmd } from '../lib/appTime.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -689,7 +690,7 @@ router.post('/trips', async (req, res) => {
       reg = String(get(tr.recordset?.[0], 'registration') || '').trim();
     }
     if (!reg) return res.status(400).json({ error: 'Enter truck registration or select a vehicle from Contractor fleet' });
-    const ref = b.trip_ref || `TRIP-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    const ref = b.trip_ref || `TRIP-${todayYmd().replace(/-/g, '')}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const ins = await query(
       `INSERT INTO fleet_trip (tenant_id, trip_ref, truck_registration, contractor_truck_id, weighbridge_id, route_id, collection_point_name, destination_name, status)
        OUTPUT INSERTED.id VALUES (@tenantId, @ref, @reg, @ctid, @wb, @rid, @cp, @dn, N'pending')`,

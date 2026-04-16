@@ -6,6 +6,7 @@ import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail } from '../lib/emailService.js';
+import { toYmdFromDbOrString } from '../lib/appTime.js';
 
 const router = Router();
 
@@ -1350,12 +1351,7 @@ router.post('/customer-requests/:id/approve', async (req, res, next) => {
       return res.status(400).json({ error: 'expected_liters invalid' });
     }
     const dueRaw = get(reqRow, 'due_date');
-    const dueStr =
-      dueRaw instanceof Date
-        ? dueRaw.toISOString().slice(0, 10)
-        : dueRaw
-          ? String(dueRaw).slice(0, 10)
-          : '—';
+    const dueStr = dueRaw ? toYmdFromDbOrString(dueRaw) || String(dueRaw).slice(0, 10) : '—';
     const meta = [
       `Customer request: type=${get(reqRow, 'request_type')}, priority=${get(reqRow, 'priority')}, due=${dueStr}.`,
       get(reqRow, 'customer_notes') ? `Customer notes: ${get(reqRow, 'customer_notes')}` : null,

@@ -18,6 +18,15 @@ import {
   shiftSwapManagementDeclinedHtml,
 } from '../lib/emailTemplates.js';
 import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
+import {
+  getAppTimeZone,
+  toYmdInAppZone,
+  toYmdFromDbOrString,
+  wallMonthYearInAppZone,
+  calendarMonthStartYmd,
+  calendarMonthEndYmd,
+  addCalendarDays,
+} from '../lib/appTime.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -154,16 +163,18 @@ router.post('/schedules/bulk', requirePageAccess('management'), async (req, res,
       return res.status(400).json({ error: 'time_frame_months must be 1, 3, 6, or 12' });
     }
     const normalized = pattern.map((p) => (String(p).toLowerCase() === 'night' ? 'night' : String(p).toLowerCase() === 'off' ? 'off' : 'day'));
-    const start = new Date(start_date + 'T12:00:00.000Z');
+    const periodStart = String(start_date).trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) return res.status(400).json({ error: 'Invalid start_date' });
+    const start = new Date(`${periodStart}T12:00:00.000Z`);
     if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Invalid start_date' });
     const end = new Date(start);
     end.setUTCMonth(end.getUTCMonth() + months);
     end.setUTCDate(0);
-    const periodStart = start.toISOString().slice(0, 10);
-    const periodEnd = end.toISOString().slice(0, 10);
+    const periodEnd = toYmdInAppZone(end);
+    const tz = getAppTimeZone();
     const title = months === 1
-      ? `${start.toLocaleString('default', { month: 'short' })} ${start.getUTCFullYear()}`
-      : `${start.toLocaleString('default', { month: 'short' })} ${start.getUTCFullYear()} – ${end.toLocaleString('default', { month: 'short' })} ${end.getUTCFullYear()}`;
+      ? `${start.toLocaleString('en-ZA', { month: 'short', timeZone: tz })} ${start.toLocaleString('en-ZA', { year: 'numeric', timeZone: tz })}`
+      : `${start.toLocaleString('en-ZA', { month: 'short', timeZone: tz })} ${start.toLocaleString('en-ZA', { year: 'numeric', timeZone: tz })} – ${end.toLocaleString('en-ZA', { month: 'short', timeZone: tz })} ${end.toLocaleString('en-ZA', { year: 'numeric', timeZone: tz })}`;
     const ins = await query(
       `INSERT INTO work_schedules (tenant_id, user_id, title, period_start, period_end, created_by)
        OUTPUT INSERTED.id
@@ -174,8 +185,8 @@ router.post('/schedules/bulk', requirePageAccess('management'), async (req, res,
     if (!scheduleId) return res.status(500).json({ error: 'Failed to create schedule' });
     let dayIndex = 0;
     let inserted = 0;
-    for (let d = new Date(start); d.toISOString().slice(0, 10) <= periodEnd; d.setUTCDate(d.getUTCDate() + 1)) {
-      const dateStr = d.toISOString().slice(0, 10);
+    for (let cur = periodStart; cur <= periodEnd; cur = addCalendarDays(cur, 1)) {
+      const dateStr = cur;
       const slot = normalized[dayIndex % normalized.length];
       if (slot === 'day' || slot === 'night') {
         await query(
@@ -320,17 +331,18 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
     const userId = req.user.id;
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
-    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
-    const start = new Date(y, m, 1);
-    const end = new Date(y, m + 1, 0);
+    const def = wallMonthYearInAppZone();
+    const m = month != null ? parseInt(month, 10) : def.monthIndex0;
+    const y = year != null ? parseInt(year, 10) : def.year;
+    const start = calendarMonthStartYmd(y, m);
+    const end = calendarMonthEndYmd(y, m);
     const result = await query(
       `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes, s.title AS schedule_title
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
        ORDER BY e.work_date`,
-      { tenantId, userId, start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+      { tenantId, userId, start, end }
     );
     const entries = (result.recordset || []).map((r) => ({
       entry_id: getRow(r, 'entry_id'),
@@ -353,12 +365,11 @@ router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, 
     const tenantId = req.user.tenant_id;
     const me = req.user.id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
-    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
-    const start = new Date(y, m, 1);
-    const end = new Date(y, m + 1, 0);
-    const startStr = start.toISOString().slice(0, 10);
-    const endStr = end.toISOString().slice(0, 10);
+    const def = wallMonthYearInAppZone();
+    const m = month != null ? parseInt(month, 10) : def.monthIndex0;
+    const y = year != null ? parseInt(year, 10) : def.year;
+    const startStr = calendarMonthStartYmd(y, m);
+    const endStr = calendarMonthEndYmd(y, m);
 
     const raw = typeof userIdsRaw === 'string' && userIdsRaw.trim()
       ? userIdsRaw.split(',').map((s) => s.trim()).filter(Boolean)
@@ -470,8 +481,9 @@ router.get('/shift-swaps/colleague-entries', requirePageAccess('profile'), async
   try {
     const tenantId = req.user.tenant_id;
     const colleagueId = req.query.user_id;
-    const m = req.query.month != null ? parseInt(req.query.month, 10) : new Date().getMonth();
-    const y = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    const def = wallMonthYearInAppZone();
+    const m = req.query.month != null ? parseInt(req.query.month, 10) : def.monthIndex0;
+    const y = req.query.year != null ? parseInt(req.query.year, 10) : def.year;
     if (!tenantId || !colleagueId) return res.status(400).json({ error: 'user_id required' });
     if (String(colleagueId).toLowerCase() === String(req.user.id).toLowerCase()) {
       return res.status(400).json({ error: 'Choose a colleague other than yourself' });
@@ -481,15 +493,15 @@ router.get('/shift-swaps/colleague-entries', requirePageAccess('profile'), async
       { uid: colleagueId, tenantId }
     );
     if (!ut.recordset?.length) return res.status(403).json({ error: 'User not in your organization' });
-    const start = new Date(y, m, 1);
-    const end = new Date(y, m + 1, 0);
+    const start = calendarMonthStartYmd(y, m);
+    const end = calendarMonthEndYmd(y, m);
     const result = await query(
       `SELECT e.id AS entry_id, e.work_date, e.shift_type
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
        ORDER BY e.work_date`,
-      { tenantId, userId: colleagueId, start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+      { tenantId, userId: colleagueId, start, end }
     );
     const entries = (result.recordset || []).map((row) => ({
       entry_id: getRow(row, 'entry_id'),
@@ -508,10 +520,11 @@ router.get('/shift-swaps/my', requirePageAccess('profile'), async (req, res, nex
     const tenantId = req.user.tenant_id;
     const userId = req.user.id;
     if (!tenantId) return res.json({ requests: [] });
-    const m = req.query.month != null ? parseInt(req.query.month, 10) : new Date().getMonth();
-    const y = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
-    const start = new Date(y, m, 1).toISOString().slice(0, 10);
-    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    const def = wallMonthYearInAppZone();
+    const m = req.query.month != null ? parseInt(req.query.month, 10) : def.monthIndex0;
+    const y = req.query.year != null ? parseInt(req.query.year, 10) : def.year;
+    const start = calendarMonthStartYmd(y, m);
+    const end = calendarMonthEndYmd(y, m);
     const result = await query(
       `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
@@ -865,8 +878,8 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
     const s1 = getRow(e1, 'shift_type');
     const d2 = getRow(e2, 'work_date');
     const s2 = getRow(e2, 'shift_type');
-    const d1s = d1 instanceof Date ? d1.toISOString().slice(0, 10) : String(d1).slice(0, 10);
-    const d2s = d2 instanceof Date ? d2.toISOString().slice(0, 10) : String(d2).slice(0, 10);
+    const d1s = toYmdFromDbOrString(d1);
+    const d2s = toYmdFromDbOrString(d2);
     const clash1 = await query(
       `SELECT COUNT(*) AS c FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id
@@ -1037,7 +1050,7 @@ router.get('/leave/balance', requirePageAccess('profile'), async (req, res, next
   try {
     const userId = req.user.id;
     const tenantId = req.user.tenant_id;
-    const year = req.query.year != null ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
     const result = await query(
       `SELECT leave_type, total_days, used_days FROM leave_balance WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year`,
       { userId, tenantId, year }
@@ -1176,7 +1189,8 @@ router.patch('/leave/applications/:id/review', requirePageAccess('management'), 
       { id, status, reviewedBy: req.user.id, reviewNotes: review_notes || null }
     );
     if (status === 'approved') {
-      const year = new Date(getRow(row, 'start_date')).getFullYear();
+      const startYmd = toYmdFromDbOrString(getRow(row, 'start_date'));
+      const year = startYmd.length >= 4 ? parseInt(startYmd.slice(0, 4), 10) : wallMonthYearInAppZone().year;
       const leaveType = getRow(row, 'leave_type');
       const days = getRow(row, 'days_requested') || 0;
       const uid = getRow(row, 'user_id');
@@ -1704,10 +1718,11 @@ router.get('/schedule-events', requirePageAccess('profile'), async (req, res, ne
     const tenantId = req.user.tenant_id;
     const { month, year } = req.query;
     if (!tenantId) return res.json({ events: [] });
-    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
-    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
-    const start = new Date(y, m, 1).toISOString().slice(0, 10);
-    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    const def = wallMonthYearInAppZone();
+    const m = month != null ? parseInt(month, 10) : def.monthIndex0;
+    const y = year != null ? parseInt(year, 10) : def.year;
+    const start = calendarMonthStartYmd(y, m);
+    const end = calendarMonthEndYmd(y, m);
     const result = await query(
       `SELECT id, title, event_date, description, created_at FROM schedule_events
        WHERE tenant_id = @tenantId AND event_date >= @start AND event_date <= @end ORDER BY event_date`,

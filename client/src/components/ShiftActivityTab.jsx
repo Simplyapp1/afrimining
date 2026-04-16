@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { todayYmd } from '../lib/appTime.js';
 import { shiftClock } from '../api';
 import { useAuth } from '../AuthContext';
 import InfoHint from './InfoHint.jsx';
@@ -21,7 +22,7 @@ function userIdOf(row) {
 export default function ShiftActivityTab() {
   const { user: me } = useAuth();
   const [sessions, setSessions] = useState([]);
-  const [teamDate, setTeamDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [teamDate, setTeamDate] = useState(() => todayYmd());
   /** command_centre = CC page or CC tab grants; all = whole tenant (management only). */
   const [teamScope, setTeamScope] = useState('command_centre');
   const [team, setTeam] = useState(null);

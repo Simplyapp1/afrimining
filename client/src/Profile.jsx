@@ -1,15 +1,28 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
 import ShiftActivityTab from './components/ShiftActivityTab.jsx';
+import ProductivityScoreTab from './components/ProductivityScoreTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
+import {
+  addCalendarDays,
+  calendarMonthStartYmd,
+  daysInCalendarMonth,
+  isWeekendYmd,
+  startPadForCalendarMonth,
+  todayYmd,
+  toYmdFromDbOrString,
+  wallMonthYearInAppZone,
+} from './lib/appTime.js';
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
+  { id: 'productivity_score', label: 'Productivity score' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'leave', label: 'Leave application' },
   { id: 'documents', label: 'Employee documents' },
@@ -31,11 +44,12 @@ function shortFirstName(name) {
 }
 
 function getDaysInMonth(year, month) {
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
-  const startPad = first.getDay();
-  const days = last.getDate();
-  return { startPad, days, year, month };
+  return {
+    startPad: startPadForCalendarMonth(year, month),
+    days: daysInCalendarMonth(year, month),
+    year,
+    month,
+  };
 }
 
 function formatDate(d) {
@@ -45,20 +59,19 @@ function formatDate(d) {
 
 function isoDate(d) {
   if (!d) return '';
-  if (typeof d === 'string') return d.slice(0, 10);
-  try {
-    return new Date(d).toISOString().slice(0, 10);
-  } catch {
-    return '';
-  }
+  return toYmdFromDbOrString(d);
 }
 
 export default function Profile() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('profile');
-  const [activeTab, setActiveTab] = useState('schedule');
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
-  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
+  const tabFromUrl = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(() =>
+    TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'schedule'
+  );
+  const [calendarMonth, setCalendarMonth] = useState(() => wallMonthYearInAppZone().monthIndex0);
+  const [calendarYear, setCalendarYear] = useState(() => wallMonthYearInAppZone().year);
   const [scheduleEntries, setScheduleEntries] = useState([]);
   const [leaveBalance, setLeaveBalance] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
@@ -119,13 +132,18 @@ export default function Profile() {
     }
   }, [ccTeamPanelCollapsed]);
 
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t && TABS.some((x) => x.id === t)) setActiveTab(t);
+  }, [searchParams]);
+
   const calendar = useMemo(() => getDaysInMonth(calendarYear, calendarMonth), [calendarYear, calendarMonth]);
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   const scheduleByDate = useMemo(() => {
     const map = {};
     scheduleEntries.forEach((e) => {
-      const d = e.work_date ? new Date(e.work_date).toISOString().slice(0, 10) : null;
+      const d = e.work_date ? toYmdFromDbOrString(e.work_date) : null;
       if (d) map[d] = e;
     });
     return map;
@@ -134,8 +152,8 @@ export default function Profile() {
   const swapBadgesByDate = useMemo(() => {
     const m = {};
     (swapRequests || []).forEach((r) => {
-      const rd = r.requester_work_date ? new Date(r.requester_work_date).toISOString().slice(0, 10) : null;
-      const cd = r.counterparty_work_date ? new Date(r.counterparty_work_date).toISOString().slice(0, 10) : null;
+      const rd = r.requester_work_date ? toYmdFromDbOrString(r.requester_work_date) : null;
+      const cd = r.counterparty_work_date ? toYmdFromDbOrString(r.counterparty_work_date) : null;
       [rd, cd].filter(Boolean).forEach((d) => {
         if (!m[d]) m[d] = [];
         m[d].push(r);
@@ -348,7 +366,11 @@ export default function Profile() {
             <li key={tab.id}>
               <button
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  if (tab.id === 'schedule') setSearchParams({});
+                  else setSearchParams({ tab: tab.id });
+                }}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors rounded-none min-w-0 ${
                   activeTab === tab.id
                     ? 'bg-brand-50 text-brand-700 border-l-2 border-l-brand-500 font-medium'
@@ -560,14 +582,11 @@ export default function Profile() {
                     ))}
                     {Array.from({ length: calendar.days }, (_, i) => {
                       const day = i + 1;
-                      const date = new Date(calendarYear, calendarMonth, day);
-                      const dateStr = date.toISOString().slice(0, 10);
+                      const monthStart = calendarMonthStartYmd(calendarYear, calendarMonth);
+                      const dateStr = addCalendarDays(monthStart, day - 1);
                       const shift = scheduleByDate[dateStr];
-                      const isToday =
-                        date.getDate() === new Date().getDate() &&
-                        date.getMonth() === new Date().getMonth() &&
-                        date.getFullYear() === new Date().getFullYear();
-                      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                      const isToday = dateStr === todayYmd();
+                      const isWeekend = isWeekendYmd(dateStr);
                       const isSelected = selectedScheduleDate === dateStr;
                       const daySwaps = swapBadgesByDate[dateStr] || [];
                       const hasSwap = daySwaps.length > 0;
@@ -680,6 +699,8 @@ export default function Profile() {
               onError={setError}
             />
           )}
+
+          {activeTab === 'productivity_score' && <ProductivityScoreTab />}
 
           {activeTab === 'shift_activity' && <ShiftActivityTab />}
 
@@ -871,7 +892,7 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
       const buf = await wb.xlsx.writeBuffer();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([buf]));
-      a.download = `pip-${(p.title || 'plan').replace(/[^a-z0-9]/gi, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `pip-${(p.title || 'plan').replace(/[^a-z0-9]/gi, '-')}-${todayYmd()}.xlsx`;
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (err) {
@@ -1550,7 +1571,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
                 const buf = await wb.xlsx.writeBuffer();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(new Blob([buf]));
-                a.download = `leave-history-${new Date().toISOString().slice(0, 10)}.xlsx`;
+                a.download = `leave-history-${todayYmd()}.xlsx`;
                 a.click();
                 URL.revokeObjectURL(a.href);
               } catch (err) {

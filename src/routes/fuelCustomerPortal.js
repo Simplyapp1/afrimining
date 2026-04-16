@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { toYmdFromDbOrString } from '../lib/appTime.js';
 
 const PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
 const REQUEST_TYPES = new Set(['normal', 'top_up', 'emergency']);
@@ -97,7 +98,7 @@ router.post('/requests', async (req, res, next) => {
     if (!dueRaw) return res.status(400).json({ error: 'due_date required' });
     const dueDate = new Date(dueRaw);
     if (Number.isNaN(dueDate.getTime())) return res.status(400).json({ error: 'due_date invalid' });
-    const dueStr = dueDate.toISOString().slice(0, 10);
+    const dueStr = toYmdFromDbOrString(dueDate);
     const delivery_site_name = String(b.delivery_site_name || '').trim();
     const delivery_site_address = String(b.delivery_site_address || '').trim();
     if (!delivery_site_name || !delivery_site_address) {

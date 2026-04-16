@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { profileManagement as pm, shiftClock } from './api';
+import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
+import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
+  { id: 'employee_productivity_score', label: 'Employee productivity score' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'shift-swaps', label: 'Shift swap requests' },
   { id: 'schedule-events', label: 'Schedule events' },
@@ -320,6 +323,8 @@ export default function Management() {
             />
           )}
 
+          {activeSection === 'employee_productivity_score' && <EmployeeProductivityScoreSection />}
+
           {activeSection === 'shift_activity' && (
             <div className="space-y-6">
               <div>
@@ -528,8 +533,8 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
   const [showBulk, setShowBulk] = useState(false);
   const [bulkUserId, setBulkUserId] = useState('');
   const [bulkStartDate, setBulkStartDate] = useState(() => {
-    const d = new Date();
-    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+    const w = wallMonthYearInAppZone();
+    return calendarMonthStartYmd(w.year, w.monthIndex0);
   });
   const [bulkMonths, setBulkMonths] = useState(1);
   const [bulkPattern, setBulkPattern] = useState(['day', 'day', 'night', 'off']);

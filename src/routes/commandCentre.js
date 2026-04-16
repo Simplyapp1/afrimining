@@ -25,6 +25,7 @@ import {
   commandCentreReminderHtml,
 } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
+import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -542,7 +543,7 @@ router.post('/suspend-truck', async (req, res, next) => {
             { tenantId, entityId: String(truckId) }
           );
           const endsAt = endRow.recordset?.[0]?.suspension_ends_at;
-          if (endsAt) suspensionEndsAt = typeof endsAt === 'string' ? endsAt : (endsAt.toISOString ? endsAt.toISOString().slice(0, 10) : String(endsAt));
+          if (endsAt) suspensionEndsAt = toYmdFromDbOrString(endsAt) || (typeof endsAt === 'string' ? endsAt : String(endsAt));
         }
         const contractorEmails = truckContractorId ? await getContractorUserEmails(query, tenantId, truckContractorId) : await getTenantUserEmails(query, tenantId);
         const ccAm = await getCommandCentreAndAccessManagementEmails(query);
@@ -1914,11 +1915,8 @@ router.get('/shift-items', async (req, res, next) => {
     if (days > 30) days = 30;
     const routeFilter = (req.query.route || '').toString().trim();
 
-    const dateTo = new Date();
-    const dateFrom = new Date();
-    dateFrom.setDate(dateFrom.getDate() - days);
-    const dateFromStr = dateFrom.toISOString().slice(0, 10);
-    const dateToStr = dateTo.toISOString().slice(0, 10);
+    const dateToStr = todayYmd();
+    const dateFromStr = addCalendarDays(dateToStr, -days);
 
     let sql = `
       SELECT r.*,
@@ -2001,7 +1999,7 @@ router.get('/shift-report-export', async (req, res, next) => {
     const result = await query(sql, params);
     const reports = (result.recordset || []).map(rowToShiftReport);
 
-    const reportDateStr = (r) => (r.report_date || r.shift_date || r.created_at) ? new Date(r.report_date || r.shift_date || r.created_at).toISOString().slice(0, 10) : '';
+    const reportDateStr = (r) => ((r.report_date || r.shift_date || r.created_at) ? toYmdFromDbOrString(r.report_date || r.shift_date || r.created_at) : '');
     const routeStr = (r) => (r.route || '').trim() || '—';
     const statusStr = (r) => r.status || '—';
     const str = (v) => (v != null && v !== '') ? String(v).trim() : '—';
@@ -2342,12 +2340,10 @@ router.get('/delivery-timeline', async (req, res, next) => {
     }
     const rows = result.recordset || [];
 
-    const today = new Date();
+    const endYmd = todayYmd();
     const dayKeys = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      dayKeys.push(d.toISOString().slice(0, 10));
+      dayKeys.push(addCalendarDays(endYmd, -i));
     }
     const daySet = new Set(dayKeys);
     const byRoute = {};

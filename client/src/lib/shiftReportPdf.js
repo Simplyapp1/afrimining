@@ -254,7 +254,7 @@ export function generateShiftReportPdf(report, options = {}) {
   doc.setTextColor(...TEXT_MUTED);
   const routeText = report.route ? `Route: ${report.route}` : 'Route: —';
   doc.text(routeText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(routeText) / 2, headerY + 5);
-  const subtitleText = "Thinkers Afrika's Official Controller Shift Documentation";
+  const subtitleText = "Simplyapp official controller shift documentation";
   doc.text(subtitleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(subtitleText) / 2, headerY + 10);
   yRef.current = headerY + 15;
   doc.setDrawColor(...BLACK);

@@ -8,7 +8,7 @@ import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
-import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
+import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, distributionListEmailHtml, distributionListEmailHtmlPerContractor } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
 
@@ -93,7 +93,9 @@ async function listMessageAttachments(tenantId, messageIds = []) {
 router.use(requireAuth);
 router.use(loadUser);
 // Command Centre users need read access to trucks/drivers for Report composition (shift reports)
-router.use(requirePageAccess(['contractor', 'rector', 'access_management', 'command_centre']));
+router.use(
+  requirePageAccess(['contractor', 'contractor_management', 'rector', 'access_management', 'command_centre'])
+);
 
 function requireTenant(req, res, next) {
   if (!getTenantId(req)) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
@@ -234,20 +236,131 @@ async function resolveContractorIdForCreate(req, bodyContractorId) {
   return bodyContractorId && allowed.includes(bodyContractorId) ? bodyContractorId : allowed[0];
 }
 
+const CONTRACTOR_SELECT_EXTENDED = `id, tenant_id, name, created_at, updated_at,
+  description, trading_name, vat_number, company_registration, website,
+  primary_email, primary_phone, physical_address, sector, cidb_registration`;
+
 /** POST create a contractor (company) under current tenant. */
 router.post('/contractors', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
-    const { name } = req.body || {};
-    const nameTrim = name != null ? String(name).trim() : '';
+    const b = req.body || {};
+    const nameTrim = b.name != null ? String(b.name).trim() : '';
     if (!nameTrim) return res.status(400).json({ error: 'Contractor name is required.' });
-    const result = await query(
-      `INSERT INTO contractors (tenant_id, name) OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at VALUES (@tenantId, @name)`,
-      { tenantId, name: nameTrim }
-    );
+    const desc = b.description != null ? String(b.description).trim() : null;
+    const tradingName = b.trading_name != null ? String(b.trading_name).trim() : null;
+    const vatNumber = b.vat_number != null ? String(b.vat_number).trim() : null;
+    const companyReg = b.company_registration != null ? String(b.company_registration).trim() : null;
+    const website = b.website != null ? String(b.website).trim() : null;
+    const primaryEmail = b.primary_email != null ? String(b.primary_email).trim() : null;
+    const primaryPhone = b.primary_phone != null ? String(b.primary_phone).trim() : null;
+    const physicalAddress = b.physical_address != null ? String(b.physical_address).trim() : null;
+    const sector = b.sector != null ? String(b.sector).trim() : null;
+    const cidbRegistration = b.cidb_registration != null ? String(b.cidb_registration).trim() : null;
+
+    const insParams = {
+      tenantId,
+      name: nameTrim,
+      description: desc || null,
+      trading_name: tradingName || null,
+      vat_number: vatNumber || null,
+      company_registration: companyReg || null,
+      website: website || null,
+      primary_email: primaryEmail || null,
+      primary_phone: primaryPhone || null,
+      physical_address: physicalAddress || null,
+      sector: sector || null,
+      cidb_registration: cidbRegistration || null,
+    };
+    let result;
+    try {
+      result = await query(
+        `INSERT INTO contractors (tenant_id, name, description, trading_name, vat_number, company_registration, website, primary_email, primary_phone, physical_address, sector, cidb_registration)
+         OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at, INSERTED.updated_at,
+                INSERTED.description, INSERTED.trading_name, INSERTED.vat_number, INSERTED.company_registration, INSERTED.website,
+                INSERTED.primary_email, INSERTED.primary_phone, INSERTED.physical_address, INSERTED.sector, INSERTED.cidb_registration
+         VALUES (@tenantId, @name, @description, @trading_name, @vat_number, @company_registration, @website, @primary_email, @primary_phone, @physical_address, @sector, @cidb_registration)`,
+        insParams
+      );
+    } catch (e) {
+      if ((e.message || '').includes('Invalid column') || (e.message || '').includes('description')) {
+        result = await query(
+          `INSERT INTO contractors (tenant_id, name) OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at, INSERTED.updated_at VALUES (@tenantId, @name)`,
+          { tenantId, name: nameTrim }
+        );
+      } else {
+        throw e;
+      }
+    }
     const row = result.recordset[0];
     res.status(201).json({ contractor: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH update contractor company record (tenant + access scope). */
+router.patch('/contractors/:id', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const { id } = req.params;
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length > 0 && !allowed.some((a) => String(a).toLowerCase() === String(id).toLowerCase())) {
+      return res.status(403).json({ error: 'Not permitted for this contractor' });
+    }
+    const chk = await query(`SELECT id FROM contractors WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    if (!chk.recordset?.length) return res.status(404).json({ error: 'Contractor not found' });
+
+    const b = req.body || {};
+    const fields = [
+      'name',
+      'description',
+      'trading_name',
+      'vat_number',
+      'company_registration',
+      'website',
+      'primary_email',
+      'primary_phone',
+      'physical_address',
+      'sector',
+      'cidb_registration',
+    ];
+    const updates = [];
+    const params = { id, tenantId };
+    for (const f of fields) {
+      if (b[f] !== undefined) {
+        updates.push(`${f} = @${f}`);
+        if (f === 'name') {
+          const nm = b[f] != null ? String(b[f]).trim() : '';
+          if (!nm) return res.status(400).json({ error: 'Name cannot be empty' });
+          params[f] = nm;
+        } else {
+          const v = b[f];
+          params[f] = v === '' || v == null ? null : String(v).trim();
+        }
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    updates.push('updated_at = SYSUTCDATETIME()');
+    let result;
+    try {
+      result = await query(
+        `UPDATE contractors SET ${updates.join(', ')}
+         OUTPUT INSERTED.id, INSERTED.tenant_id, INSERTED.name, INSERTED.created_at, INSERTED.updated_at,
+                INSERTED.description, INSERTED.trading_name, INSERTED.vat_number, INSERTED.company_registration, INSERTED.website,
+                INSERTED.primary_email, INSERTED.primary_phone, INSERTED.physical_address, INSERTED.sector, INSERTED.cidb_registration
+         WHERE id = @id AND tenant_id = @tenantId`,
+        params
+      );
+    } catch (e) {
+      if ((e.message || '').includes('Invalid column') || (e.message || '').includes('description')) {
+        return res.status(503).json({ error: 'Run: npm run db:contractor-company-profile' });
+      }
+      throw e;
+    }
+    res.json({ contractor: result.recordset[0] });
   } catch (err) {
     next(err);
   }
@@ -260,18 +373,30 @@ router.get('/contractors', async (req, res, next) => {
     if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
     const allowed = await getAllowedContractorIds(req);
     let result;
-    if (allowed === null) {
-      result = await query(`SELECT id, tenant_id, name, created_at FROM contractors WHERE tenant_id = @tenantId ORDER BY name`, { tenantId });
-    } else if (allowed.length === 0) {
-      return res.json({ contractors: [] });
-    } else {
+    const runList = async (extended) => {
+      const cols = extended
+        ? CONTRACTOR_SELECT_EXTENDED
+        : 'id, tenant_id, name, created_at, ISNULL(updated_at, created_at) AS updated_at';
+      const q = `SELECT ${cols} FROM contractors WHERE tenant_id = @tenantId`;
+      if (allowed === null) {
+        return query(`${q} ORDER BY name`, { tenantId });
+      }
+      if (allowed.length === 0) {
+        return { recordset: [] };
+      }
       const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
       const params = { tenantId };
-      allowed.forEach((id, i) => { params[`c${i}`] = id; });
-      result = await query(
-        `SELECT id, tenant_id, name, created_at FROM contractors WHERE tenant_id = @tenantId AND id IN (${placeholders}) ORDER BY name`,
-        params
-      );
+      allowed.forEach((cid, i) => { params[`c${i}`] = cid; });
+      return query(`${q} AND id IN (${placeholders}) ORDER BY name`, params);
+    };
+    try {
+      result = await runList(true);
+    } catch (e) {
+      if ((e.message || '').includes('Invalid column') || (e.message || '').includes('description')) {
+        result = await runList(false);
+      } else {
+        throw e;
+      }
     }
     res.json({ contractors: result.recordset || [] });
   } catch (err) {
@@ -1254,6 +1379,7 @@ router.get('/expiries', listHandler('contractor_expiries', 'expiry_date'));
 router.post('/expiries', async (req, res, next) => {
   try {
     const { item_type, item_ref, issued_date, expiry_date, description } = req.body || {};
+    if (!expiry_date) return res.status(400).json({ error: 'expiry_date is required' });
     const result = await query(
       `INSERT INTO contractor_expiries (tenant_id, item_type, item_ref, issued_date, expiry_date, description)
        OUTPUT INSERTED.* VALUES (@tenantId, @item_type, @item_ref, @issued_date, @expiry_date, @description)`,
@@ -1267,6 +1393,74 @@ router.post('/expiries', async (req, res, next) => {
       }
     );
     res.status(201).json({ expiry: result.recordset[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/expiries/:id', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const chk = await query(`SELECT id, contractor_id FROM contractor_expiries WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Expiry record not found' });
+    const allowed = await getAllowedContractorIds(req);
+    const cid = row.contractor_id ?? row.contractor_Id;
+    if (allowed && allowed.length > 0 && cid && !allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+      return res.status(403).json({ error: 'Not permitted for this record' });
+    }
+    const { item_type, item_ref, issued_date, expiry_date, description } = req.body || {};
+    const updates = [];
+    const params = { id, tenantId };
+    if (item_type !== undefined) {
+      updates.push('item_type = @item_type');
+      params.item_type = item_type || 'license';
+    }
+    if (item_ref !== undefined) {
+      updates.push('item_ref = @item_ref');
+      params.item_ref = item_ref || null;
+    }
+    if (issued_date !== undefined) {
+      updates.push('issued_date = @issued_date');
+      params.issued_date = issued_date || null;
+    }
+    if (expiry_date !== undefined) {
+      updates.push('expiry_date = @expiry_date');
+      params.expiry_date = expiry_date || null;
+    }
+    if (description !== undefined) {
+      updates.push('description = @description');
+      params.description = description || null;
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    const result = await query(
+      `UPDATE contractor_expiries SET ${updates.join(', ')} OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
+      params
+    );
+    res.json({ expiry: result.recordset[0] });
+  } catch (err) {
+    if (String(err.message || '').includes('issued_date')) {
+      return res.status(503).json({ error: 'Run contractor DB migrations (issued_date on contractor_expiries).' });
+    }
+    next(err);
+  }
+});
+
+router.delete('/expiries/:id', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const chk = await query(`SELECT id, contractor_id FROM contractor_expiries WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Expiry record not found' });
+    const allowed = await getAllowedContractorIds(req);
+    const cid = row.contractor_id ?? row.contractor_Id;
+    if (allowed && allowed.length > 0 && cid && !allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+      return res.status(403).json({ error: 'Not permitted for this record' });
+    }
+    await query(`DELETE FROM contractor_expiries WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    res.status(204).send();
   } catch (err) {
     next(err);
   }
@@ -2930,11 +3124,11 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
   const contractorIds = opts.contractorIds ?? null;
   const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
-  const title = opts.title ?? 'Thinkers – Fleet list';
+  const title = opts.title ?? 'Simplyapp – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   const sheet = workbook.addWorksheet('Fleet list', { views: [{ showGridLines: true }] });
   const numCols = headers.length;
   let HEADER_ROW;
@@ -2973,11 +3167,11 @@ async function buildDriverListExcel(query, tenantId, routeIds, columns = null, o
   const contractorIds = opts.contractorIds ?? null;
   const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
-  const title = opts.title ?? 'Thinkers – Driver list';
+  const title = opts.title ?? 'Simplyapp – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   const sheet = workbook.addWorksheet('Driver list', { views: [{ showGridLines: true }] });
   const numCols = headers.length;
   let HEADER_ROW;
@@ -3018,7 +3212,7 @@ async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols
     getDriverListData(query, tenantId, routeIds, driverCols, opts.contractorId ?? null, opts.contractorIds ?? null, listQ),
   ]);
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   const infoOpts = { companyName: opts.companyName, routeName: opts.routeName, generated: opts.generated };
 
   function addListSheet(sheetName, headers, keys, rows) {
@@ -3116,7 +3310,7 @@ async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts
   const contractorIds = opts.contractorIds ?? null;
   const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
-  const title = opts.title ?? 'Thinkers – Fleet list';
+  const title = opts.title ?? 'Simplyapp – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }
@@ -3126,7 +3320,7 @@ async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opt
   const contractorIds = opts.contractorIds ?? null;
   const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
-  const title = opts.title ?? 'Thinkers – Driver list';
+  const title = opts.title ?? 'Simplyapp – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }
@@ -3134,82 +3328,21 @@ async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opt
 /** Plain-text body for distribution list email (same content as HTML template). */
 function distributionListEmailText(listLabel, routeLabel) {
   return [
-    'Thinkers',
+    'Simplyapp',
     'Access management – List distribution',
     '',
     `Please find attached the ${listLabel}${routeLabel}.`,
-    'Generated from Thinkers Access management.',
+    'Generated from Simplyapp Access management.',
     '',
     'Monitoring Team',
     'For further inquiries please contact: vincent@thinkersafrika.co.za',
     '',
-    'Thinkers Afrika Management System',
+    'Simplyapp',
   ].join('\n');
 }
 
-/** Blue-themed HTML for distribution list email with Monitoring Team signature */
-function distributionListEmailHtml(listLabel, routeLabel) {
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #e8f4fc;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-    <div style="background: linear-gradient(135deg, #1e5a8e 0%, #2563eb 50%, #1d4ed8 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Thinkers</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">Access management – List distribution</p>
-    </div>
-    <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0;">
-      <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">Please find attached the <strong>${escapeHtml(listLabel)}</strong>${escapeHtml(routeLabel)}.</p>
-      <p style="margin: 0 0 24px 0; font-size: 14px; color: #64748b;">Generated from Thinkers Access management.</p>
-      <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px;">
-        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #1e40af;">Monitoring Team</p>
-        <p style="margin: 0; font-size: 13px; color: #475569;">For further inquiries please contact: <a href="mailto:vincent@thinkersafrika.co.za" style="color: #2563eb; text-decoration: none;">vincent@thinkersafrika.co.za</a></p>
-      </div>
-    </div>
-    <p style="margin: 24px 0 0 0; font-size: 12px; color: #94a3b8; text-align: center;">Thinkers Afrika Management System</p>
-  </div>
-</body>
-</html>`;
-}
-function escapeHtml(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/** Email body for per-contractor distribution. titleOverride = route name (replaces "Thinkers" in header when provided). */
-function distributionListEmailHtmlPerContractor(entries, titleOverride = null) {
-  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Thinkers';
-  const listItems = entries.map((e) => `${escapeHtml(e.contractorName)} – ${escapeHtml(e.routeName)}`).join('</li><li>');
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #e8f4fc;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-    <div style="background: linear-gradient(135deg, #1e5a8e 0%, #2563eb 50%, #1d4ed8 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">${escapeHtml(title)}</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">List distribution (per company)</p>
-    </div>
-    <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0;">
-      <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155; line-height: 1.5;">Please find attached the following lists (one per company enrolled on this route):</p>
-      <ul style="margin: 0 0 24px 0; padding-left: 20px; font-size: 14px; color: #334155; line-height: 1.6;"><li>${listItems}</li></ul>
-      <p style="margin: 0 0 24px 0; font-size: 14px; color: #64748b;">File names: Route name, Company name, Date and time.</p>
-      <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px;">
-        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #1e40af;">Monitoring Team</p>
-        <p style="margin: 0; font-size: 13px; color: #475569;">For further inquiries please contact: <a href="mailto:vincent@thinkersafrika.co.za" style="color: #2563eb; text-decoration: none;">vincent@thinkersafrika.co.za</a></p>
-      </div>
-    </div>
-    <p style="margin: 24px 0 0 0; font-size: 12px; color: #94a3b8; text-align: center;">Thinkers Afrika Management System</p>
-  </div>
-</body>
-</html>`;
-}
-
 function distributionListEmailTextPerContractor(entries, titleOverride = null) {
-  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Thinkers';
+  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Simplyapp';
   const lines = entries.map((e) => `• ${e.contractorName} – ${e.routeName}`);
   return [
     title,
@@ -3223,7 +3356,7 @@ function distributionListEmailTextPerContractor(entries, titleOverride = null) {
     'Monitoring Team',
     'For further inquiries please contact: vincent@thinkersafrika.co.za',
     '',
-    'Thinkers Afrika Management System',
+    'Simplyapp',
   ].join('\n');
 }
 
@@ -3478,7 +3611,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
       }
 
       if (attachments.length === 0) return { ok: false, status: 400, error: 'No lists generated for selected contractors (no routes or data).' };
-      subject = 'Lists per contractor – Thinkers';
+      subject = 'Lists per contractor – Simplyapp';
       bodyHtml = distributionListEmailHtmlPerContractor(entries);
       bodyText = distributionListEmailTextPerContractor(entries);
     } else {
@@ -3527,7 +3660,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
 
       const routeLabel = routeIds.length > 0 ? ` (${routeIds.length} route${routeIds.length !== 1 ? 's' : ''} selected)` : ' (all approved)';
       const listLabel = listType === 'both' ? 'Fleet and driver lists' : listType === 'fleet' ? 'Fleet list' : 'Driver list';
-      subject = `${listLabel} – Thinkers`;
+      subject = `${listLabel} – Simplyapp`;
       bodyHtml = distributionListEmailHtml(listLabel.toLowerCase(), routeLabel);
       bodyText = distributionListEmailText(listLabel.toLowerCase(), routeLabel);
     }
@@ -3895,7 +4028,6 @@ router.patch('/info', async (req, res, next) => {
     const fields = [
       'company_name', 'cipc_registration_number', 'cipc_registration_date',
       'admin_name', 'admin_email', 'admin_phone',
-      'control_room_contact', 'control_room_phone', 'control_room_email',
       'mechanic_name', 'mechanic_phone', 'mechanic_email',
       'emergency_contact_1_name', 'emergency_contact_1_phone',
       'emergency_contact_2_name', 'emergency_contact_2_phone',

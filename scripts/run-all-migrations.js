@@ -66,6 +66,8 @@ const SCRIPTS = [
   'db:transport-operations-presentations',
   'db:tasks',
   'db:tasks-library',
+  'db:project-tracker',
+  'db:resources-register',
   'db:tracking-integration',
   'db:tracking-expand-contractor-truck',
   'db:fleet-app-comments',
@@ -76,6 +78,7 @@ const SCRIPTS = [
   'db:contractor-driver-linked-truck',
   'db:contractor-messages-platform',
   'db:profile-management',
+  'db:work-schedule-times',
   'db:employee-details',
   'db:profile-missing-tables',
   'db:shift-clock',
@@ -94,6 +97,7 @@ const SCRIPTS = [
   'db:recruitment',
   'db:recruitment-expand',
   'db:tracking-setup',
+  'db:user-page-roles-sync-check',
 ];
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';

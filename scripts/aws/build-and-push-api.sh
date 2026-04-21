@@ -15,10 +15,10 @@ aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "${ECR_REPO_URL%/*}"
 
 echo "Building image..."
-docker build -t thinkers-api:"$IMAGE_TAG" .
+docker build -t simplyapp-api:"$IMAGE_TAG" .
 
 echo "Tagging image..."
-docker tag thinkers-api:"$IMAGE_TAG" "$ECR_REPO_URL:$IMAGE_TAG"
+docker tag simplyapp-api:"$IMAGE_TAG" "$ECR_REPO_URL:$IMAGE_TAG"
 
 echo "Pushing image..."
 docker push "$ECR_REPO_URL:$IMAGE_TAG"

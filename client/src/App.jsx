@@ -7,22 +7,17 @@ import ResetPassword from './ResetPassword';
 import SignUp from './SignUp';
 import UserManagement from './UserManagement';
 import TenantManagement from './TenantManagement';
-import Contractor from './Contractor';
-import CommandCentre from './CommandCentre';
-import AccessManagement from './AccessManagement';
-import Rector from './Rector';
-import Tasks from './Tasks';
 import Profile from './Profile';
 import Management from './Management';
-import ReportBreakdown from './ReportBreakdown';
 import Recruitment from './Recruitment';
-import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
-import FuelSupplyManagement from './FuelSupplyManagement';
-import FuelCustomerOrders from './FuelCustomerOrders';
 import TeamLeaderAdmin from './TeamLeaderAdmin';
 import PerformanceEvaluations from './PerformanceEvaluations';
 import Auditor from './Auditor';
+import TasksTracker from './TasksTracker.jsx';
+import ProjectTracker from './ProjectTracker.jsx';
+import ResourcesRegister from './ResourcesRegister.jsx';
+import ContractorManagement from './ContractorManagement.jsx';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
@@ -78,7 +73,6 @@ function PageGate({ pathKey, children }) {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/report-breakdown" element={<ReportBreakdown />} />
       <Route path="/login" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
@@ -88,20 +82,23 @@ function AppRoutes() {
         <Route index element={<FirstAllowedRedirect />} />
         <Route path="users" element={<PageGate pathKey="/users"><UserManagement /></PageGate>} />
         <Route path="tenants" element={<PageGate pathKey="/tenants"><TenantManagement /></PageGate>} />
-        <Route path="contractor" element={<PageGate pathKey="/contractor"><Contractor /></PageGate>} />
-        <Route path="command-centre" element={<PageGate pathKey="/command-centre"><CommandCentre /></PageGate>} />
-        <Route path="fuel-supply-management" element={<PageGate pathKey="/fuel-supply-management"><FuelSupplyManagement /></PageGate>} />
-        <Route path="fuel-customer-orders" element={<PageGate pathKey="/fuel-customer-orders"><FuelCustomerOrders /></PageGate>} />
-        <Route path="access-management" element={<PageGate pathKey="/access-management"><AccessManagement /></PageGate>} />
-        <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
-        <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />
         <Route path="profile" element={<PageGate pathKey="/profile"><Profile /></PageGate>} />
         <Route path="team-leader-admin" element={<PageGate pathKey="/team-leader-admin"><TeamLeaderAdmin /></PageGate>} />
         <Route path="performance-evaluations" element={<PageGate pathKey="/performance-evaluations"><PerformanceEvaluations /></PageGate>} />
         <Route path="auditor" element={<PageGate pathKey="/auditor"><Auditor /></PageGate>} />
         <Route path="management" element={<PageGate pathKey="/management"><Management /></PageGate>} />
+        <Route path="tasks-tracker" element={<PageGate pathKey="/tasks-tracker"><TasksTracker /></PageGate>} />
+        <Route path="project-tracker" element={<PageGate pathKey="/project-tracker"><ProjectTracker /></PageGate>} />
+        <Route path="resources-register" element={<PageGate pathKey="/resources-register"><ResourcesRegister /></PageGate>} />
+        <Route
+          path="contractor-management"
+          element={
+            <PageGate pathKey="/contractor-management">
+              <ContractorManagement />
+            </PageGate>
+          }
+        />
         <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
-        <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
         <Route path="no-access" element={<NoAccess />} />
       </Route>

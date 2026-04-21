@@ -6,7 +6,7 @@
    does not tint scrollbars, form controls, or html “gutter” behind the layout. */
 html:not(.dark) {
   color-scheme: light;
-  background-color: #fafafa;
+  background-color: #f8fafc;
 }
 
 body {
@@ -15,7 +15,7 @@ body {
 
 html.dark {
   color-scheme: dark;
-  background-color: #0a0a0a;
+  background-color: #020617;
 }
 
 html.dark body {
@@ -75,7 +75,7 @@ body,
 html.dark,
 html.dark body,
 html.dark #root {
-  scrollbar-color: #525252 #262626;
+  scrollbar-color: #475569 #0f172a;
 }
 
 /* WebKit (Chrome, Safari, Edge) – global */
@@ -107,18 +107,18 @@ body::-webkit-scrollbar-thumb:hover,
 html.dark::-webkit-scrollbar-track,
 html.dark body::-webkit-scrollbar-track,
 html.dark #root::-webkit-scrollbar-track {
-  background: #262626;
+  background: #0f172a;
 }
 html.dark::-webkit-scrollbar-thumb,
 html.dark body::-webkit-scrollbar-thumb,
 html.dark #root::-webkit-scrollbar-thumb {
-  background: #525252;
-  border-color: #262626;
+  background: #475569;
+  border-color: #0f172a;
 }
 html.dark::-webkit-scrollbar-thumb:hover,
 html.dark body::-webkit-scrollbar-thumb:hover,
 html.dark #root::-webkit-scrollbar-thumb:hover {
-  background: #737373;
+  background: #64748b;
 }
 
 /* All scrollable containers (overflow-auto, overflow-y-auto, etc.) – Firefox */

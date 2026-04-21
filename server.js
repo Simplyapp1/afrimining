@@ -9,28 +9,21 @@ import authRoutes from './src/routes/auth.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import tenantRoutes from './src/routes/tenants.js';
 import userRoutes from './src/routes/users.js';
-import contractorRoutes from './src/routes/contractor.js';
-import commandCentreRoutes, { runCommandCentreReminderNotifications } from './src/routes/commandCentre.js';
-import reportBreakdownRoutes from './src/routes/reportBreakdown.js';
 import testEmailRoutes from './src/routes/testEmail.js';
-import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
 import profileManagementRoutes from './src/routes/profileManagement.js';
 import shiftClockRoutes, { runShiftClockAlerts } from './src/routes/shiftClock.js';
 import shiftScoreRoutes from './src/routes/shiftScore.js';
-import progressReportsRoutes from './src/routes/progressReports.js';
-import actionPlansRoutes from './src/routes/actionPlans.js';
-import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
 import recruitmentRoutes from './src/routes/recruitment.js';
 import accountingRoutes from './src/routes/accounting.js';
-import fuelSupplyRoutes from './src/routes/fuelSupply.js';
-import fuelCustomerPortalRoutes from './src/routes/fuelCustomerPortal.js';
 import teamGoalsRoutes from './src/routes/teamGoals.js';
 import performanceEvaluationsRoutes from './src/routes/performanceEvaluations.js';
 import userCareerRoutes from './src/routes/userCareer.js';
+import tasksRoutes, { runOverdueTaskNotifications, runTaskReminderNotifications } from './src/routes/tasks.js';
+import projectTrackerRoutes from './src/routes/projectTracker.js';
+import resourcesRegisterRoutes from './src/routes/resourcesRegister.js';
+import contractorRoutes from './src/routes/contractor.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
-import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
-import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 
 const app = express();
 // Azure App Service / reverse proxies: correct req.secure, req.ip, and secure session cookies
@@ -109,8 +102,8 @@ if (sessionSameSite === 'none' && !sessionSecure) {
 
 app.use(
   session({
-    name: 'thinkers.sid',
-    secret: process.env.SESSION_SECRET || 'thinkers-dev-secret-change-in-production',
+    name: 'simplyapp.sid',
+    secret: process.env.SESSION_SECRET || 'simplyapp-dev-secret-change-in-production',
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -127,38 +120,30 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/contractor', contractorRoutes);
-app.use('/api/command-centre', commandCentreRoutes);
-app.use('/api/report-breakdown', reportBreakdownRoutes);
 app.use('/api/test-email', testEmailRoutes);
-app.use('/api/tasks', tasksRoutes);
 app.use('/api/profile-management', profileManagementRoutes);
 app.use('/api/shift-clock', shiftClockRoutes);
 app.use('/api/shift-score', shiftScoreRoutes);
-app.use('/api/progress-reports', progressReportsRoutes);
-app.use('/api/action-plans', actionPlansRoutes);
-app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
-app.use('/api/fuel-supply', fuelSupplyRoutes);
-app.use('/api/fuel-customer-portal', fuelCustomerPortalRoutes);
 app.use('/api/team-goals', teamGoalsRoutes);
 app.use('/api/performance-evaluations', performanceEvaluationsRoutes);
 app.use('/api/user-career', userCareerRoutes);
+app.use('/api/tasks', tasksRoutes);
+app.use('/api/project-tracker', projectTrackerRoutes);
+app.use('/api/resources-register', resourcesRegisterRoutes);
+app.use('/api/contractor', contractorRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {
   const pathLower = `${req.path || ''} ${req.originalUrl || ''}`.toLowerCase();
-  const truckAnalysisHint =
-    pathLower.includes('truck-analysis') &&
-    'Command Centre truck analysis requires this API version (routes under /api/command-centre/truck-analysis) and the truck_analysis_handovers table. On the database host run: npm run db:truck-analysis-handovers — then redeploy the Node server so it includes src/routes/commandCentre.js with those routes.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || genericHint,
+    hint: genericHint,
   });
 });
 
@@ -197,9 +182,19 @@ setInterval(() => {
   runShiftClockAlerts().catch(() => {});
 }, 5 * 60 * 1000);
 
+setInterval(() => {
+  runOverdueTaskNotifications().catch(() => {});
+}, 24 * 60 * 60 * 1000);
+
+setInterval(() => {
+  runTaskReminderNotifications().catch(() => {});
+}, 60 * 60 * 1000);
+
 const server = app.listen(PORT, () => {
-  console.log(`Thinkers API running at http://localhost:${PORT}`);
+  console.log(`Simplyapp API running at http://localhost:${PORT}`);
   runShiftClockAlerts().catch(() => {});
+  runOverdueTaskNotifications().catch(() => {});
+  runTaskReminderNotifications().catch(() => {});
   if (!isDbEnvConfigured()) {
     console.warn(
       'Database: no SQLSERVER_* / AZURE_SQL_* / connection string in environment — API routes that use the DB will fail. ' +
@@ -216,26 +211,6 @@ const server = app.listen(PORT, () => {
   if (emailOn && !(process.env.FRONTEND_ORIGIN || process.env.APP_URL || '').trim()) {
     console.warn('Email: set FRONTEND_ORIGIN (or APP_URL) so password-reset links are not localhost-only.');
   }
-  // Run overdue task emails every 24 hours
-  const OVERDUE_INTERVAL_MS = 24 * 60 * 60 * 1000;
-  setInterval(() => {
-    runOverdueTaskNotifications().catch((e) => console.error('[tasks] Overdue notify error:', e?.message || e));
-  }, OVERDUE_INTERVAL_MS);
-  // Auto-reinstate suspensions when duration has ended (every 15 min)
-  const AUTO_REINSTATE_MS = 15 * 60 * 1000;
-  setInterval(() => {
-    runAutoReinstateSuspensions().catch((e) => console.error('[autoReinstate]', e?.message || e));
-  }, AUTO_REINSTATE_MS);
-  // Pilot list distribution (Access Management schedules) — check every minute
-  const PILOT_DIST_MS = 60 * 1000;
-  setInterval(() => {
-    runPilotListDistributions().catch((e) => console.error('[pilot-distribution]', e?.message || e));
-  }, PILOT_DIST_MS);
-  // Command Centre notes reminders — check every minute
-  const CC_REMINDER_MS = 60 * 1000;
-  setInterval(() => {
-    runCommandCentreReminderNotifications().catch((e) => console.error('[cc-reminder]', e?.message || e));
-  }, CC_REMINDER_MS);
 });
 
 server.on('error', (err) => {

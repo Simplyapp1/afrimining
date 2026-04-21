@@ -14,7 +14,7 @@ router.post('/', requireAuth, loadUser, async (req, res) => {
   if (!isEmailConfigured()) {
     return res.status(503).json({
       error: 'Email not configured',
-      hint: 'Set EMAIL_USER and EMAIL_PASS in .env (use a Gmail App Password for Gmail).',
+      hint: 'Set EMAIL_USER and EMAIL_PASS in .env (Gmail: use an App Password with 2FA — https://myaccount.google.com/apppasswords).',
     });
   }
 
@@ -28,8 +28,8 @@ router.post('/', requireAuth, loadUser, async (req, res) => {
 
   const html = `
     <div style="font-family: sans-serif; max-width: 560px;">
-      <h2 style="color: #1a1a1a;">Thinkers – test email</h2>
-      <p>This is a test email from the Thinkers app.</p>
+      <h2 style="color: #1a1a1a;">Simplyapp – test email</h2>
+      <p>This is a test email from the Simplyapp app.</p>
       <p>If you received this, your email configuration (SMTP / App Password) is working.</p>
       <p style="color: #666; font-size: 14px;">Sent at ${new Date().toISOString()}</p>
     </div>
@@ -38,7 +38,7 @@ router.post('/', requireAuth, loadUser, async (req, res) => {
   try {
     await sendEmail({
       to,
-      subject: 'Thinkers – test email',
+      subject: 'Simplyapp – test email',
       body: html,
       html: true,
     });
@@ -56,7 +56,9 @@ router.post('/', requireAuth, loadUser, async (req, res) => {
 router.get('/', (req, res) => {
   res.json({
     configured: isEmailConfigured(),
-    hint: isEmailConfigured() ? 'POST to this URL with optional { "to": "email@example.com" } to send a test email (requires auth).' : 'Set EMAIL_USER and EMAIL_PASS in .env.',
+    hint: isEmailConfigured()
+      ? 'POST to this URL with optional { "to": "email@example.com" } to send a test email (requires auth).'
+      : 'Set EMAIL_USER and EMAIL_PASS in .env (default host smtp.gmail.com unless EMAIL_HOST is set).',
   });
 });
 

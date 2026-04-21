@@ -1,29 +1,7 @@
 /**
  * HTML email templates for notifications.
- * Charcoal theme for breakdown report; clean layout for confirmations.
+ * Shared Simplyapp frame (table-based, widely compatible HTML) for all transactional mail.
  */
-
-const wrap = (content, title, options = {}) => {
-  const charcoal = options.charcoal !== false;
-  const bg = charcoal ? '#2d3748' : '#f7fafc';
-  const cardBg = charcoal ? '#1a202c' : '#ffffff';
-  const text = charcoal ? '#e2e8f0' : '#2d3748';
-  const muted = charcoal ? '#a0aec0' : '#718096';
-  const accent = '#3182ce';
-  const font = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(title)}</title></head>
-<body style="margin:0;padding:0;background:${bg};font-family:${font};color:${text};font-size:15px;line-height:1.5;">
-  <div style="max-width:600px;margin:0 auto;padding:24px;">
-    <div style="background:${cardBg};border-radius:12px;padding:28px;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-      ${content}
-    </div>
-    <p style="text-align:center;color:${muted};font-size:12px;margin-top:20px;">Thinkers · Fleet & logistics</p>
-  </div>
-</body>
-</html>`;
-};
 
 function escapeHtml(s) {
   if (s == null) return '';
@@ -34,13 +12,120 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-const BORDER_COLOR = '#b4b4b4';
+const SA_FONT = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`;
+
+const ACCENT_HEADER = {
+  brand:
+    'background:linear-gradient(135deg,#020617 0%,#0f172a 48%,#075985 100%);border-bottom:3px solid #f59e0b;',
+  rose:
+    'background:linear-gradient(135deg,#450a0a 0%,#991b1b 42%,#dc2626 100%);border-bottom:3px solid #fecaca;',
+  amber:
+    'background:linear-gradient(135deg,#422006 0%,#b45309 45%,#ea580c 100%);border-bottom:3px solid #fde68a;',
+  emerald:
+    'background:linear-gradient(135deg,#022c22 0%,#047857 45%,#10b981 100%);border-bottom:3px solid #6ee7b7;',
+};
+
+/**
+ * Unified Simplyapp transactional document (outer table, preheader, branded header, body, legal footer).
+ */
+function simplyappDocumentTable({
+  documentTitle,
+  preheader = '',
+  accent = 'brand',
+  variant = 'light',
+  heroKicker = 'SIMPLYAPP',
+  heroLine1,
+  heroLine2 = '',
+  bodyInnerHtml,
+  footerBlockHtml = '',
+}) {
+  const outerBg = variant === 'dark' ? '#020617' : '#f1f5f9';
+  const cardBg = variant === 'dark' ? '#0f172a' : '#ffffff';
+  const textColor = variant === 'dark' ? '#e2e8f0' : '#334155';
+  const footerStripBg = variant === 'dark' ? '#020617' : '#f8fafc';
+  const footerStripBorder = variant === 'dark' ? '#1e293b' : '#e2e8f0';
+  const cardBorder = variant === 'dark' ? '#1e293b' : '#e2e8f0';
+  const headerStyle = ACCENT_HEADER[accent] || ACCENT_HEADER.brand;
+  const mutedSmall = variant === 'dark' ? '#94a3b8' : '#64748b';
+  const mutedTiny = variant === 'dark' ? '#64748b' : '#94a3b8';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>${escapeHtml(documentTitle)}</title>
+</head>
+<body style="margin:0;padding:0;background:${outerBg};font-family:${SA_FONT};-webkit-text-size-adjust:100%;">
+  <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeHtml(preheader || documentTitle)}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${outerBg};">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;border-radius:16px;overflow:hidden;border:1px solid ${cardBorder};box-shadow:0 16px 48px rgba(15,23,42,0.12);">
+          <tr>
+            <td style="${headerStyle}padding:22px 28px;">
+              <p style="margin:0 0 6px;font-size:10px;font-weight:800;letter-spacing:0.26em;color:rgba(255,255,255,0.58);">${escapeHtml(heroKicker)}</p>
+              <p style="margin:0 0 4px;font-size:19px;font-weight:700;line-height:1.25;color:#f8fafc;">${escapeHtml(heroLine1)}</p>
+              ${heroLine2 ? `<p style="margin:0;font-size:14px;line-height:1.45;color:rgba(248,250,252,0.88);">${escapeHtml(heroLine2)}</p>` : ''}
+            </td>
+          </tr>
+          <tr>
+            <td style="background:${cardBg};color:${textColor};padding:28px 28px 24px;font-size:15px;line-height:1.55;">
+              ${bodyInnerHtml}
+              ${footerBlockHtml}
+            </td>
+          </tr>
+          <tr>
+            <td style="background:${footerStripBg};padding:16px 28px;border-top:1px solid ${footerStripBorder};">
+              <p style="margin:0;font-size:11px;color:${mutedSmall};text-align:center;line-height:1.65;">
+                You are receiving this because your organisation uses Simplyapp.<br/>
+                <span style="color:${mutedTiny};">© ${new Date().getFullYear()} Lean and Maoto Tech Solutions</span>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+const wrap = (content, title, options = {}) => {
+  const charcoal = options.charcoal !== false;
+  const variant = charcoal ? 'dark' : 'light';
+  return simplyappDocumentTable({
+    documentTitle: title,
+    preheader: options.preheader || title,
+    accent: 'brand',
+    variant,
+    heroKicker: 'SIMPLYAPP',
+    heroLine1: 'Simplyapp',
+    heroLine2: title,
+    bodyInnerHtml: content,
+    footerBlockHtml: '',
+  });
+};
+
+function defaultAppUrlForEmail() {
+  return (process.env.FRONTEND_ORIGIN || process.env.APP_URL || '').trim().replace(/\/$/, '');
+}
+
+const BORDER_COLOR = '#cbd5e1';
 const ROW_STYLE = `padding:10px 12px;border:1px solid ${BORDER_COLOR};vertical-align:top;`;
-const LABEL_STYLE = `width:38%;font-weight:bold;color:#212121;font-size:13px;${ROW_STYLE}`;
-const VALUE_STYLE = `color:#505050;font-size:13px;white-space:pre-wrap;word-break:break-word;${ROW_STYLE}`;
+const LABEL_STYLE = `width:38%;font-weight:bold;color:#0f172a;font-size:13px;${ROW_STYLE}`;
+const VALUE_STYLE = `color:#475569;font-size:13px;white-space:pre-wrap;word-break:break-word;${ROW_STYLE}`;
 
 function sectionBar(title) {
-  return `<div style="background:#000;color:#fff;padding:8px 12px;margin:0 0 0;font-size:12px;font-weight:bold;letter-spacing:0.05em;">${escapeHtml(title)}</div>`;
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 12px;border-radius:8px;overflow:hidden;"><tr><td style="background:linear-gradient(90deg,#0f172a,#1e3a5f);color:#fff;padding:10px 14px;font-size:11px;font-weight:800;letter-spacing:0.14em;">${escapeHtml(String(title).toUpperCase())}</td></tr></table>`;
+}
+
+/** Recruitment / candidate-facing label (Simplyapp brand strip). */
+function recruitmentBadge(label) {
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 20px;"><tr><td align="center">
+    <span style="display:inline-block;background:linear-gradient(135deg,#0f172a,#075985);color:#fff;padding:10px 22px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:0.18em;border:1px solid rgba(245,158,11,0.5);">${escapeHtml(String(label).toUpperCase())}</span>
+  </td></tr></table>`;
 }
 
 function keyValueRow(label, value) {
@@ -86,9 +171,8 @@ export function breakdownReportHtml(data) {
 
   const content = `
     <div style="margin-bottom:20px;">
-      <div style="background:#000;color:#fff;padding:12px 16px;text-align:center;font-size:18px;font-weight:bold;letter-spacing:0.05em;">BREAKDOWN REPORT</div>
-      <p style="margin:10px 0 0;color:#505050;font-size:13px;text-align:center;">External driver report · Thinkers</p>
-      <div style="border:1px solid ${BORDER_COLOR};border-top:none;height:2px;margin:0 0 20px;"></div>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-radius:10px;overflow:hidden;margin:0 0 10px;"><tr><td style="background:linear-gradient(135deg,#020617,#075985);color:#fff;padding:14px 18px;text-align:center;font-size:16px;font-weight:800;letter-spacing:0.12em;">BREAKDOWN REPORT</td></tr></table>
+      <p style="margin:0 0 16px;color:#64748b;font-size:13px;text-align:center;">External driver report · Simplyapp</p>
     </div>
 
     ${sectionBar('Incident details')}
@@ -322,28 +406,23 @@ export function truckReinstatedToRectorHtml({ truckRegistration, tenantName }) {
   return wrap(content, 'Truck reinstated', { charcoal: true });
 }
 
-/** Green modern layout for reinstatement emails (contractor, rector, access management). */
+/** Reinstatement emails — Simplyapp emerald accent (shared shell). */
 function reinstatementEmailLayout(title, subtitle, innerContent) {
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #f0fdf4;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-    <div style="background: linear-gradient(135deg, #047857 0%, #059669 50%, #10b981 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Reinstatement</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">${escapeHtml(title)} · ${escapeHtml(subtitle)}</p>
-    </div>
-    <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #a7f3d0;">
-      ${innerContent}
-      <div style="border-top: 1px solid #a7f3d0; padding-top: 20px; margin-top: 20px;">
-        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #047857;">Thinkers · Fleet & logistics</p>
-        <p style="margin: 0; font-size: 13px; color: #475569;">Access Management & route rectors</p>
-      </div>
-    </div>
-    <p style="margin: 24px 0 0 0; font-size: 12px; color: #94a3b8; text-align: center;">Thinkers Afrika Management System</p>
-  </div>
-</body>
-</html>`;
+  const footerBlockHtml = `
+    <div style="border-top:1px solid #a7f3d0;margin-top:24px;padding-top:20px;">
+      <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#047857;">Simplyapp · Fleet & logistics</p>
+      <p style="margin:0;font-size:13px;color:#64748b;">Access Management & route rectors</p>
+    </div>`;
+  return simplyappDocumentTable({
+    documentTitle: `Reinstatement — ${title}`,
+    preheader: `${title} · ${subtitle}`,
+    accent: 'emerald',
+    variant: 'light',
+    heroLine1: 'Reinstatement',
+    heroLine2: `${title} · ${subtitle}`,
+    bodyInnerHtml: innerContent,
+    footerBlockHtml,
+  });
 }
 
 /** Reinstated (truck or driver): to contractor – green modern template. */
@@ -395,28 +474,23 @@ function taskSectionBar(title) {
   return `<div style="background: linear-gradient(90deg, #991b1b, #b91c1c); color:#fff; padding:8px 12px; margin:0 0 12px; font-size:12px; font-weight:bold; letter-spacing:0.05em; border-radius:6px;">${escapeHtml(title)}</div>`;
 }
 
-/** Red modern email layout (tasks, work schedule, etc.). section = "Tasks" | "Work schedule" etc. */
+/** Tasks, security, and urgent notices — Simplyapp rose accent (shared shell). */
 function taskEmailLayout(subtitle, innerContent, section = 'Tasks') {
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #fef2f2;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-    <div style="background: linear-gradient(135deg, #991b1b 0%, #dc2626 50%, #b91c1c 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Thinkers</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">${escapeHtml(section)} · ${escapeHtml(subtitle)}</p>
-    </div>
-    <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #fecaca;">
-      ${innerContent}
-      <div style="border-top: 1px solid #fecaca; padding-top: 20px; margin-top: 20px;">
-        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #b91c1c;">Monitoring Team</p>
-        <p style="margin: 0; font-size: 13px; color: #475569;">For further inquiries please contact: <a href="mailto:vincent@thinkersafrika.co.za" style="color: #dc2626; text-decoration: none;">vincent@thinkersafrika.co.za</a></p>
-      </div>
-    </div>
-    <p style="margin: 24px 0 0 0; font-size: 12px; color: #94a3b8; text-align: center;">Thinkers Afrika Management System</p>
-  </div>
-</body>
-</html>`;
+  const footerBlockHtml = `
+    <div style="border-top:1px solid #fecaca;margin-top:24px;padding-top:20px;">
+      <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#b91c1c;">Monitoring team</p>
+      <p style="margin:0;font-size:13px;color:#64748b;">For further inquiries: <a href="mailto:vincent@thinkersafrika.co.za" style="color:#dc2626;text-decoration:none;">vincent@thinkersafrika.co.za</a></p>
+    </div>`;
+  return simplyappDocumentTable({
+    documentTitle: `${section} — ${subtitle}`,
+    preheader: `${section} · ${subtitle}`,
+    accent: 'rose',
+    variant: 'light',
+    heroLine1: section,
+    heroLine2: subtitle,
+    bodyInnerHtml: innerContent,
+    footerBlockHtml,
+  });
 }
 
 /** Shared task email template: same layout as task creation (assigned). Subtitle + first paragraph + Task details table + link. */
@@ -429,7 +503,7 @@ function taskNotificationHtml(subtitle, firstParagraphHtml, taskTitle, dueDate, 
       ['Title', taskTitle],
       ['Due date', dueStr],
     ])}
-    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks?task=' + (taskId || ''))}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open task in Thinkers →</a></p>
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks-tracker?open=' + (taskId || ''))}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Open task in Tasks Tracker →</a></p>
   `;
   return taskEmailLayout(subtitle, content);
 }
@@ -450,15 +524,58 @@ export function taskCompletedHtml({ taskTitle, completedByName, completedAt, tas
       ['Completed by', completedByName],
       ['Completed at', completedAt],
     ])}
-    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks?task=' + (taskId || ''))}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View in Thinkers →</a></p>
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks-tracker?open=' + (taskId || ''))}" style="color: #2563eb; font-weight: 600; text-decoration: none;">View in Tasks Tracker →</a></p>
   `;
   return taskEmailLayout('Task completed', content);
 }
 
 /** Task overdue: same template as task creation (assigned), with overdue message. */
 export function taskOverdueHtml({ taskTitle, dueDate, taskId, appUrl }) {
-  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">This task is <strong style="color: #b91c1c;">overdue</strong>. Please complete it or update the due date.</p>`;
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">This task is <strong style="color: #b45309;">overdue</strong>. Please complete it or update the due date.</p>`;
   return taskNotificationHtml('Task overdue', firstParagraph, taskTitle, dueDate, taskId, appUrl);
+}
+
+/** Reminder fired (hourly / daily / one-off). */
+export function taskReminderDueHtml({ taskTitle, note, remindAt, taskId, appUrl }) {
+  const when = remindAt ? new Date(remindAt).toLocaleString() : '—';
+  const noteHtml = note ? `<p style="margin: 0 0 12px 0; font-size: 14px; color: #475569;"><strong>Note:</strong> ${escapeHtml(String(note))}</p>` : '';
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">This is a scheduled reminder for your task.</p>${noteHtml}`;
+  const content = `
+    ${firstParagraph}
+    ${taskSectionBar('Reminder')}
+    ${taskKeyValueTable([
+      ['Task', taskTitle],
+      ['Remind at', when],
+    ])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks-tracker?open=' + (taskId || ''))}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Open in Tasks Tracker →</a></p>
+  `;
+  return taskEmailLayout('Task reminder', content);
+}
+
+/** New comment on a task (notify creator + assignees except author when visibility is team-wide). */
+export function taskNewCommentHtml({ taskTitle, authorName, excerpt, visibilityLabel, taskId, appUrl }) {
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;"><strong>${escapeHtml(authorName || 'Someone')}</strong> added a note${visibilityLabel ? ` <span style="color:#64748b;">(${escapeHtml(visibilityLabel)})</span>` : ''}.</p>`;
+  const ex = excerpt ? `<p style="margin: 0 0 12px 0; padding: 12px; background: #f1f5f9; border-radius: 8px; font-size: 14px; color: #334155;">${escapeHtml(excerpt)}</p>` : '';
+  const content = `
+    ${firstParagraph}
+    ${ex}
+    ${taskSectionBar('Task')}
+    ${taskKeyValueTable([['Title', taskTitle]])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks-tracker?open=' + (taskId || ''))}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Open in Tasks Tracker →</a></p>
+  `;
+  return taskEmailLayout('New task note', content);
+}
+
+/** Task updated (generic notify for major field changes). */
+export function taskUpdatedNotifyHtml({ taskTitle, summaryLines, taskId, appUrl }) {
+  const rows = (summaryLines || []).map(([k, v]) => [k, v]);
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A task you follow has been updated.</p>
+    ${taskSectionBar('Changes')}
+    ${taskKeyValueTable([['Task', taskTitle], ...rows])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/tasks-tracker?open=' + (taskId || ''))}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Open in Tasks Tracker →</a></p>
+  `;
+  return taskEmailLayout('Task updated', content);
 }
 
 /** Work schedule created: notify the employee. Same red template as task emails (Tasks · subtitle, Task details bar, table, link). */
@@ -555,8 +672,14 @@ export function rewardIssuedHtml({ rewardType, description, issuedByName, appUrl
   return taskEmailLayout('Reward issued', content);
 }
 
-function shiftLabelForEmail(shiftType) {
-  return String(shiftType).toLowerCase() === 'night' ? 'Night' : 'Day';
+function shiftLabelForEmail(shiftTypeOrLabel) {
+  const s = String(shiftTypeOrLabel || '').trim();
+  if (!s) return '—';
+  if (s.includes('–') || s.includes('—')) return s;
+  const t = s.toLowerCase();
+  if (t === 'night') return 'Night';
+  if (t === 'custom') return 'Custom hours';
+  return 'Day';
 }
 
 function dateLabelForEmail(date) {
@@ -700,28 +823,23 @@ function goldSectionBar(title) {
   return `<div style="background: linear-gradient(90deg, #b45309, #d97706); color:#fff; padding:8px 12px; margin:0 0 12px; font-size:12px; font-weight:bold; letter-spacing:0.05em; border-radius:6px;">${escapeHtml(title)}</div>`;
 }
 
-/** Gold layout for super admin notifications (same structure as task template, gold theme). */
+/** Super-admin notices — Simplyapp amber accent (shared shell). */
 function goldEmailLayout(subtitle, innerContent, section = 'User management') {
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: #fffbeb;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-    <div style="background: linear-gradient(135deg, #b45309 0%, #d97706 50%, #ea580c 100%); border-radius: 12px; padding: 24px 28px; color: #fff; margin-bottom: 24px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Thinkers</h1>
-      <p style="margin: 0; font-size: 14px; opacity: 0.95;">${escapeHtml(section)} · ${escapeHtml(subtitle)}</p>
-    </div>
-    <div style="background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #fde68a;">
-      ${innerContent}
-      <div style="border-top: 1px solid #fde68a; padding-top: 20px; margin-top: 20px;">
-        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #b45309;">Monitoring Team</p>
-        <p style="margin: 0; font-size: 13px; color: #475569;">For further inquiries please contact: <a href="mailto:vincent@thinkersafrika.co.za" style="color: #d97706; text-decoration: none;">vincent@thinkersafrika.co.za</a></p>
-      </div>
-    </div>
-    <p style="margin: 24px 0 0 0; font-size: 12px; color: #94a3b8; text-align: center;">Thinkers Afrika Management System</p>
-  </div>
-</body>
-</html>`;
+  const footerBlockHtml = `
+    <div style="border-top:1px solid #fde68a;margin-top:24px;padding-top:20px;">
+      <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#b45309;">Monitoring team</p>
+      <p style="margin:0;font-size:13px;color:#64748b;">For further inquiries: <a href="mailto:vincent@thinkersafrika.co.za" style="color:#d97706;text-decoration:none;">vincent@thinkersafrika.co.za</a></p>
+    </div>`;
+  return simplyappDocumentTable({
+    documentTitle: `${section} — ${subtitle}`,
+    preheader: `${section} · ${subtitle}`,
+    accent: 'amber',
+    variant: 'light',
+    heroLine1: section,
+    heroLine2: subtitle,
+    bodyInnerHtml: innerContent,
+    footerBlockHtml,
+  });
 }
 
 /** New user created: notify super admin (gold template). */
@@ -842,10 +960,15 @@ function formatReportDate(value) {
 /** Progress report shared via email: report title, date, sender, custom message, PDF attached. */
 export function progressReportSharedHtml({ reportTitle, reportDate, reportingStatus, senderName, message, appUrl }) {
   const dateStr = formatReportDate(reportDate);
+  const base = (appUrl || defaultAppUrlForEmail() || '').trim().replace(/\/$/, '');
+  const rectorHref = base ? `${base}/rector` : '';
   const intro = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.6;">${senderName ? `<strong>${escapeHtml(senderName)}</strong> has shared a progress report with you.` : 'A progress report has been shared with you.'}</p>`;
   const customMsg = message && String(message).trim()
     ? `<div style="margin: 0 0 16px 0; padding: 12px 16px; background: #f8fafc; border-left: 4px solid #0ea5e9; border-radius: 0 6px 6px 0;"><p style="margin: 0; font-size: 14px; color: #475569; line-height: 1.5; white-space: pre-wrap;">${escapeHtml(message)}</p></div>`
     : '';
+  const openLink = rectorHref
+    ? `<a href="${escapeHtml(rectorHref)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Progress reports in Simplyapp →</a>`
+    : '<span style="color:#64748b;font-size:14px;">Open Progress reports in Simplyapp from your usual app link.</span>';
   const content = `
     ${intro}
     ${customMsg}
@@ -856,14 +979,16 @@ export function progressReportSharedHtml({ reportTitle, reportDate, reportingSta
       ...(reportingStatus ? [['Reporting status', reportingStatus]] : []),
     ])}
     <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">The full report is attached as a PDF. You can also view it in the app.</p>
-    <p style="margin: 16px 0 0;"><a href="https://wiseapp.co.za/rector" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Progress reports in Thinkers →</a></p>
+    <p style="margin: 16px 0 0;">${openLink}</p>
   `;
   return taskEmailLayout('Progress report shared', content, 'Progress reports');
 }
 
 /** Action plan shared via email: plan title, project name, document date, sender, custom message, PDF attached. */
-export function actionPlanSharedHtml({ planTitle, projectName, documentDate, documentId, senderName, message }) {
+export function actionPlanSharedHtml({ planTitle, projectName, documentDate, documentId, senderName, message, appUrl }) {
   const dateStr = formatReportDate(documentDate);
+  const base = (appUrl || defaultAppUrlForEmail() || '').trim().replace(/\/$/, '');
+  const rectorHref = base ? `${base}/rector` : '';
   const intro = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.6;">${senderName ? `<strong>${escapeHtml(senderName)}</strong> has shared an action plan with you.` : 'An action plan has been shared with you.'}</p>`;
   const customMsg = message && String(message).trim()
     ? `<div style="margin: 0 0 16px 0; padding: 12px 16px; background: #f8fafc; border-left: 4px solid #0ea5e9; border-radius: 0 6px 6px 0;"><p style="margin: 0; font-size: 14px; color: #475569; line-height: 1.5; white-space: pre-wrap;">${escapeHtml(message)}</p></div>`
@@ -874,31 +999,32 @@ export function actionPlanSharedHtml({ planTitle, projectName, documentDate, doc
     ['Document date', dateStr],
     ...(documentId ? [['Document ID', documentId]] : []),
   ];
+  const openLink = rectorHref
+    ? `<a href="${escapeHtml(rectorHref)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Action plans in Simplyapp →</a>`
+    : '<span style="color:#64748b;font-size:14px;">Open Action plans in Simplyapp from your usual app link.</span>';
   const content = `
     ${intro}
     ${customMsg}
     ${taskSectionBar('Action plan details')}
     ${taskKeyValueTable(details)}
     <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">The full action plan is attached as a PDF. You can also view it in the app under View Project timelines and action plan.</p>
-    <p style="margin: 16px 0 0;"><a href="https://wiseapp.co.za/rector" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Action plans in Thinkers →</a></p>
+    <p style="margin: 16px 0 0;">${openLink}</p>
   `;
   return taskEmailLayout('Action plan shared', content, 'Action plans');
 }
 
-// ——— Recruitment emails (fancy template) ———
+// ——— Recruitment emails (Simplyapp shell + branded callouts) ———
 
 /** Panel member added: invite to Recruitment Panel. */
 export function recruitmentPanelInviteHtml(fullName) {
   const name = escapeHtml(fullName || 'Panel member');
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">RECRUITMENT</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">You're on the panel</h1>
+    ${recruitmentBadge('Recruitment')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">You're on the panel</h1>
     <p style="margin:0 0 16px;">Hello ${name},</p>
     <p style="margin:0 0 16px;">You have been added to the <strong>Recruitment Panel</strong>. You can now participate in interview grading and evaluations from the Recruitment section of the app.</p>
-    <p style="margin:24px 0 0;padding:16px;background:#edf2f7;border-radius:8px;color:#4a5568;font-size:14px;">Log in to Thinkers and go to <strong>Recruitment → Panel</strong> to view and grade candidates.</p>
-    <p style="margin:20px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:24px 0 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #0284c7;border-radius:0 10px 10px 0;color:#334155;font-size:14px;line-height:1.55;">Log in to Simplyapp and go to <strong>Recruitment → Panel</strong> to view and grade candidates.</p>
+    <p style="margin:20px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Added to Recruitment Panel', { charcoal: false });
 }
@@ -910,18 +1036,16 @@ export function recruitmentInterviewInviteHtml({ name, vacancyTitle, interviewDa
   const parts = [];
   if (interviewDate) parts.push(`<strong>Date & time:</strong> ${escapeHtml(interviewDate)}`);
   if (interviewLocation) parts.push(`<strong>Location:</strong> ${escapeHtml(interviewLocation)}`);
-  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#edf2f7;border-radius:8px;color:#2d3748;">${parts.join('<br/>')}</div>` : '';
+  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #0284c7;border-radius:0 10px 10px 0;color:#334155;line-height:1.55;">${parts.join('<br/>')}</div>` : '';
   const notesBlock = (interviewNotes && String(interviewNotes).trim()) ? `<p style="margin:16px 0 0;">${escapeHtml(String(interviewNotes).trim())}</p>` : '';
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">INTERVIEW INVITATION</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">You're invited for an interview</h1>
+    ${recruitmentBadge('Interview invitation')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">You're invited for an interview</h1>
     <p style="margin:0 0 16px;">Hello ${n},</p>
     <p style="margin:0 0 16px;">You are invited for an interview for the position: <strong>${role}</strong>.</p>
     ${detailsBlock}
     ${notesBlock}
-    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:24px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Interview invitation', { charcoal: false });
 }
@@ -933,18 +1057,16 @@ export function recruitmentPanelInterviewReminderHtml({ applicantName, vacancyTi
   const parts = [];
   if (interviewDate) parts.push(`<strong>Date & time:</strong> ${escapeHtml(interviewDate)}`);
   if (interviewLocation) parts.push(`<strong>Location:</strong> ${escapeHtml(interviewLocation)}`);
-  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#edf2f7;border-radius:8px;color:#2d3748;">${parts.join('<br/>')}</div>` : '';
+  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #0284c7;border-radius:0 10px 10px 0;color:#334155;line-height:1.55;">${parts.join('<br/>')}</div>` : '';
   const notesBlock = (interviewNotes && String(interviewNotes).trim()) ? `<p style="margin:16px 0 0;">${escapeHtml(String(interviewNotes).trim())}</p>` : '';
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">PANEL REMINDER</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Interview scheduled – your presence requested</h1>
+    ${recruitmentBadge('Panel reminder')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">Interview scheduled – your presence requested</h1>
     <p style="margin:0 0 16px;">You are requested to attend the interview for <strong>${name}</strong> (position: <strong>${role}</strong>).</p>
     ${detailsBlock}
     ${notesBlock}
-    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Please log in to Thinkers → Recruitment → Panel to grade this candidate after the interview.</p>
-    <p style="margin:12px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:24px 0 0;color:#64748b;font-size:14px;">Please log in to Simplyapp → Recruitment → Panel to grade this candidate after the interview.</p>
+    <p style="margin:12px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Panel – interview scheduled', { charcoal: false });
 }
@@ -954,14 +1076,12 @@ export function recruitmentScreeningRegretHtml({ name, vacancyTitle }) {
   const n = escapeHtml(name || 'Applicant');
   const role = escapeHtml(vacancyTitle || 'the role');
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#553c9a;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">APPLICATION UPDATE</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Update on your application</h1>
+    ${recruitmentBadge('Application update')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">Update on your application</h1>
     <p style="margin:0 0 16px;">Hello ${n},</p>
     <p style="margin:0 0 16px;">Thank you for your interest in the position: <strong>${role}</strong>. After careful consideration, we have decided to move forward with other candidates at this time.</p>
-    <p style="margin:16px 0 0;color:#4a5568;">We encourage you to apply again in the future. We wish you the best in your job search.</p>
-    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:16px 0 0;color:#475569;">We encourage you to apply again in the future. We wish you the best in your job search.</p>
+    <p style="margin:24px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Application update', { charcoal: false });
 }
@@ -971,14 +1091,12 @@ export function recruitmentCongratulationsHtml({ name, vacancyTitle }) {
   const n = escapeHtml(name || 'Candidate');
   const role = escapeHtml(vacancyTitle || 'the role');
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#276749;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">CONGRATULATIONS</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">We'd like to offer you the position</h1>
+    ${recruitmentBadge('Congratulations')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">We'd like to offer you the position</h1>
     <p style="margin:0 0 16px;">Hello ${n},</p>
     <p style="margin:0 0 16px;">Congratulations! We are pleased to offer you the position of <strong>${role}</strong>.</p>
-    <p style="margin:16px 0 0;padding:16px;background:#f0fff4;border-radius:8px;color:#276749;">Please respond to this email to accept the offer. We look forward to having you on the team.</p>
-    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:16px 0 0;padding:16px;background:#ecfdf5;border:1px solid #a7f3d0;border-left:4px solid #059669;border-radius:0 10px 10px 0;color:#065f46;line-height:1.55;">Please respond to this email to accept the offer. We look forward to having you on the team.</p>
+    <p style="margin:24px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Job offer', { charcoal: false });
 }
@@ -988,14 +1106,12 @@ export function recruitmentAppointmentRegretHtml({ name, vacancyTitle }) {
   const n = escapeHtml(name || 'Candidate');
   const role = escapeHtml(vacancyTitle || 'the role');
   const content = `
-    <div style="text-align:center;margin-bottom:24px;">
-      <div style="display:inline-block;background:#553c9a;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">APPLICATION UPDATE</div>
-    </div>
-    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Update on your application</h1>
+    ${recruitmentBadge('Application update')}
+    <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;font-weight:700;">Update on your application</h1>
     <p style="margin:0 0 16px;">Hello ${n},</p>
     <p style="margin:0 0 16px;">Thank you for your interest and for participating in our process for <strong>${role}</strong>. After careful consideration, we have decided to offer the position to another candidate.</p>
-    <p style="margin:16px 0 0;color:#4a5568;">We wish you the best in your job search.</p>
-    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+    <p style="margin:16px 0 0;color:#475569;">We wish you the best in your job search.</p>
+    <p style="margin:24px 0 0;color:#64748b;font-size:14px;">Best regards,<br/>Recruitment Team</p>
   `;
   return wrap(content, 'Application update', { charcoal: false });
 }
@@ -1025,4 +1141,51 @@ export function shiftLocationAuthRequestHtml({ employeeName, motivation, actionL
     <p style="margin: 0; font-size: 13px; color: #64748b;">The employee enters this code in the app to complete the action once. Each new request sends a new code.</p>
   `;
   return taskEmailLayout('Shift location authorization', inner, 'Shift clock');
+}
+
+/** Access management – list distribution (single combined attachment). */
+export function distributionListEmailHtml(listLabel, routeLabel) {
+  const inner = `
+    <p style="margin:0 0 16px;font-size:15px;color:#334155;line-height:1.5;">Please find attached the <strong>${escapeHtml(listLabel)}</strong>${escapeHtml(routeLabel)}.</p>
+    <p style="margin:0;font-size:14px;color:#64748b;">Generated from Simplyapp Access management.</p>`;
+  const footerBlockHtml = `
+    <div style="border-top:1px solid #e2e8f0;margin-top:24px;padding-top:20px;">
+      <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#0f172a;">Monitoring team</p>
+      <p style="margin:0;font-size:13px;color:#64748b;">For further inquiries: <a href="mailto:vincent@thinkersafrika.co.za" style="color:#0369a1;text-decoration:none;">vincent@thinkersafrika.co.za</a></p>
+    </div>`;
+  return simplyappDocumentTable({
+    documentTitle: 'List distribution – Simplyapp',
+    preheader: `Attached ${listLabel}${routeLabel}`,
+    accent: 'brand',
+    variant: 'light',
+    heroLine1: 'Access management',
+    heroLine2: 'List distribution',
+    bodyInnerHtml: inner,
+    footerBlockHtml,
+  });
+}
+
+/** Per-contractor list attachments – same Simplyapp shell as bulk distribution. */
+export function distributionListEmailHtmlPerContractor(entries, titleOverride = null) {
+  const title = titleOverride && String(titleOverride).trim() ? String(titleOverride).trim() : 'Simplyapp';
+  const listItems = entries.map((e) => `${escapeHtml(e.contractorName)} – ${escapeHtml(e.routeName)}`).join('</li><li>');
+  const inner = `
+    <p style="margin:0 0 12px;font-size:15px;color:#334155;line-height:1.5;">Please find attached the following lists (one per company enrolled on this route):</p>
+    <ul style="margin:0 0 24px;padding-left:20px;font-size:14px;color:#334155;line-height:1.6;"><li>${listItems}</li></ul>
+    <p style="margin:0;font-size:14px;color:#64748b;">File names: Route name, Company name, Date and time.</p>`;
+  const footerBlockHtml = `
+    <div style="border-top:1px solid #e2e8f0;margin-top:24px;padding-top:20px;">
+      <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#0f172a;">Monitoring team</p>
+      <p style="margin:0;font-size:13px;color:#64748b;">For further inquiries: <a href="mailto:vincent@thinkersafrika.co.za" style="color:#0369a1;text-decoration:none;">vincent@thinkersafrika.co.za</a></p>
+    </div>`;
+  return simplyappDocumentTable({
+    documentTitle: `${title} – List distribution`,
+    preheader: 'Per-company fleet / driver lists attached',
+    accent: 'brand',
+    variant: 'light',
+    heroLine1: title,
+    heroLine2: 'List distribution (per company)',
+    bodyInnerHtml: inner,
+    footerBlockHtml,
+  });
 }

@@ -1,4 +1,4 @@
--- Thinkers multi-tenant schema (run with: npm run db:schema)
+-- Simplyapp multi-tenant schema (run with: npm run db:schema)
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'tenants')
 CREATE TABLE tenants (

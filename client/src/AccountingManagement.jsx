@@ -2525,7 +2525,7 @@ function DocumentationTab() {
     marginMm: 20,
     fontSizePt: 11,
     letterheadStyle: 'executive',
-    brandTheme: 'executive_red',
+    brandTheme: 'executive_blue',
     showDocTitle: true,
     showDocDate: true,
     showDocRecipient: true,
@@ -3077,7 +3077,7 @@ function DocumentationTab() {
   const estimatedPages = Math.max(1, pagedHtml.length || Math.ceil((plainEditorText.length || 0) / 3200));
 
   const renderPrintLetterheadOverlay = () => {
-    const theme = { dark: '#7F1D1D', mid: '#991B1B' };
+    const theme = { dark: '#0f2744', mid: '#1e3a8a' };
     return (
       <>
         <div className="absolute inset-x-0 top-0 h-[86px] bg-white" />
@@ -3197,8 +3197,9 @@ function DocumentationTab() {
                   </select>
                 </label>
                 <label className="text-xs text-surface-700">Brand theme
-                  <select value={layout.brandTheme || 'executive_red'} onChange={(e) => setLayout((l) => ({ ...l, brandTheme: e.target.value }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm">
-                    <option value="executive_red">Executive Red</option>
+                  <select value={layout.brandTheme || 'executive_blue'} onChange={(e) => setLayout((l) => ({ ...l, brandTheme: e.target.value }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm">
+                    <option value="executive_blue">Executive Blue</option>
+                    <option value="executive_red">Executive Red (legacy)</option>
                     <option value="midnight_blue">Midnight Blue</option>
                     <option value="monochrome_luxury">Monochrome Luxury</option>
                   </select>

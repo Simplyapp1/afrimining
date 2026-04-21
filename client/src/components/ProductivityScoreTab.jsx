@@ -3,7 +3,7 @@ import { shiftScore } from '../api';
 import InfoHint from './InfoHint.jsx';
 
 const CAT_LABELS = {
-  punctuality: 'Clock-in punctuality',
+  punctuality: 'Shift clock (in & out)',
   evaluation: 'Controller evaluations',
   tasks: 'Tasks (on time vs overdue)',
   reportTiming: 'Shift report hand-in (by 06:15 / 18:15 SAST)',
@@ -62,7 +62,7 @@ export default function ProductivityScoreTab() {
             <h2 className="text-lg font-semibold text-surface-900">Productivity score</h2>
             <InfoHint
               title="How your score is built"
-              text="Rolling window on your tenant calendar. Points come from: shift clock-in vs scheduled day (06:00) or night (18:00) start; manager evaluations on shift reports you authored; tasks assigned to you completed on or before due date; shift reports submitted before shift end plus 15 minutes (18:15 day / 06:15 morning after night); measurable objectives marked achieved and management 1–5 team ratings (neutral at 3). Only Command Centre team members are included in the team average."
+              text="Rolling window on your tenant calendar. Punctuality uses Profile shift clock clock-in and clock-out (completed shifts) against your work schedule entry times. Tasks use the Tasks tracker (assignments on your tenant tasks). Evaluations, shift report hand-in timing, and team progress still apply when you are a Command Centre user. The team average includes everyone scored in this window (not only CC)."
             />
           </div>
           <p className="text-sm text-surface-600 mt-1">
@@ -109,9 +109,16 @@ export default function ProductivityScoreTab() {
       <div className="rounded-xl border border-surface-200 bg-surface-50/80 p-4 text-xs text-surface-600 space-y-2">
         <p className="font-semibold text-surface-800">Point rules (this period)</p>
         <ul className="list-disc ml-4 space-y-1">
-          <li>Punctuality: {sc.punctuality?.onTime ?? 15} on time, {sc.punctuality?.late ?? -15} late (after {sc.punctuality?.graceMinutes ?? 5} min grace).</li>
+          <li>
+            Punctuality (shift clock): {sc.punctuality?.onTime ?? 15} per on-time clock-in or clock-out, {sc.punctuality?.late ?? -15} if late clock-in or late clock-out (after{' '}
+            {sc.punctuality?.graceMinutes ?? 5} min grace), vs roster times on the scheduled entry.
+          </li>
+          {sc.punctuality?.note && <li className="text-surface-500">{sc.punctuality.note}</li>}
           <li>Evaluation: {sc.evaluation?.good ?? 20} if ≥ {sc.evaluation?.minYesOf || '9/11'} Yes; otherwise {sc.evaluation?.bad ?? -20}.</li>
-          <li>Tasks: {sc.tasks?.onTime ?? 30} completed on/before due; {sc.tasks?.lateOrOverdue ?? -30} late completion or still overdue.</li>
+          <li>
+            Tasks (tracker): {sc.tasks?.onTime ?? 30} completed on/before due; {sc.tasks?.lateOrOverdue ?? -30} late completion or still overdue.
+            {sc.tasks?.note && <span className="text-surface-500"> {sc.tasks.note}</span>}
+          </li>
           <li>Report hand-in: {sc.reportHandIn?.onTime ?? 50} by {sc.reportHandIn?.by || 'shift end + 15 min'}; {sc.reportHandIn?.late ?? -50} otherwise.</li>
           <li>
             Team progress: +{sc.teamProgress?.objectiveAchieved ?? 15} per achieved objective (credited); management ratings use (rating − {sc.teamProgress?.ratingNeutral ?? 3}) ×{' '}

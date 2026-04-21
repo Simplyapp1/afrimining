@@ -1,6 +1,6 @@
 # Terraform Bootstrap (AWS)
 
-This folder bootstraps the AWS baseline for Thinkers migration:
+This folder bootstraps the AWS baseline for Simplyapp migration:
 
 - VPC + subnets
 - Security groups

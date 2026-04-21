@@ -149,7 +149,7 @@ export function generateBreakdownPdf({
   doc.setTextColor(...TEXT_MUTED);
   const refText = `Reference: ${ref}`;
   doc.text(refText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(refText) / 2, yRef.current + 6);
-  doc.text('Breakdown / incident report · Thinkers', MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth('Breakdown / incident report · Thinkers') / 2, yRef.current + 11);
+  doc.text('Breakdown / incident report · Simplyapp', MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth('Breakdown / incident report · Simplyapp') / 2, yRef.current + 11);
   yRef.current += 15;
   doc.setDrawColor(...BLACK);
   doc.setLineWidth(0.4);

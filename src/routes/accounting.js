@@ -2065,7 +2065,7 @@ async function buildDocumentationPdf(tenantId, docRow) {
   }
   const metadataRaw = get(docRow, 'metadata_json');
   let letterheadStyle = 'executive';
-  let brandTheme = 'executive_red';
+  let brandTheme = 'executive_blue';
   let fontSizePt = 11;
   // Keep PDF auto-population consistent and professional for all documents.
   // (Header toggles remain available for Word export, but PDF always shows core metadata.)
@@ -2076,7 +2076,7 @@ async function buildDocumentationPdf(tenantId, docRow) {
   try {
     const m = metadataRaw ? JSON.parse(metadataRaw) : {};
     letterheadStyle = m?.pageLayout?.letterheadStyle || m?.letterheadStyle || 'executive';
-    brandTheme = m?.pageLayout?.brandTheme || m?.brandTheme || 'executive_red';
+    brandTheme = m?.pageLayout?.brandTheme || m?.brandTheme || 'executive_blue';
     if (m?.pageLayout?.fontSizePt) fontSizePt = Number(m.pageLayout.fontSizePt) || 11;
   } catch {}
 
@@ -2100,11 +2100,11 @@ async function buildDocumentationPdf(tenantId, docRow) {
     const pageH = doc.page.height;
     const margin = 52;
     const bodyW = pageW - margin * 2;
-    const theme = { dark: '#7F1D1D', mid: '#991B1B', light: '#FFE4E6' };
+    const theme = { dark: '#0f2744', mid: '#1e3a8a', light: '#dbeafe' };
     let bottomReservedSpace = 122;
 
     const drawLetterhead = () => {
-      // Side-only dark-red design (no top decoration).
+      // Side-only dark-blue design (no top decoration).
       doc.rect(pageW - 46, 18, 34, pageH - 110).fill(theme.dark);
       doc.rect(pageW - 50, 170, 2, pageH - 190).fill(theme.mid);
       doc.save();
@@ -2177,7 +2177,7 @@ async function buildDocumentationPdf(tenantId, docRow) {
 
     let currentPageNumber = 1;
     const drawPageNumber = () => {
-      // Bottom-right number below the right red design block, on white area.
+      // Bottom-right number below the right accent block, on white area.
       doc.font('Helvetica').fontSize(9).fillColor('#000000').text(String(currentPageNumber), pageW - 34, pageH - 68, {
         width: 24,
         align: 'center',
@@ -2254,7 +2254,7 @@ function buildDocumentationWordHtml(docRow, company = {}, logoDataUri = '') {
   const updatedAt = formatDate(get(docRow, 'updated_at'));
   const rawContent = String(get(docRow, 'content_html') || '').trim();
   const content = rawContent || '<p>[Type document content here]</p>';
-  const companyName = String(company.company_name || 'Thinkers Afrika (Pty) Ltd');
+  const companyName = String(company.company_name || 'Simplyapp (Pty) Ltd');
   const companyAddress = String(company.address || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const companyPhone = String(company.phone || '').trim();
   const companyEmail = String(company.email || '').trim();
@@ -2288,9 +2288,9 @@ function buildDocumentationWordHtml(docRow, company = {}, logoDataUri = '') {
     th, td { border: 1px solid #222; padding: 6px 8px; vertical-align: top; word-break: break-word; }
     img { max-width: 100%; height: auto; }
     .page-shell { position: relative; min-height: 275mm; }
-    .brand-right-main { position: absolute; right: -2mm; top: 6mm; width: 9mm; height: 245mm; background: #7F1D1D; }
-    .brand-right-thin { position: absolute; right: 8mm; top: 46mm; width: 0.6mm; height: 214mm; background: #991B1B; }
-    .brand-left-block { position: absolute; left: -1mm; bottom: 10mm; width: 9mm; height: 26mm; background: #991B1B; }
+    .brand-right-main { position: absolute; right: -2mm; top: 6mm; width: 9mm; height: 245mm; background: #0f2744; }
+    .brand-right-thin { position: absolute; right: 8mm; top: 46mm; width: 0.6mm; height: 214mm; background: #1e3a8a; }
+    .brand-left-block { position: absolute; left: -1mm; bottom: 10mm; width: 9mm; height: 26mm; background: #1e3a8a; }
     .slogan { position: absolute; right: -0.5mm; top: 122mm; color: #fff; font-size: 9pt; font-weight: 700; writing-mode: vertical-rl; transform: rotate(180deg); }
     .logo-wrap { margin: 2mm 0 14mm 0; }
     .logo-wrap img { max-width: 48mm; max-height: 26mm; display: block; }

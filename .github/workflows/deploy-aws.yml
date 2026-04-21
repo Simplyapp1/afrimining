@@ -21,7 +21,7 @@ on:
 
 env:
   AWS_REGION: af-south-1
-  ECR_REPOSITORY: thinkers-api
+  ECR_REPOSITORY: simplyapp-api
 
 jobs:
   build-and-push:

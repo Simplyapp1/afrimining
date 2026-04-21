@@ -27,6 +27,7 @@ import {
   calendarMonthEndYmd,
   addCalendarDays,
 } from '../lib/appTime.js';
+import { formatEntryTimeRange, resolveScheduleEntryTimes } from '../lib/workScheduleTimes.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -257,9 +258,11 @@ router.post('/schedules/bulk', requirePageAccess('management'), async (req, res,
       const dateStr = cur;
       const slot = normalized[dayIndex % normalized.length];
       if (slot === 'day' || slot === 'night') {
+        const resolved = resolveScheduleEntryTimes({ shift_type: slot });
         await query(
-          `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes) VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
-          { scheduleId, workDate: dateStr, shiftType: slot, notes: null }
+          `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, work_start_time, work_end_time, notes)
+           VALUES (@scheduleId, @workDate, @shiftType, CAST(@ws AS TIME), CAST(@we AS TIME), @notes)`,
+          { scheduleId, workDate: dateStr, shiftType: resolved.shiftType, ws: resolved.workStart, we: resolved.workEnd, notes: null }
         );
         inserted++;
       }
@@ -378,13 +381,25 @@ router.post('/schedules/:id/entries', requirePageAccess('management'), async (re
     if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
     const arr = Array.isArray(entries) ? entries : [];
     for (const e of arr) {
-      const { work_date, shift_type, notes } = e || {};
-      if (!work_date || !shift_type) continue;
-      const st = shift_type === 'night' ? 'night' : 'day';
+      const { work_date, notes } = e || {};
+      if (!work_date) continue;
+      let resolved;
+      try {
+        resolved = resolveScheduleEntryTimes(e || {});
+      } catch (err) {
+        return res.status(400).json({ error: err?.message || 'Invalid schedule entry' });
+      }
       await query(
-        `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes)
-         VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
-        { scheduleId: id, workDate: work_date, shiftType: st, notes: notes || null }
+        `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, work_start_time, work_end_time, notes)
+         VALUES (@scheduleId, @workDate, @shiftType, CAST(@ws AS TIME), CAST(@we AS TIME), @notes)`,
+        {
+          scheduleId: id,
+          workDate: work_date,
+          shiftType: resolved.shiftType,
+          ws: resolved.workStart,
+          we: resolved.workEnd,
+          notes: notes || null,
+        }
       );
     }
     res.status(201).json({ added: arr.length });
@@ -405,7 +420,7 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
     const start = calendarMonthStartYmd(y, m);
     const end = calendarMonthEndYmd(y, m);
     const result = await query(
-      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes, s.title AS schedule_title
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, e.notes, s.title AS schedule_title
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
@@ -416,6 +431,8 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
       entry_id: getRow(r, 'entry_id'),
       work_date: getRow(r, 'work_date'),
       shift_type: getRow(r, 'shift_type'),
+      work_start_time: getRow(r, 'work_start_time'),
+      work_end_time: getRow(r, 'work_end_time'),
       notes: getRow(r, 'notes'),
       schedule_title: getRow(r, 'schedule_title'),
     }));
@@ -461,7 +478,7 @@ router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, 
     const placeholders = ids.map((_, i) => `@u${i}`).join(', ');
     const params = { tenantId, startStr, endStr, ...Object.fromEntries(ids.map((id, i) => [`u${i}`, id])) };
     const result = await query(
-      `SELECT e.id AS entry_id, e.work_date, e.shift_type, s.user_id AS colleague_id, u.full_name AS full_name, u.email AS email
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, s.user_id AS colleague_id, u.full_name AS full_name, u.email AS email
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId
        INNER JOIN users u ON u.id = s.user_id
@@ -486,6 +503,8 @@ router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, 
         entry_id: getRow(row, 'entry_id'),
         work_date: getRow(row, 'work_date'),
         shift_type: getRow(row, 'shift_type'),
+        work_start_time: getRow(row, 'work_start_time'),
+        work_end_time: getRow(row, 'work_end_time'),
       });
     }
 
@@ -508,7 +527,7 @@ async function execTx(transaction, text, params = {}) {
 /** Load schedule entry with owning user and tenant */
 async function loadEntryWithSchedule(entryId) {
   const r = await query(
-    `SELECT e.id, e.work_date, e.shift_type, e.work_schedule_id, s.user_id AS schedule_user_id, s.tenant_id
+    `SELECT e.id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, e.work_schedule_id, s.user_id AS schedule_user_id, s.tenant_id
      FROM work_schedule_entries e
      INNER JOIN work_schedules s ON s.id = e.work_schedule_id
      WHERE e.id = @id`,
@@ -519,6 +538,12 @@ async function loadEntryWithSchedule(entryId) {
 
 function mapSwapRow(r) {
   if (!r) return null;
+  const rSt = getRow(r, 'requester_shift_type');
+  const rWs = getRow(r, 'requester_work_start_time');
+  const rWe = getRow(r, 'requester_work_end_time');
+  const cSt = getRow(r, 'counterparty_shift_type');
+  const cWs = getRow(r, 'counterparty_work_start_time');
+  const cWe = getRow(r, 'counterparty_work_end_time');
   return {
     id: getRow(r, 'id'),
     tenant_id: getRow(r, 'tenant_id'),
@@ -538,9 +563,11 @@ function mapSwapRow(r) {
     requester_name: getRow(r, 'requester_name'),
     counterparty_name: getRow(r, 'counterparty_name'),
     requester_work_date: getRow(r, 'requester_work_date'),
-    requester_shift_type: getRow(r, 'requester_shift_type'),
+    requester_shift_type: rSt,
+    requester_shift_label: formatEntryTimeRange(rSt, rWs, rWe),
     counterparty_work_date: getRow(r, 'counterparty_work_date'),
-    counterparty_shift_type: getRow(r, 'counterparty_shift_type'),
+    counterparty_shift_type: cSt,
+    counterparty_shift_label: formatEntryTimeRange(cSt, cWs, cWe),
   };
 }
 
@@ -564,7 +591,7 @@ router.get('/shift-swaps/colleague-entries', requirePageAccess('profile'), async
     const start = calendarMonthStartYmd(y, m);
     const end = calendarMonthEndYmd(y, m);
     const result = await query(
-      `SELECT e.id AS entry_id, e.work_date, e.shift_type
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
@@ -575,6 +602,8 @@ router.get('/shift-swaps/colleague-entries', requirePageAccess('profile'), async
       entry_id: getRow(row, 'entry_id'),
       work_date: getRow(row, 'work_date'),
       shift_type: getRow(row, 'shift_type'),
+      work_start_time: getRow(row, 'work_start_time'),
+      work_end_time: getRow(row, 'work_end_time'),
     }));
     res.json({ entries });
   } catch (err) {
@@ -597,7 +626,9 @@ router.get('/shift-swaps/my', requirePageAccess('profile'), async (req, res, nex
       `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
         re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+        re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+        ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
        FROM shift_swap_requests r
        INNER JOIN users ru ON ru.id = r.requester_user_id
        INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -667,7 +698,9 @@ router.post('/shift-swaps', requirePageAccess('profile'), async (req, res, next)
       `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
         re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+        re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+        ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
        FROM shift_swap_requests r
        INNER JOIN users ru ON ru.id = r.requester_user_id
        INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -685,9 +718,9 @@ router.post('/shift-swaps', requirePageAccess('profile'), async (req, res, next)
         const html = shiftSwapRequestedHtml({
           requesterName: swap?.requester_name || req.user.full_name || req.user.email || 'Colleague',
           requesterDate: swap?.requester_work_date,
-          requesterShift: swap?.requester_shift_type,
+          requesterShift: swap?.requester_shift_label,
           yourDate: swap?.counterparty_work_date,
-          yourShift: swap?.counterparty_shift_type,
+          yourShift: swap?.counterparty_shift_label,
           message: swap?.message || null,
           appUrl,
         });
@@ -757,7 +790,9 @@ router.patch('/shift-swaps/:id/peer', requirePageAccess('profile'), async (req, 
       `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
         re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+        re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+        ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
        FROM shift_swap_requests r
        INNER JOIN users ru ON ru.id = r.requester_user_id
        INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -776,9 +811,9 @@ router.patch('/shift-swaps/:id/peer', requirePageAccess('profile'), async (req, 
             requesterName: swap?.requester_name,
             counterpartyName: swap?.counterparty_name,
             requesterDate: swap?.requester_work_date,
-            requesterShift: swap?.requester_shift_type,
+            requesterShift: swap?.requester_shift_label,
             counterpartyDate: swap?.counterparty_work_date,
-            counterpartyShift: swap?.counterparty_shift_type,
+            counterpartyShift: swap?.counterparty_shift_label,
             appUrl,
           });
           for (const to of managementEmails) {
@@ -798,9 +833,9 @@ router.patch('/shift-swaps/:id/peer', requirePageAccess('profile'), async (req, 
           const html = shiftSwapPeerDeclinedHtml({
             counterpartyName: swap?.counterparty_name,
             requesterDate: swap?.requester_work_date,
-            requesterShift: swap?.requester_shift_type,
+            requesterShift: swap?.requester_shift_label,
             counterpartyDate: swap?.counterparty_work_date,
-            counterpartyShift: swap?.counterparty_shift_type,
+            counterpartyShift: swap?.counterparty_shift_label,
             peerNotes: note,
             appUrl,
           });
@@ -827,7 +862,9 @@ router.get('/shift-swaps/management-queue', requirePageAccess('management'), asy
     let sqlQuery = `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
         re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+        re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+        ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
        FROM shift_swap_requests r
        INNER JOIN users ru ON ru.id = r.requester_user_id
        INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -871,7 +908,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
         `SELECT r.*,
           ru.full_name AS requester_name, cu.full_name AS counterparty_name,
           re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-          ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+          re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+          ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+          ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
          FROM shift_swap_requests r
          INNER JOIN users ru ON ru.id = r.requester_user_id
          INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -898,9 +937,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
           const html = shiftSwapManagementDeclinedHtml({
             otherPartyName: swapDeclined?.counterparty_name,
             requesterDate: swapDeclined?.requester_work_date,
-            requesterShift: swapDeclined?.requester_shift_type,
+            requesterShift: swapDeclined?.requester_shift_label,
             counterpartyDate: swapDeclined?.counterparty_work_date,
-            counterpartyShift: swapDeclined?.counterparty_shift_type,
+            counterpartyShift: swapDeclined?.counterparty_shift_label,
             managementNotes: note,
             appUrl,
           });
@@ -915,9 +954,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
           const html = shiftSwapManagementDeclinedHtml({
             otherPartyName: swapDeclined?.requester_name,
             requesterDate: swapDeclined?.requester_work_date,
-            requesterShift: swapDeclined?.requester_shift_type,
+            requesterShift: swapDeclined?.requester_shift_label,
             counterpartyDate: swapDeclined?.counterparty_work_date,
-            counterpartyShift: swapDeclined?.counterparty_shift_type,
+            counterpartyShift: swapDeclined?.counterparty_shift_label,
             managementNotes: note,
             appUrl,
           });
@@ -946,8 +985,16 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
     const s1 = getRow(e1, 'shift_type');
     const d2 = getRow(e2, 'work_date');
     const s2 = getRow(e2, 'shift_type');
+    const e1ws = getRow(e1, 'work_start_time');
+    const e1we = getRow(e1, 'work_end_time');
+    const e2ws = getRow(e2, 'work_start_time');
+    const e2we = getRow(e2, 'work_end_time');
     const d1s = toYmdFromDbOrString(d1);
     const d2s = toYmdFromDbOrString(d2);
+    const oldRequesterLabel = formatEntryTimeRange(s1, e1ws, e1we);
+    const newRequesterLabel = formatEntryTimeRange(s2, e2ws, e2we);
+    const oldCounterpartyLabel = formatEntryTimeRange(s2, e2ws, e2we);
+    const newCounterpartyLabel = formatEntryTimeRange(s1, e1ws, e1we);
     const clash1 = await query(
       `SELECT COUNT(*) AS c FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id
@@ -973,16 +1020,16 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
     try {
-      await execTx(transaction, `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s WHERE id = @id`, {
-        d: d2s,
-        s: s2,
-        id: reId,
-      });
-      await execTx(transaction, `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s WHERE id = @id`, {
-        d: d1s,
-        s: s1,
-        id: ceId,
-      });
+      await execTx(
+        transaction,
+        `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s, work_start_time = CAST(@ws AS TIME), work_end_time = CAST(@we AS TIME) WHERE id = @id`,
+        { d: d2s, s: s2, ws: e2ws, we: e2we, id: reId }
+      );
+      await execTx(
+        transaction,
+        `UPDATE work_schedule_entries SET work_date = @d, shift_type = @s, work_start_time = CAST(@ws AS TIME), work_end_time = CAST(@we AS TIME) WHERE id = @id`,
+        { d: d1s, s: s1, ws: e1ws, we: e1we, id: ceId }
+      );
       await execTx(
         transaction,
         `UPDATE shift_swap_requests SET status = N'management_approved', management_reviewed_at = SYSUTCDATETIME(), management_review_notes = @notes, management_reviewed_by = @by, updated_at = SYSUTCDATETIME() WHERE id = @id`,
@@ -997,7 +1044,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
       `SELECT r.*,
         ru.full_name AS requester_name, cu.full_name AS counterparty_name,
         re.work_date AS requester_work_date, re.shift_type AS requester_shift_type,
-        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type
+        re.work_start_time AS requester_work_start_time, re.work_end_time AS requester_work_end_time,
+        ce.work_date AS counterparty_work_date, ce.shift_type AS counterparty_shift_type,
+        ce.work_start_time AS counterparty_work_start_time, ce.work_end_time AS counterparty_work_end_time
        FROM shift_swap_requests r
        INNER JOIN users ru ON ru.id = r.requester_user_id
        INNER JOIN users cu ON cu.id = r.counterparty_user_id
@@ -1023,9 +1072,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
         const html = shiftSwapApprovedHtml({
           counterpartyName: swap?.counterparty_name,
           yourOldDate: d1s,
-          yourOldShift: s1,
+          yourOldShift: oldRequesterLabel,
           yourNewDate: d2s,
-          yourNewShift: s2,
+          yourNewShift: newRequesterLabel,
           appUrl,
         });
         sendEmail({
@@ -1039,9 +1088,9 @@ router.patch('/shift-swaps/:id/management', requirePageAccess('management'), asy
         const html = shiftSwapApprovedHtml({
           counterpartyName: swap?.requester_name,
           yourOldDate: d2s,
-          yourOldShift: s2,
+          yourOldShift: oldCounterpartyLabel,
           yourNewDate: d1s,
-          yourNewShift: s1,
+          yourNewShift: newCounterpartyLabel,
           appUrl,
         });
         sendEmail({
@@ -1066,7 +1115,7 @@ router.get('/schedules/:id/entries', requirePageAccess('management'), async (req
     if (!row) return res.status(404).json({ error: 'Schedule not found' });
     if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
     const result = await query(
-      `SELECT e.id, e.work_date, e.shift_type, e.notes
+      `SELECT e.id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, e.notes
        FROM work_schedule_entries e
        WHERE e.work_schedule_id = @id ORDER BY e.work_date`,
       { id }
@@ -1075,6 +1124,8 @@ router.get('/schedules/:id/entries', requirePageAccess('management'), async (req
       id: getRow(r, 'id'),
       work_date: getRow(r, 'work_date'),
       shift_type: getRow(r, 'shift_type'),
+      work_start_time: getRow(r, 'work_start_time'),
+      work_end_time: getRow(r, 'work_end_time'),
       notes: getRow(r, 'notes'),
     }));
     res.json({ schedule_user_id: getRow(row, 'user_id'), schedule_user_name: getRow(row, 'user_name'), entries });

@@ -1,4 +1,4 @@
-# Hosting the Thinkers app on Azure
+# Hosting Simplyapp on Azure
 
 This guide covers running both the **backend** (and optionally the **frontend**) on Azure and connecting to **Azure SQL Database**.
 

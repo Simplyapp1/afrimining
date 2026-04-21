@@ -3,7 +3,7 @@ import { shiftScore } from '../api';
 import InfoHint from './InfoHint.jsx';
 
 const CAT_LABELS = {
-  punctuality: 'Clock-in',
+  punctuality: 'Shift clock',
   evaluation: 'Evaluations',
   tasks: 'Tasks',
   reportTiming: 'Report timing',
@@ -58,11 +58,11 @@ export default function EmployeeProductivityScoreSection() {
           <h1 className="text-xl font-semibold text-surface-900">Employee productivity score</h1>
           <InfoHint
             title="Management insights"
-            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, evaluations on authored reports, assigned tasks, shift-report submission timing, and team progress (achieved measurable objectives plus management 1–5 ratings). Use this to spot coaching opportunities — not as the sole measure of performance."
+            text="Each row is a rolling total: shift clock punctuality (clock-in and clock-out vs work schedule roster times), Tasks tracker assignments (on-time vs overdue), and — for Command Centre users — evaluations, shift report hand-in timing, and team progress (objectives + management ratings). Anyone who clocked or had assigned tasks in the window appears here; CC-only signals apply only to CC members."
           />
         </div>
         <p className="text-sm text-surface-500">
-          {data?.fromYmd} → {data?.toYmd} · {data?.windowDays} days · {data?.ccUserCount} CC team
+          {data?.fromYmd} → {data?.toYmd} · {data?.windowDays} days · {data?.scoredUserCount ?? data?.people?.length ?? 0} scored · {data?.ccUserCount ?? 0} CC
         </p>
       </div>
 

@@ -20,8 +20,8 @@ if (!isEmailConfigured()) {
 
 const html = `
   <div style="font-family: sans-serif; max-width: 560px;">
-    <h2 style="color: #1a1a1a;">Thinkers – test email</h2>
-    <p>This is a test email from the Thinkers app (scripts/test-email.js).</p>
+    <h2 style="color: #1a1a1a;">Simplyapp – test email</h2>
+    <p>This is a test email from the Simplyapp app (scripts/test-email.js).</p>
     <p>If you received this, your email configuration (SMTP / App Password) is working.</p>
     <p style="color: #666; font-size: 14px;">Sent at ${new Date().toISOString()}</p>
   </div>
@@ -31,7 +31,7 @@ console.log('Sending test email to:', to);
 try {
   await sendEmail({
     to,
-    subject: 'Thinkers – test email',
+    subject: 'Simplyapp – test email',
     body: html,
     html: true,
   });

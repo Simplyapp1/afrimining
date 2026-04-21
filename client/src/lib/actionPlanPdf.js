@@ -116,7 +116,7 @@ function formatDate(d) {
 
 /**
  * Generate action plan / project timelines PDF.
- * Logo at top, "Thinkers Afrika Progress Report Document" under logo, then title, project name, date, document ID, confidentiality, action plan table.
+ * Logo at top, "Simplyapp Progress Report Document" under logo, then title, project name, date, document ID, confidentiality, action plan table.
  * @param {Object} plan - Action plan from API { title, project_name, document_date, document_id, items: [{ phase, start_date, action_description, participants, due_date, status }] }
  * @param {Object} options - Optional: { logoDataUrl }
  */
@@ -139,7 +139,7 @@ export function generateActionPlanPdf(plan, options = {}) {
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...TEXT_MUTED);
-  const docTypeText = 'Thinkers Afrika Progress Report Document';
+  const docTypeText = 'Simplyapp Progress Report Document';
   doc.text(docTypeText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(docTypeText) / 2, headerY);
   headerY += 7;
 
@@ -182,7 +182,7 @@ export function generateActionPlanPdf(plan, options = {}) {
   doc.setFont(FONT, 'normal');
   doc.setFontSize(8);
   doc.setTextColor(...TEXT_MUTED);
-  const confidential = 'This document is the exclusive property of Thinkers Afrika (Pty) Ltd. and contains confidential information. It may not be reproduced, shared, or disclosed without express written consent.';
+  const confidential = 'This document is the exclusive property of Simplyapp (Pty) Ltd. and contains confidential information. It may not be reproduced, shared, or disclosed without express written consent.';
   const confLines = wrap(doc, confidential, CONTENT_WIDTH);
   confLines.forEach((line) => {
     doc.text(line, MARGIN, yRef.current);
@@ -217,7 +217,7 @@ export function generateActionPlanPdf(plan, options = {}) {
       MARGIN,
       PAGE_HEIGHT - 8
     );
-    const footerRight = 'Thinkers Afrika';
+    const footerRight = 'Simplyapp';
     doc.text(footerRight, MARGIN + CONTENT_WIDTH - doc.getTextWidth(footerRight), PAGE_HEIGHT - 8);
   }
 

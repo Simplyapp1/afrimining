@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { profileManagement as pm, shiftClock } from './api';
 import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
+import { formatEntryTimeRange } from './lib/workScheduleTimes.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
@@ -37,10 +38,6 @@ function formatDate(d) {
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
 }
 
-function shiftLabel(st) {
-  return st === 'night' ? 'Night' : 'Day';
-}
-
 function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
   const [sub, setSub] = useState('pending');
   const [notesById, setNotesById] = useState({});
@@ -73,7 +70,7 @@ function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
           <h1 className="text-xl font-semibold text-surface-900">Shift swap requests</h1>
           <InfoHint
             title="Shift swap requests help"
-            text="Employees propose swaps on their profile; the colleague must accept first. Requests listed here are ready for your decision. Approving updates both work schedules immediately by exchanging the two shifts (dates and day/night)."
+            text="Employees propose swaps on their profile; the colleague must accept first. Requests listed here are ready for your decision. Approving updates both work schedules immediately by exchanging the two roster slots (dates, shift type, and scheduled start–end times)."
           />
         </div>
       </div>
@@ -124,10 +121,12 @@ function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
                     </td>
                     <td className="px-4 py-3 text-surface-800">
                       <p>
-                        <span className="text-surface-500">Gives:</span> {formatDate(r.requester_work_date)} · {shiftLabel(r.requester_shift_type)}
+                        <span className="text-surface-500">Gives:</span> {formatDate(r.requester_work_date)} ·{' '}
+                        {r.requester_shift_label || formatEntryTimeRange(r.requester_shift_type)}
                       </p>
                       <p className="mt-0.5">
-                        <span className="text-surface-500">Receives:</span> {formatDate(r.counterparty_work_date)} · {shiftLabel(r.counterparty_shift_type)}
+                        <span className="text-surface-500">Receives:</span> {formatDate(r.counterparty_work_date)} ·{' '}
+                        {r.counterparty_shift_label || formatEntryTimeRange(r.counterparty_shift_type)}
                       </p>
                     </td>
                     <td className="px-4 py-3">
@@ -551,8 +550,13 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
   const [periodEnd, setPeriodEnd] = useState('');
   const [saving, setSaving] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
+  const [scheduleEntries, setScheduleEntries] = useState([]);
+  const [entriesLoading, setEntriesLoading] = useState(false);
   const [entryDate, setEntryDate] = useState('');
-  const [entryShift, setEntryShift] = useState('day');
+  /** Preset day/night (server fills standard times) or custom with explicit times. */
+  const [entryBand, setEntryBand] = useState('day');
+  const [entryStartTime, setEntryStartTime] = useState('07:00');
+  const [entryEndTime, setEntryEndTime] = useState('15:00');
   const [entryNotes, setEntryNotes] = useState('');
   const [addingEntry, setAddingEntry] = useState(false);
   const [filterUserId, setFilterUserId] = useState('');
@@ -627,18 +631,51 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
     }
   };
 
+  const loadScheduleEntries = useCallback(async () => {
+    const sid = selectedSchedule?.id;
+    if (!sid) {
+      setScheduleEntries([]);
+      return;
+    }
+    setEntriesLoading(true);
+    try {
+      const d = await pm.schedules.getEntries(sid);
+      setScheduleEntries(d.entries || []);
+    } catch {
+      setScheduleEntries([]);
+      onError('Could not load roster entries for this schedule');
+    } finally {
+      setEntriesLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onError omitted to avoid reload loop when parent passes a new function each render
+  }, [selectedSchedule?.id]);
+
+  useEffect(() => {
+    loadScheduleEntries();
+  }, [loadScheduleEntries]);
+
   const handleAddEntry = async (e) => {
     e.preventDefault();
     if (!selectedSchedule || !entryDate) {
       onError('Select a schedule and enter date');
       return;
     }
+    if (entryBand === 'custom' && (!entryStartTime || !entryEndTime)) {
+      onError('Custom band requires start and end time');
+      return;
+    }
     setAddingEntry(true);
     onError('');
+    const notes = entryNotes.trim() || undefined;
+    const row =
+      entryBand === 'custom'
+        ? { work_date: entryDate, work_start_time: entryStartTime, work_end_time: entryEndTime, notes }
+        : { work_date: entryDate, shift_type: entryBand, notes };
     try {
-      await pm.schedules.addEntries(selectedSchedule.id, [{ work_date: entryDate, shift_type: entryShift, notes: entryNotes.trim() || undefined }]);
+      await pm.schedules.addEntries(selectedSchedule.id, [row]);
       setEntryDate('');
       setEntryNotes('');
+      await loadScheduleEntries();
       onRefresh();
     } catch (err) {
       onError(err?.message || 'Failed to add entry');
@@ -690,7 +727,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         <h1 className="text-xl font-semibold text-surface-900">Work schedules</h1>
         <InfoHint
           title="Work schedules help"
-          text="Create and manage work schedules (6:00 – 6:00 shifts). Each employee has a private schedule. Create a schedule for an employee, then add their shifts. They only see their own schedule on Profile."
+          text="Each employee has a private roster with wall-clock start and end per day. Create a schedule (period), then add rows by date — Day (06:00–18:00), Night (18:00–06:00), or Custom times. The list below shows every entry with its time range. Employees see the same ranges on Profile."
         />
       </div>
 
@@ -805,7 +842,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
               <span className="text-sm font-medium text-surface-700">Pattern guide</span>
               <InfoHint
                 title="Bulk pattern help"
-                text="Define a repeating pattern (e.g. day, day, night, off). The pattern repeats from the start date for the chosen time frame. Only Day and Night create shifts; Off is a rest day."
+                text="Define a repeating pattern (e.g. day, day, night, off). The pattern repeats from the start date for the chosen time frame. Only Day and Night create roster rows (Day 06:00–18:00, Night 18:00–06:00); Off is a rest day. Use Add roster entry on a schedule for custom hours."
               />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -882,7 +919,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
                   onClick={() => setSelectedSchedule(selectedSchedule?.id === s.id ? null : s)}
                   className="text-sm text-brand-600 hover:underline"
                 >
-                  {selectedSchedule?.id === s.id ? 'Hide' : 'Add shifts'}
+                  {selectedSchedule?.id === s.id ? 'Hide' : 'Roster'}
                 </button>
               </li>
             ))}
@@ -891,28 +928,94 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
       </div>
 
       {selectedSchedule && (
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
-          <p className="font-medium text-surface-800 mb-2">Add shift to {selectedSchedule.user_name || selectedSchedule.user_email}&apos;s schedule: {selectedSchedule.title}</p>
-          <form onSubmit={handleAddEntry} className="flex flex-wrap gap-2 items-end">
+        <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-4">
+          <p className="font-medium text-surface-800">
+            Roster — {selectedSchedule.user_name || selectedSchedule.user_email}: {selectedSchedule.title}
+          </p>
+          <form onSubmit={handleAddEntry} className="flex flex-wrap gap-3 items-end border-b border-surface-100 pb-4">
             <div>
               <label className="block text-xs font-medium text-surface-500 mb-1">Date *</label>
               <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" required />
             </div>
             <div>
-              <label className="block text-xs font-medium text-surface-500 mb-1">Shift</label>
-              <select value={entryShift} onChange={(e) => setEntryShift(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <label className="block text-xs font-medium text-surface-500 mb-1">Band *</label>
+              <select
+                value={entryBand}
+                onChange={(e) => setEntryBand(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[11rem]"
+              >
                 <option value="day">Day (06:00 – 18:00)</option>
                 <option value="night">Night (18:00 – 06:00)</option>
+                <option value="custom">Custom…</option>
               </select>
             </div>
-            <div>
+            {entryBand === 'custom' && (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-surface-500 mb-1">Start *</label>
+                  <input
+                    type="time"
+                    value={entryStartTime}
+                    onChange={(e) => setEntryStartTime(e.target.value)}
+                    className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-500 mb-1">End *</label>
+                  <input
+                    type="time"
+                    value={entryEndTime}
+                    onChange={(e) => setEntryEndTime(e.target.value)}
+                    className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </div>
+              </>
+            )}
+            <div className="min-w-[8rem] flex-1 max-w-xs">
               <label className="block text-xs font-medium text-surface-500 mb-1">Notes (optional)</label>
-              <input type="text" value={entryNotes} onChange={(e) => setEntryNotes(e.target.value)} placeholder="Notes" className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input type="text" value={entryNotes} onChange={(e) => setEntryNotes(e.target.value)} placeholder="Notes" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <button type="submit" disabled={addingEntry} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-              {addingEntry ? 'Adding…' : 'Add shift'}
+              {addingEntry ? 'Adding…' : 'Add roster entry'}
             </button>
           </form>
+          <div>
+            <p className="text-xs font-medium text-surface-500 uppercase mb-2">Current entries ({scheduleEntries.length})</p>
+            {entriesLoading ? (
+              <p className="text-sm text-surface-500">Loading entries…</p>
+            ) : scheduleEntries.length === 0 ? (
+              <p className="text-sm text-surface-500">No entries on this schedule yet.</p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-surface-100">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-50 text-surface-600 text-left sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Date</th>
+                      <th className="px-3 py-2 font-medium">Hours</th>
+                      <th className="px-3 py-2 font-medium">Type</th>
+                      <th className="px-3 py-2 font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-100">
+                    {scheduleEntries.map((en) => (
+                      <tr key={en.id} className="text-surface-800">
+                        <td className="px-3 py-2 whitespace-nowrap">{formatDate(en.work_date)}</td>
+                        <td className="px-3 py-2 font-medium tabular-nums">
+                          {formatEntryTimeRange(en.shift_type, en.work_start_time, en.work_end_time)}
+                        </td>
+                        <td className="px-3 py-2 text-surface-600 capitalize">{en.shift_type || '—'}</td>
+                        <td className="px-3 py-2 text-surface-600 max-w-[12rem] truncate" title={en.notes || ''}>
+                          {en.notes || '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

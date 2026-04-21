@@ -210,7 +210,7 @@ resource "aws_db_instance" "sqlserver" {
 }
 
 resource "aws_secretsmanager_secret" "app_env" {
-  name                    = "${local.name_prefix}/thinkers/app-env"
+  name                    = "${local.name_prefix}/simplyapp/app-env"
   recovery_window_in_days = 7
   tags                    = local.common_tags
 }

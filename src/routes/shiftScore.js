@@ -44,21 +44,97 @@ async function computeTenantScores(tenantId, windowDays) {
   const wd = Math.max(7, Math.min(90, parseInt(String(windowDays || Sp.SP.WINDOW_DAYS_DEFAULT), 10) || Sp.SP.WINDOW_DAYS_DEFAULT));
   const params = { tenantId, windowDays: wd };
 
-  const ccUsersR = await query(
-    `SELECT DISTINCT u.id, u.full_name, u.email
-     FROM users u
-     WHERE u.tenant_id = @tenantId
-       AND (
-         EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
-         OR EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')
-       )`,
-    params
-  );
-  const ccUsers = ccUsersR.recordset || [];
+  let ccUsers = [];
+  try {
+    const ccUsersR = await query(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM users u
+       WHERE u.tenant_id = @tenantId
+         AND (
+           EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')
+         )`,
+      params
+    );
+    ccUsers = ccUsersR.recordset || [];
+  } catch (e) {
+    const m = String(e?.message || '').toLowerCase();
+    if (!m.includes('command_centre_grants') && !m.includes('invalid object')) throw e;
+    return {
+      windowDays: wd,
+      fromYmd: addCalendarDays(todayYmd(), -wd),
+      toYmd: todayYmd(),
+      ccUserCount: 0,
+      scoredUserCount: 0,
+      people: [],
+      groupAverage: 0,
+      scoring: {
+        punctuality: {
+          onTime: Sp.SP.PUNCTUALITY_ON,
+          late: Sp.SP.PUNCTUALITY_LATE,
+          graceMinutes: Sp.SP.CLOCK_GRACE_MINUTES,
+          note: 'Shift clock clock-in and clock-out vs roster entry times.',
+        },
+        evaluation: { good: Sp.SP.EVAL_GOOD, bad: Sp.SP.EVAL_BAD, minYesOf: `${Sp.SP.EVAL_MIN_YES}/${Sp.SP.EVAL_QUESTIONS}` },
+        tasks: {
+          onTime: Sp.SP.TASK_ON,
+          lateOrOverdue: Sp.SP.TASK_LATE,
+          note: 'Tasks tracker assignments on tenant tasks.',
+        },
+        reportHandIn: { onTime: Sp.SP.REPORT_ON, late: Sp.SP.REPORT_LATE, by: `Shift end + ${Sp.SP.REPORT_HANDOFF_MINUTES} min (SAST)` },
+        teamProgress: {
+          objectiveAchieved: Sp.SP.OBJECTIVE_ACHIEVED,
+          ratingNeutral: 3,
+          ratingMultiplier: Sp.SP.TEAM_RATING_MULTIPLIER,
+          note: 'Achieved measurable objectives and management 1–5 ratings (neutral at 3).',
+        },
+      },
+    };
+  }
   const ccUserIds = new Set(ccUsers.map((u) => String(getRow(u, 'id'))));
 
+  /** Everyone scored for shift clock + Tasks tracker; CC-only signals still filtered with ccUserIds below. */
+  let productivityUsers = ccUsers;
+  try {
+    const pu = await query(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM users u
+       WHERE u.tenant_id = @tenantId
+         AND (
+           EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')
+           OR EXISTS (
+             SELECT 1 FROM shift_clock_sessions s
+             WHERE s.tenant_id = @tenantId AND s.user_id = u.id
+               AND s.clock_in_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
+               AND ISNULL(s.status, N'') <> N'cancelled'
+           )
+           OR EXISTS (
+             SELECT 1 FROM task_assignments a
+             INNER JOIN tasks t ON t.id = a.task_id AND t.tenant_id = @tenantId
+             WHERE a.user_id = u.id
+               AND (
+                 (t.completed_at IS NOT NULL AND t.completed_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME()))
+                 OR (
+                   t.due_date IS NOT NULL
+                   AND CAST(t.due_date AS DATE) < CAST(GETDATE() AS DATE)
+                   AND LOWER(LTRIM(RTRIM(ISNULL(t.status, N'')))) <> N'completed'
+                   AND t.created_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
+                 )
+               )
+           )
+         )`,
+      params
+    );
+    if (pu.recordset?.length) productivityUsers = pu.recordset;
+  } catch {
+    productivityUsers = ccUsers;
+  }
+
+  const productivityUserIds = new Set(productivityUsers.map((u) => String(getRow(u, 'id'))));
+
   const byUser = new Map();
-  ccUsers.forEach((u) => {
+  productivityUsers.forEach((u) => {
     const id = String(getRow(u, 'id'));
     if (!id) return;
     byUser.set(id, {
@@ -73,8 +149,10 @@ async function computeTenantScores(tenantId, windowDays) {
   let sessions = [];
   try {
     const sr = await query(
-      `SELECT s.user_id, s.clock_in_at, s.work_date, s.shift_type, s.status
+      `SELECT s.user_id, s.clock_in_at, s.clock_out_at, s.work_date, s.shift_type, s.status,
+              e.work_start_time AS entry_work_start, e.work_end_time AS entry_work_end
        FROM shift_clock_sessions s
+       LEFT JOIN work_schedule_entries e ON e.id = s.schedule_entry_id
        WHERE s.tenant_id = @tenantId
          AND s.clock_in_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
          AND ISNULL(s.status, N'') <> N'cancelled'`,
@@ -88,20 +166,41 @@ async function computeTenantScores(tenantId, windowDays) {
 
   for (const row of sessions) {
     const uid = String(getRow(row, 'user_id') || '');
-    if (!ccUserIds.has(uid)) continue;
+    if (!productivityUserIds.has(uid)) continue;
     const wdYmd = toYmdFromRow(getRow(row, 'work_date'));
+    const rowTimes = {
+      shift_type: getRow(row, 'shift_type'),
+      entry_work_start: getRow(row, 'entry_work_start'),
+      entry_work_end: getRow(row, 'entry_work_end'),
+    };
+    const b = byUser.get(uid);
+    if (!b) continue;
     const cin = getRow(row, 'clock_in_at');
     const ms = cin ? new Date(cin).getTime() : NaN;
-    const { points, detail } = Sp.punctualityPoints(ms, wdYmd, getRow(row, 'shift_type'));
-    const b = byUser.get(uid);
-    if (b) {
+    const inPts = Sp.punctualityPointsForClockSession(ms, wdYmd, rowTimes);
+    if (inPts.detail !== 'no_data') {
       addEvent(b.breakdown, 'punctuality', {
-        points,
-        detail,
+        points: inPts.points,
+        detail: inPts.detail,
         work_date: wdYmd,
         shift_type: getRow(row, 'shift_type'),
         at: cin,
       });
+    }
+    const st = String(getRow(row, 'status') || '').toLowerCase();
+    const cout = getRow(row, 'clock_out_at');
+    if (cout && st === 'completed') {
+      const msOut = new Date(cout).getTime();
+      const outPts = Sp.punctualityPointsForClockOut(msOut, wdYmd, rowTimes);
+      if (outPts.detail !== 'no_data') {
+        addEvent(b.breakdown, 'punctuality', {
+          points: outPts.points,
+          detail: outPts.detail,
+          work_date: wdYmd,
+          shift_type: getRow(row, 'shift_type'),
+          at: cout,
+        });
+      }
     }
   }
 
@@ -166,7 +265,7 @@ async function computeTenantScores(tenantId, windowDays) {
   const seenTaskUser = new Set();
   for (const row of taskRows) {
     const uid = String(getRow(row, 'user_id') || '');
-    if (!ccUserIds.has(uid)) continue;
+    if (!productivityUserIds.has(uid)) continue;
     const tid = String(getRow(row, 'id'));
     const key = `${tid}:${uid}`;
     if (seenTaskUser.has(key)) continue;
@@ -321,9 +420,18 @@ async function computeTenantScores(tenantId, windowDays) {
     people,
     groupAverage: Math.round(groupAverage * 10) / 10,
     scoring: {
-      punctuality: { onTime: Sp.SP.PUNCTUALITY_ON, late: Sp.SP.PUNCTUALITY_LATE, graceMinutes: Sp.SP.CLOCK_GRACE_MINUTES },
+      punctuality: {
+        onTime: Sp.SP.PUNCTUALITY_ON,
+        late: Sp.SP.PUNCTUALITY_LATE,
+        graceMinutes: Sp.SP.CLOCK_GRACE_MINUTES,
+        note: 'Shift clock clock-in and clock-out (completed sessions) vs roster times on the linked work schedule entry.',
+      },
       evaluation: { good: Sp.SP.EVAL_GOOD, bad: Sp.SP.EVAL_BAD, minYesOf: `${Sp.SP.EVAL_MIN_YES}/${Sp.SP.EVAL_QUESTIONS}` },
-      tasks: { onTime: Sp.SP.TASK_ON, lateOrOverdue: Sp.SP.TASK_LATE },
+      tasks: {
+        onTime: Sp.SP.TASK_ON,
+        lateOrOverdue: Sp.SP.TASK_LATE,
+        note: 'Tasks module (assignments on tenant tasks): on-time completion vs due date, or overdue open tasks.',
+      },
       reportHandIn: { onTime: Sp.SP.REPORT_ON, late: Sp.SP.REPORT_LATE, by: `Shift end + ${Sp.SP.REPORT_HANDOFF_MINUTES} min (SAST)` },
       teamProgress: {
         objectiveAchieved: Sp.SP.OBJECTIVE_ACHIEVED,
@@ -332,6 +440,7 @@ async function computeTenantScores(tenantId, windowDays) {
         note: 'Achieved measurable objectives and management 1–5 ratings (neutral at 3).',
       },
     },
+    scoredUserCount: productivityUsers.length,
   };
 }
 
@@ -350,7 +459,8 @@ router.get('/me', requirePageAccess('profile'), async (req, res, next) => {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
     const windowDays = parseInt(String(req.query.days || Sp.SP.WINDOW_DAYS_DEFAULT), 10);
-    const { people, groupAverage, windowDays: wd, fromYmd, toYmd, scoring } = await computeTenantScores(tenantId, windowDays);
+    const { people, groupAverage, windowDays: wd, fromYmd, toYmd, scoring, ccUserCount, scoredUserCount } =
+      await computeTenantScores(tenantId, windowDays);
     const mine = people.find((p) => String(p.userId) === String(req.user.id));
     const breakdown = mine?.breakdown || ensureBreakdown();
     const total = mine ? mine.total : 0;
@@ -364,36 +474,8 @@ router.get('/me', requirePageAccess('profile'), async (req, res, next) => {
       groupAverage,
       breakdown,
       scoring,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get('/command-centre-dashboard', requirePageAccess('command_centre'), async (req, res, next) => {
-  try {
-    const tenantId = req.user.tenant_id;
-    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
-    const windowDays = parseInt(String(req.query.days || Sp.SP.WINDOW_DAYS_DEFAULT), 10);
-    const { people, groupAverage, windowDays: wd, fromYmd, toYmd, scoring, ccUserCount } = await computeTenantScores(tenantId, windowDays);
-    const mine = people.find((p) => String(p.userId) === String(req.user.id));
-    res.json({
-      windowDays: wd,
-      fromYmd,
-      toYmd,
-      personalTotal: mine ? mine.total : 0,
-      groupAverage,
       ccUserCount,
-      components: mine
-        ? {
-            punctuality: { points: mine.breakdown.punctuality.points, n: mine.breakdown.punctuality.events.length },
-            evaluation: { points: mine.breakdown.evaluation.points, n: mine.breakdown.evaluation.events.length },
-            tasks: { points: mine.breakdown.tasks.points, n: mine.breakdown.tasks.events.length },
-            reportTiming: { points: mine.breakdown.reportTiming.points, n: mine.breakdown.reportTiming.events.length },
-            teamProgress: { points: mine.breakdown.teamProgress?.points || 0, n: mine.breakdown.teamProgress?.events?.length || 0 },
-          }
-        : null,
-      scoring,
+      scoredUserCount,
     });
   } catch (err) {
     next(err);
@@ -405,7 +487,8 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
     const windowDays = parseInt(String(req.query.days || Sp.SP.WINDOW_DAYS_DEFAULT), 10);
-    const { people, groupAverage, windowDays: wd, fromYmd, toYmd, scoring, ccUserCount } = await computeTenantScores(tenantId, windowDays);
+    const { people, groupAverage, windowDays: wd, fromYmd, toYmd, scoring, ccUserCount, scoredUserCount } =
+      await computeTenantScores(tenantId, windowDays);
 
     const nameById = new Map();
     const ur = await query(
@@ -454,6 +537,7 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
       fromYmd,
       toYmd,
       ccUserCount,
+      scoredUserCount,
       groupAverage,
       median,
       min: totals.length ? totals[0] : 0,

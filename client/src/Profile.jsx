@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
+import { profileManagement as pm, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
@@ -23,6 +23,7 @@ import {
   toYmdFromDbOrString,
   wallMonthYearInAppZone,
 } from './lib/appTime.js';
+import { formatEntryTimeRange, isOvernightBand, scheduleTimeBandKey, sqlTimeToHHmm } from './lib/workScheduleTimes.js';
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
@@ -39,12 +40,15 @@ const TABS = [
   { id: 'evaluation_results', label: 'Colleagues evaluation results' },
 ];
 
-const SHIFT_DAY = '06:00 – 18:00';
-const SHIFT_NIGHT = '18:00 – 06:00';
+function entryOvernight(ent) {
+  if (!ent) return false;
+  if (String(ent.shift_type || '').toLowerCase() === 'night') return true;
+  return isOvernightBand(sqlTimeToHHmm(ent.work_start_time), sqlTimeToHHmm(ent.work_end_time));
+}
 
 const COLLEAGUE_FILTER_STORAGE_KEY = 'profile.workSchedule.colleagueFilter';
 const COLLEAGUE_VIEW_MODE_KEY = 'profile.workSchedule.colleagueViewMode';
-const CC_TEAM_PANEL_COLLAPSED_KEY = 'profile.workSchedule.ccTeamPanelCollapsed';
+const TEAM_PANEL_COLLAPSED_KEY = 'profile.workSchedule.teamPanelCollapsed';
 const DAY_DETAILS_RAIL_EXPANDED_KEY = 'profile.workSchedule.dayDetailsRailExpanded';
 
 function shortFirstName(name) {
@@ -92,10 +96,8 @@ export default function Profile() {
   const [pipPlans, setPipPlans] = useState([]);
   const [leaveTypes, setLeaveTypes] = useState([]);
   const [scheduleEvents, setScheduleEvents] = useState([]);
-  const [myTasks, setMyTasks] = useState([]);
   const [selectedScheduleDate, setSelectedScheduleDate] = useState(null);
   const [tenantUsers, setTenantUsers] = useState([]);
-  const [commandCentrePeerUsers, setCommandCentrePeerUsers] = useState([]);
   const [swapRequests, setSwapRequests] = useState([]);
   const [swapModal, setSwapModal] = useState(null);
   const [error, setError] = useState('');
@@ -125,7 +127,7 @@ export default function Profile() {
   });
   const [ccTeamPanelCollapsed, setCcTeamPanelCollapsed] = useState(() => {
     try {
-      const v = localStorage.getItem(CC_TEAM_PANEL_COLLAPSED_KEY);
+      const v = localStorage.getItem(TEAM_PANEL_COLLAPSED_KEY);
       if (v === '0') return false;
       return true;
     } catch {
@@ -146,7 +148,7 @@ export default function Profile() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(CC_TEAM_PANEL_COLLAPSED_KEY, ccTeamPanelCollapsed ? '1' : '0');
+      localStorage.setItem(TEAM_PANEL_COLLAPSED_KEY, ccTeamPanelCollapsed ? '1' : '0');
     } catch {
       /* ignore */
     }
@@ -199,26 +201,28 @@ export default function Profile() {
     return m;
   }, [swapRequests]);
 
-  /** Per date: selected colleagues — same shift as you, other shift, or anyone (for days you are off). */
+  /** Per date: selected colleagues — same wall-clock band as you, different band, or anyone (for days you are off). */
   const colleagueCalendarByDate = useMemo(() => {
     const map = {};
     for (const c of colleagueSchedules) {
       for (const ent of c.entries || []) {
         const d = isoDate(ent.work_date);
         if (!d) continue;
-        const st = ent.shift_type === 'night' ? 'night' : 'day';
         const name = (c.full_name && String(c.full_name).trim()) || c.email || 'Colleague';
-        const row = { user_id: c.user_id, name, shift_type: st };
+        const bandKey = scheduleTimeBandKey(ent);
+        const overnight = entryOvernight(ent);
+        const timeLabel = formatEntryTimeRange(ent.shift_type, ent.work_start_time, ent.work_end_time);
+        const row = { user_id: c.user_id, name, shift_type: ent.shift_type, work_start_time: ent.work_start_time, work_end_time: ent.work_end_time, overnight, bandKey, timeLabel };
         if (!map[d]) map[d] = { same: [], other: [], any: [] };
         if (!map[d].any.some((x) => String(x.user_id) === String(c.user_id))) {
           map[d].any.push(row);
         }
         const mine = scheduleByDate[d];
         if (mine) {
-          const mySt = mine.shift_type === 'night' ? 'night' : 'day';
-          if (st === mySt) {
+          const myKey = scheduleTimeBandKey(mine);
+          if (bandKey === myKey) {
             if (!map[d].same.some((x) => String(x.user_id) === String(c.user_id))) {
-              map[d].same.push({ user_id: c.user_id, name });
+              map[d].same.push({ user_id: c.user_id, name, overnight, timeLabel });
             }
           } else if (!map[d].other.some((x) => String(x.user_id) === String(c.user_id))) {
             map[d].other.push(row);
@@ -229,7 +233,7 @@ export default function Profile() {
     return map;
   }, [scheduleByDate, colleagueSchedules]);
 
-  /** Lines to paint in each calendar cell (same typography as your Day/Night row). */
+  /** Lines to paint in each calendar cell (same typography as your scheduled-hours row). */
   const peerLinesByDate = useMemo(() => {
     const out = {};
     for (const [dateStr, ccDay] of Object.entries(colleagueCalendarByDate)) {
@@ -239,20 +243,22 @@ export default function Profile() {
         lines = (ccDay.any || []).map((row) => ({
           key: row.user_id,
           label: shortFirstName(row.name),
-          shiftType: row.shift_type === 'night' ? 'night' : 'day',
+          overnight: !!row.overnight,
+          timeLabel: row.timeLabel,
         }));
       } else if (mine) {
-        const st = mine.shift_type === 'night' ? 'night' : 'day';
         lines = (ccDay.same || []).map((row) => ({
           key: row.user_id,
           label: shortFirstName(row.name),
-          shiftType: st,
+          overnight: !!row.overnight,
+          timeLabel: row.timeLabel,
         }));
       } else {
         lines = (ccDay.any || []).map((row) => ({
           key: row.user_id,
           label: shortFirstName(row.name),
-          shiftType: row.shift_type === 'night' ? 'night' : 'day',
+          overnight: !!row.overnight,
+          timeLabel: row.timeLabel,
         }));
       }
       out[dateStr] = lines;
@@ -260,20 +266,20 @@ export default function Profile() {
     return out;
   }, [colleagueCalendarByDate, scheduleByDate, colleagueViewMode]);
 
-  const commandCentrePeers = useMemo(
-    () => (commandCentrePeerUsers || []).filter((u) => String(u.id) !== String(user?.id)),
-    [commandCentrePeerUsers, user?.id]
+  const tenantColleagues = useMemo(
+    () => (tenantUsers || []).filter((u) => String(u.id) !== String(user?.id)),
+    [tenantUsers, user?.id]
   );
 
   const filteredPeersForPicker = useMemo(() => {
     const q = colleagueFilterSearch.trim().toLowerCase();
-    if (!q) return commandCentrePeers;
-    return commandCentrePeers.filter(
+    if (!q) return tenantColleagues;
+    return tenantColleagues.filter(
       (u) =>
         (u.full_name && u.full_name.toLowerCase().includes(q)) ||
         (u.email && u.email.toLowerCase().includes(q))
     );
-  }, [commandCentrePeers, colleagueFilterSearch]);
+  }, [tenantColleagues, colleagueFilterSearch]);
 
   const colleagueFilterKey = colleagueFilterIds.slice().sort().join('|');
 
@@ -296,9 +302,7 @@ export default function Profile() {
       loadMySchedule();
       refreshSwapRequests();
       pm.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
-      pm.commandCentreSchedulePeers().then((d) => setCommandCentrePeerUsers(d.users || [])).catch(() => setCommandCentrePeerUsers([]));
       pm.scheduleEvents.list(calendarMonth, calendarYear).then((d) => setScheduleEvents(d.events || [])).catch(() => setScheduleEvents([]));
-      tasksApi.list({ assigned_to_me: 'true', limit: 100 }).then((d) => setMyTasks(d.tasks || [])).catch(() => setMyTasks([]));
     }
   }, [activeTab, loadMySchedule, refreshSwapRequests, calendarMonth, calendarYear, activeTenantId]);
 
@@ -372,14 +376,14 @@ export default function Profile() {
   }, [activeTab, calendarMonth, calendarYear, colleagueFilterKey]);
 
   useEffect(() => {
-    if (commandCentrePeers.length === 0) return;
+    if (tenantColleagues.length === 0) return;
     setColleagueFilterIds((prev) => {
-      const valid = new Set(commandCentrePeers.map((u) => String(u.id)));
+      const valid = new Set(tenantColleagues.map((u) => String(u.id)));
       const next = prev.filter((id) => valid.has(String(id)));
       if (next.length === prev.length) return prev;
       return next;
     });
-  }, [commandCentrePeers]);
+  }, [tenantColleagues]);
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
@@ -443,11 +447,11 @@ export default function Profile() {
                 <h1 className="text-xl font-semibold text-surface-900">Work schedule</h1>
                 <InfoHint
                   title="Work schedule help"
-                  text="The list below is limited to people in your organization who can access Command Centre (page or tab). Tick who to compare; their shifts appear in each day cell the same way as your Day or Night row. Same shift only lists people on your shift type when you are scheduled; All selected shifts shows everyone you selected, including the opposite shift. Your selection is saved on this device."
+                  text="The list below shows other people in your tenant (from user directory). Tick who to compare; their scheduled hours appear in each day cell the same way as your time row. “Same hours as me” lists people whose start–end band matches yours when you are scheduled; “All selected colleagues” shows everyone you picked, including different time bands. Your selection is saved on this device."
                   bullets={[
-                    'Use Hide panel on Command Centre team to collapse the picker and show only your shifts on the calendar (and a clearer day detail panel). Show team picker restores teammate lines and settings.',
-                    'On a phone or narrow screen, the day details panel (clock, tasks, swaps) stays hidden until you tap a date; it opens as a sheet from the bottom. Tap outside the sheet or × to close and return to the calendar.',
-                    'On a wide screen, use Hide sidebar under Day details (or in the day header) to collapse the right column and use the full width for the calendar. Use Show day details sidebar to bring the empty panel back, or click any date to open shift and clock.',
+                    'Use Hide panel on the team picker to collapse it and show only your schedule on the calendar (and a clearer day detail panel). Show team picker restores colleague lines and settings.',
+                    'On a phone or narrow screen, the day details panel (clock, swaps) stays hidden until you tap a date; it opens as a sheet from the bottom. Tap outside the sheet or × to close and return to the calendar.',
+                    'On a wide screen, use Hide sidebar under Day details (or in the day header) to collapse the right column and use the full width for the calendar. Use Show day details sidebar to bring the empty panel back, or click any date to open scheduled hours and clock.',
                   ]}
                 />
                 {!selectedScheduleDate && !dayDetailsRailExpanded && (
@@ -467,13 +471,13 @@ export default function Profile() {
                     Show sidebar
                   </button>
                   {' · '}
-                  or click any date for shift, clock-in, and tasks.
+                  or click any date for shift, clock-in, and swaps.
                 </div>
               )}
               {ccTeamPanelCollapsed ? (
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-dashed border-surface-300 bg-surface-50/80 px-4 py-3">
                   <div className="flex items-start gap-2 min-w-0">
-                    <p className="text-sm font-medium text-surface-800 dark:text-surface-200 shrink-0">Command Centre team</p>
+                    <p className="text-sm font-medium text-surface-800 dark:text-surface-200 shrink-0">Colleague shifts</p>
                     <InfoHint
                       title="Team picker hidden"
                       text="The teammate picker is hidden. The calendar shows your shifts only so the month grid and day details are easier to read. Show the team picker again to overlay colleagues on calendar days or change who is selected."
@@ -491,10 +495,10 @@ export default function Profile() {
                 <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <p className="text-sm font-medium text-surface-900 dark:text-surface-50">Command Centre team on my calendar</p>
+                      <p className="text-sm font-medium text-surface-900 dark:text-surface-50">Colleague shifts on my calendar</p>
                       <InfoHint
-                        title="Command Centre team on calendar"
-                        text="Only people with Command Centre access appear here. Search, tick names, then their Day or Night shifts show inside each calendar day like yours."
+                        title="Colleague shifts on calendar"
+                        text="Other users in your tenant appear here. Search, tick names, then their scheduled hours show inside each calendar day like yours."
                       />
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -508,7 +512,7 @@ export default function Profile() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setColleagueFilterIds(commandCentrePeers.map((u) => u.id))}
+                        onClick={() => setColleagueFilterIds(tenantColleagues.map((u) => u.id))}
                         className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
                       >
                         Select all
@@ -532,7 +536,7 @@ export default function Profile() {
                         onChange={() => setColleagueViewMode('same_shift')}
                         className="text-brand-600 focus:ring-brand-500"
                       />
-                      Same shift as me only
+                      Same hours as me only
                     </label>
                     <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
                       <input
@@ -542,7 +546,7 @@ export default function Profile() {
                         onChange={() => setColleagueViewMode('all_shifts')}
                         className="text-brand-600 focus:ring-brand-500"
                       />
-                      All selected colleagues (same + other shift)
+                      All selected colleagues (same + other time band)
                     </label>
                   </div>
                   <input
@@ -555,8 +559,8 @@ export default function Profile() {
                   <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-100 bg-surface-50/80 p-2 space-y-1">
                     {filteredPeersForPicker.length === 0 ? (
                       <p className="text-sm text-surface-500 px-1">
-                        {commandCentrePeers.length === 0
-                          ? 'No other Command Centre users in your tenant, or still loading.'
+                        {tenantColleagues.length === 0
+                          ? 'No other users in your tenant yet, or still loading.'
                           : 'No matches.'}
                       </p>
                     ) : (
@@ -592,8 +596,8 @@ export default function Profile() {
                     <p className="text-xs text-surface-500">
                       Showing shifts for {colleagueFilterIds.length} selected user{colleagueFilterIds.length === 1 ? '' : 's'}.
                       {colleagueViewMode === 'same_shift'
-                        ? ' Day cells list only people on the same shift type as you when you are scheduled; if you are off, everyone selected who is working that day is listed.'
-                        : ' Day cells list each selected person’s Day or Night, same style as your row.'}
+                        ? ' Day cells list only people on the same start–end band as you when you are scheduled; if you are off, everyone selected who is working that day is listed.'
+                        : ' Day cells list each selected person’s scheduled hours, same style as your row.'}
                     </p>
                   )}
                 </div>
@@ -675,17 +679,17 @@ export default function Profile() {
                           )}
                           <span className="text-surface-700 font-medium text-center w-full shrink-0">{day}</span>
                           {shift && (
-                            <span className={`text-[10px] leading-tight w-full truncate ${shift.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
-                              {shift.shift_type === 'day' ? 'Day' : 'Night'}
+                            <span className={`text-[10px] leading-tight w-full truncate ${entryOvernight(shift) ? 'text-indigo-700' : 'text-amber-700'}`}>
+                              {formatEntryTimeRange(shift.shift_type, shift.work_start_time, shift.work_end_time)}
                             </span>
                           )}
                           {peerLinesShown.map((pl) => (
                             <span
                               key={pl.key}
-                              className={`text-[10px] leading-tight w-full truncate ${pl.shiftType === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}
-                              title={`${pl.label} · ${pl.shiftType === 'day' ? 'Day' : 'Night'}`}
+                              className={`text-[10px] leading-tight w-full truncate ${pl.overnight ? 'text-indigo-700' : 'text-amber-700'}`}
+                              title={`${pl.label} · ${pl.timeLabel || ''}`}
                             >
-                              {pl.label} · {pl.shiftType === 'day' ? 'Day' : 'Night'}
+                              {pl.label} · {pl.timeLabel || '—'}
                             </span>
                           ))}
                           {peerOverflow > 0 && (
@@ -699,18 +703,18 @@ export default function Profile() {
                 <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap items-center gap-2 text-xs text-surface-500">
                   <InfoHint
                     title="Calendar legend"
-                    text="Colors match shift types. Small dots on a day mark shift swap activity."
+                    text="Amber highlights same-calendar-day hours; indigo marks overnight bands (end time on the next morning). Small dots on a day mark swap activity."
                     bullets={[
-                      `Day: ${SHIFT_DAY}; Night: ${SHIFT_NIGHT}.`,
+                      'Your row shows the scheduled start–end from your roster (set in Management → Work schedules).',
                       !ccTeamPanelCollapsed
-                        ? 'Extra lines under the day list selected Command Centre teammates (Name · Day/Night).'
-                        : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
+                        ? 'Extra lines list selected colleagues (Name · hours).'
+                        : 'Colleague lines are hidden — use Show team picker to compare schedules on the calendar.',
                       'Amber dot: swap awaiting colleague. Violet dot: awaiting management.',
                     ]}
                   />
                   <span className="hidden sm:inline text-surface-300">|</span>
-                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day</span>
-                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Same-day hours</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Overnight</span>
                   <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap peer</span>
                   <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap mgmt</span>
                 </div>
@@ -740,7 +744,6 @@ export default function Profile() {
                       onHideDayDetailsRail={collapseDayDetailsRail}
                       scheduleEntries={scheduleEntries}
                       scheduleEvents={scheduleEvents}
-                      myTasks={myTasks}
                       pipPlans={pipPlans}
                       swapRequests={swapRequests}
                       currentUserId={user?.id}
@@ -764,7 +767,6 @@ export default function Profile() {
                     onHideDayDetailsRail={() => setDayDetailsRailExpanded(false)}
                     scheduleEntries={scheduleEntries}
                     scheduleEvents={scheduleEvents}
-                    myTasks={myTasks}
                     pipPlans={pipPlans}
                     swapRequests={swapRequests}
                     currentUserId={user?.id}
@@ -1101,7 +1103,6 @@ function ScheduleSidePanel({
   onHideDayDetailsRail,
   scheduleEntries,
   scheduleEvents,
-  myTasks,
   pipPlans,
   swapRequests = [],
   currentUserId,
@@ -1120,7 +1121,7 @@ function ScheduleSidePanel({
           <span className="font-medium text-surface-700 dark:text-surface-300">Day details</span>
           <InfoHint
             title="Day details panel"
-            text="Click a date on the calendar to see your shift, clock panel, tasks due, company events, performance items, and shift swaps for that day. On a small screen, tap any day to open this panel from the bottom. On a wide screen you can hide this column with the button below and restore it from the work schedule heading."
+            text="Click a date on the calendar to see your scheduled hours, clock panel, company events, performance items, and shift swaps for that day. On a small screen, tap any day to open this panel from the bottom. On a wide screen you can hide this column with the button below and restore it from the work schedule heading."
           />
         </div>
         {onHideDayDetailsRail && (
@@ -1136,7 +1137,6 @@ function ScheduleSidePanel({
     );
   }
   const shift = (scheduleEntries || []).find((e) => e.work_date && isoDate(e.work_date) === selectedDate);
-  const tasksOnDate = (myTasks || []).filter((t) => t.due_date && isoDate(t.due_date) === selectedDate);
   const eventsOnDate = (scheduleEvents || []).filter((e) => e.event_date && isoDate(e.event_date) === selectedDate);
   const dateLabel = formatDate(selectedDate);
   const swapsToday = (swapRequests || []).filter(
@@ -1194,11 +1194,11 @@ function ScheduleSidePanel({
       </div>
       <div className="p-4 overflow-y-auto space-y-4 text-sm">
         <div>
-          <p className="text-xs font-medium text-surface-500 uppercase mb-1">Shift</p>
+          <p className="text-xs font-medium text-surface-500 uppercase mb-1">Scheduled hours</p>
           {shift ? (
             <div className="space-y-2">
               <p className="text-surface-800">
-                {shift.shift_type === 'night' ? 'Night' : 'Day'} ({shift.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                {formatEntryTimeRange(shift.shift_type, shift.work_start_time, shift.work_end_time)}
                 {shift.notes && <span className="block text-surface-600 mt-0.5">{shift.notes}</span>}
               </p>
               {shift.entry_id && (
@@ -1208,27 +1208,27 @@ function ScheduleSidePanel({
                   onClick={() => onOpenSwapModal?.(shift)}
                   className="w-full px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {entryBlocked ? 'Swap already in progress for this shift' : 'Request shift swap'}
+                  {entryBlocked ? 'Swap already in progress for this slot' : 'Request shift swap'}
                 </button>
               )}
               {!shift.entry_id && (
-                <p className="text-xs text-amber-700">This shift has no entry id (refresh after an app update). Contact admin if this persists.</p>
+                <p className="text-xs text-amber-700">This roster entry has no entry id (refresh after an app update). Contact admin if this persists.</p>
               )}
             </div>
           ) : (
-            <p className="text-surface-500">No shift this day</p>
+            <p className="text-surface-500">No schedule this day</p>
           )}
         </div>
 
         {colleagueDay && colleagueDay.any?.length > 0 && (
           <div>
-            <p className="text-xs font-medium text-surface-500 uppercase mb-1">Command Centre team (selected)</p>
+            <p className="text-xs font-medium text-surface-500 uppercase mb-1">Colleague schedules (selected)</p>
             <ul className="space-y-1.5 text-surface-800">
               {colleagueDay.any.map((row) => (
                 <li key={row.user_id} className="text-sm flex flex-wrap gap-x-1">
                   <span className="font-medium">{row.name}</span>
                   <span className="text-surface-600">
-                    — {row.shift_type === 'night' ? 'Night' : 'Day'} ({row.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                    — {row.timeLabel || formatEntryTimeRange(row.shift_type, row.work_start_time, row.work_end_time)}
                   </span>
                 </li>
               ))}
@@ -1248,9 +1248,21 @@ function ScheduleSidePanel({
               const iAmCounterparty = String(r.counterparty_user_id) === String(currentUserId);
               const other = iAmRequester ? r.counterparty_name : r.requester_name;
               const myOfferDate = iAmRequester ? r.requester_work_date : r.counterparty_work_date;
-              const myOfferShift = iAmRequester ? r.requester_shift_type : r.counterparty_shift_type;
               const theirOfferDate = iAmRequester ? r.counterparty_work_date : r.requester_work_date;
-              const theirOfferShift = iAmRequester ? r.counterparty_shift_type : r.requester_shift_type;
+              const myOfferLabel =
+                (iAmRequester ? r.requester_shift_label : r.counterparty_shift_label) ||
+                formatEntryTimeRange(
+                  iAmRequester ? r.requester_shift_type : r.counterparty_shift_type,
+                  undefined,
+                  undefined
+                );
+              const theirOfferLabel =
+                (iAmRequester ? r.counterparty_shift_label : r.requester_shift_label) ||
+                formatEntryTimeRange(
+                  iAmRequester ? r.counterparty_shift_type : r.requester_shift_type,
+                  undefined,
+                  undefined
+                );
               const onMyOfferDay = isoDate(myOfferDate) === selectedDate;
               const onTheirOfferDay = isoDate(theirOfferDate) === selectedDate;
 
@@ -1272,24 +1284,24 @@ function ScheduleSidePanel({
                       {r.status === 'pending_management' && 'Awaiting management'}
                       {r.status === 'peer_declined' && 'Declined by colleague'}
                       {r.status === 'management_declined' && 'Declined by management'}
-                      {r.status === 'management_approved' && 'Approved — shifts updated'}
+                      {r.status === 'management_approved' && 'Approved — schedules updated'}
                       {r.status === 'cancelled' && 'Cancelled'}
                     </span>
                   </div>
                   <p className="text-surface-800 leading-relaxed">
                     {onMyOfferDay && (
                       <span>
-                        <strong>Your shift:</strong> {formatDate(myOfferDate)} ({myOfferShift === 'night' ? 'Night' : 'Day'})
+                        <strong>Your slot:</strong> {formatDate(myOfferDate)} ({myOfferLabel})
                       </span>
                     )}
                     {onTheirOfferDay && !onMyOfferDay && (
                       <span>
-                        <strong>Their shift:</strong> {formatDate(theirOfferDate)} ({theirOfferShift === 'night' ? 'Night' : 'Day'})
+                        <strong>Their slot:</strong> {formatDate(theirOfferDate)} ({theirOfferLabel})
                       </span>
                     )}
                     {onMyOfferDay && onTheirOfferDay && (
                       <span>
-                        Same calendar day — <strong>you</strong> {myOfferShift}/{theirOfferShift} swap context with <strong>{other || 'colleague'}</strong>.
+                        Same calendar day — <strong>you</strong> {myOfferLabel} / {theirOfferLabel} swap context with <strong>{other || 'colleague'}</strong>.
                       </span>
                     )}
                     {!onMyOfferDay && !onTheirOfferDay && (
@@ -1307,8 +1319,8 @@ function ScheduleSidePanel({
                   {r.status === 'pending_peer' && iAmCounterparty && isoDate(r.counterparty_work_date) === selectedDate && (
                     <div className="space-y-2 pt-1">
                       <p className="text-surface-700">
-                        <strong>{r.requester_name}</strong> wants your <strong>{r.counterparty_shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
-                        {formatDate(r.counterparty_work_date)} in exchange for their <strong>{r.requester_shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
+                        <strong>{r.requester_name}</strong> wants your <strong>{r.counterparty_shift_label || formatEntryTimeRange(r.counterparty_shift_type)}</strong> on{' '}
+                        {formatDate(r.counterparty_work_date)} in exchange for their <strong>{r.requester_shift_label || formatEntryTimeRange(r.requester_shift_type)}</strong> on{' '}
                         {formatDate(r.requester_work_date)}.
                       </p>
                       <input
@@ -1349,18 +1361,6 @@ function ScheduleSidePanel({
           </div>
         )}
 
-        <div>
-          <p className="text-xs font-medium text-surface-500 uppercase mb-1">Tasks due</p>
-          {tasksOnDate.length === 0 ? (
-            <p className="text-surface-500">None</p>
-          ) : (
-            <ul className="space-y-1">
-              {tasksOnDate.map((t) => (
-                <li key={t.id} className="text-surface-800">{t.title}</li>
-              ))}
-            </ul>
-          )}
-        </div>
         <div>
           <p className="text-xs font-medium text-surface-500 uppercase mb-1">Company events</p>
           {eventsOnDate.length === 0 ? (
@@ -1439,11 +1439,11 @@ function ShiftSwapRequestModal({
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!shift?.entry_id || !colleagueId || !theirEntryId) {
-      onError?.('Choose a colleague and one of their shifts');
+      onError?.('Choose a colleague and one of their roster slots');
       return;
     }
     if (blocked) {
-      onError?.('This shift already has an open swap request');
+      onError?.('This roster slot already has an open swap request');
       return;
     }
     setSubmitting(true);
@@ -1475,7 +1475,7 @@ function ShiftSwapRequestModal({
             </h2>
             <InfoHint
               title="Shift swap help"
-              text={`You offer ${shift.shift_type === 'night' ? 'Night' : 'Day'} on ${formatDate(shift.work_date)}. Pick a colleague and the shift you want in return. They must approve first, then management.`}
+              text={`You offer ${formatEntryTimeRange(shift.shift_type, shift.work_start_time, shift.work_end_time)} on ${formatDate(shift.work_date)}. Pick a colleague and the roster slot you want in return. They must approve first, then management.`}
             />
           </div>
           <button type="button" onClick={onClose} className="p-1 rounded text-surface-500 hover:bg-surface-100" aria-label="Close">
@@ -1500,12 +1500,12 @@ function ShiftSwapRequestModal({
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-surface-600 mb-1">Their shift you want (same calendar month)</label>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Their hours you want (same calendar month)</label>
             {loadingEntries ? (
               <p className="text-sm text-surface-500">Loading…</p>
             ) : colleagueId && theirEntries.length === 0 ? (
               <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                No shifts found for this person in {new Date(calendarYear, calendarMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}. Try another month or ask management to add shifts.
+                No roster entries found for this person in {new Date(calendarYear, calendarMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}. Try another month or ask management to add schedule rows.
               </p>
             ) : (
               <select
@@ -1515,10 +1515,10 @@ function ShiftSwapRequestModal({
                 required
                 disabled={!colleagueId}
               >
-                <option value="">Select date & shift…</option>
+                <option value="">Select date & hours…</option>
                 {theirEntries.map((en) => (
                   <option key={en.entry_id} value={en.entry_id}>
-                    {formatDate(en.work_date)} — {en.shift_type === 'night' ? 'Night' : 'Day'}
+                    {formatDate(en.work_date)} — {formatEntryTimeRange(en.shift_type, en.work_start_time, en.work_end_time)}
                   </option>
                 ))}
               </select>

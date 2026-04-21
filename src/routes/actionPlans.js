@@ -377,6 +377,7 @@ router.post('/:id/send-email', async (req, res, next) => {
     const senderName = req.user?.full_name || req.user?.email || null;
     const message = (body.message && String(body.message).trim()) || '';
 
+    const appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || process.env.FRONTEND_URL || '').trim();
     const html = actionPlanSharedHtml({
       planTitle,
       projectName,
@@ -384,6 +385,7 @@ router.post('/:id/send-email', async (req, res, next) => {
       documentId,
       senderName,
       message,
+      appUrl,
     });
 
     const attachments = [

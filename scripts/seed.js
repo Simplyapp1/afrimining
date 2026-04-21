@@ -20,7 +20,7 @@ async function seed() {
   const tenantResult = await query(
     `INSERT INTO tenants (name, slug, [plan], [status])
      OUTPUT INSERTED.id, INSERTED.name, INSERTED.slug, INSERTED.[plan], INSERTED.[status], INSERTED.created_at
-     VALUES (N'Thinkers Africa', N'thinkers-africa', N'enterprise', N'active')`
+     VALUES (N'Simplyapp', N'simplyapp', N'enterprise', N'active')`
   );
   const tenant = tenantResult.recordset[0];
   const tenantId = tenant.id;
@@ -38,7 +38,7 @@ async function seed() {
      VALUES (@tenantId, N'contractor@thinkers.africa', @passwordHash, N'Contractor Demo', N'user', N'active')`,
     { tenantId, passwordHash }
   );
-  console.log('Contractor user created: contractor@thinkers.africa /', DEFAULT_PASSWORD, '(linked to Thinkers Africa; use this to see Contractor page data)');
+  console.log('Contractor user created: contractor@thinkers.africa /', DEFAULT_PASSWORD, '(linked to Simplyapp tenant; use this to see Contractor page data)');
 
   const pool = await getPool();
   await pool.close();

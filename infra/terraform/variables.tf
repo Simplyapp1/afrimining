@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project" {
   description = "Project name"
   type        = string
-  default     = "thinkers"
+  default     = "simplyapp"
 }
 
 variable "environment" {
@@ -124,7 +124,7 @@ variable "email_pass" {
 variable "email_from_name" {
   description = "From name for email notifications"
   type        = string
-  default     = "Thinkers"
+  default     = "Simplyapp"
 }
 
 variable "email_host" {

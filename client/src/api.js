@@ -105,19 +105,6 @@ export const users = {
     return request(`/users${q ? `?${q}` : ''}`);
   },
   get: (id) => request(`/users/${id}`),
-  /** Contractors for given tenant IDs (for assigning user to contractors in User Management). */
-  contractorsForTenants: (tenantIds) => {
-    const ids = (Array.isArray(tenantIds) ? tenantIds : [])
-      .map((id) => (id != null ? String(id).trim() : ''))
-      .filter(Boolean);
-    if (ids.length === 0) return Promise.resolve({ contractors: [] });
-    const q = ids.length === 1
-      ? `tenant_id=${encodeURIComponent(ids[0])}`
-      : `tenant_ids=${encodeURIComponent(ids.join(','))}`;
-    return request(`/users/contractors-for-tenants?${q}`);
-  },
-  /** Create a contractor company under a tenant (from User Management). */
-  createContractor: (body) => request('/users/contractors', { method: 'POST', body: JSON.stringify(body) }),
   activity: (id) => request(`/users/${id}/activity`),
   loginActivity: (id, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -160,574 +147,189 @@ export const tenants = {
   logoUrl: (id) => `${API}/tenants/${id}/logo`,
 };
 
+export const tasks = {
+  list: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/tasks${q ? `?${q}` : ''}`);
+  },
+  get: (id) => request(`/tasks/${id}`),
+  create: (body) => request('/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => request(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  assign: (id, body) => request(`/tasks/${id}/assign`, { method: 'POST', body: JSON.stringify(body) }),
+  addProgressUpdate: (id, body) => request(`/tasks/${id}/progress-updates`, { method: 'POST', body: JSON.stringify(body) }),
+  addComment: (id, body) => request(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify(body) }),
+  addCommentAttachments: (taskId, commentId, files) => {
+    const formData = new FormData();
+    Array.from(files).forEach((file) => formData.append('files', file));
+    return fetch(`${API}/tasks/${taskId}/comments/${commentId}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
+      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  commentAttachmentDownloadUrl: (taskId, commentId, attachmentId) =>
+    `${API}/tasks/${taskId}/comments/${commentId}/attachments/${attachmentId}/download`,
+  addReminder: (id, body) => request(`/tasks/${id}/reminders`, { method: 'POST', body: JSON.stringify(body) }),
+  dismissReminder: (taskId, reminderId) => request(`/tasks/${taskId}/reminders/${reminderId}/dismiss`, { method: 'PATCH' }),
+  uploadAttachment: (id, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetch(`${API}/tasks/${id}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
+      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  uploadAttachments: (id, files) => {
+    const formData = new FormData();
+    Array.from(files || []).forEach((f) => formData.append('files', f));
+    return fetch(`${API}/tasks/${id}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
+      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  attachmentDownloadUrl: (id, attachmentId) => `${API}/tasks/${id}/attachments/${attachmentId}/download`,
+  tenantUsers: () => request('/tasks/users/tenant'),
+  library: {
+    folders: {
+      list: () => request('/tasks/library/folders'),
+      create: (body) => request('/tasks/library/folders', { method: 'POST', body: JSON.stringify(body) }),
+    },
+    files: {
+      list: (folderId) => request(`/tasks/library/files${folderId != null && folderId !== '' ? `?folder_id=${encodeURIComponent(folderId)}` : '?folder_id='}`),
+      upload: (file, folderId) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        if (folderId != null && folderId !== '') formData.append('folder_id', folderId);
+        return fetch(`${API}/tasks/library/files`, { method: 'POST', body: formData, credentials: 'include' })
+          .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+      },
+      downloadUrl: (id) => `${API}/tasks/library/files/${id}/download`,
+    },
+  },
+};
+
+/** Project tracker — portfolio projects, phased design, implementation logs, finance, attachments. */
+export const projectTracker = {
+  dashboard: () => request('/project-tracker/dashboard'),
+  listProjects: () => request('/project-tracker/projects'),
+  createProject: (body) => request('/project-tracker/projects', { method: 'POST', body: JSON.stringify(body) }),
+  getProject: (id) => request(`/project-tracker/projects/${encodeURIComponent(id)}`),
+  updateProject: (id, body) =>
+    request(`/project-tracker/projects/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteProject: (id) => request(`/project-tracker/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  createPhase: (projectId, body) =>
+    request(`/project-tracker/projects/${encodeURIComponent(projectId)}/phases`, { method: 'POST', body: JSON.stringify(body) }),
+  updatePhase: (phaseId, body) =>
+    request(`/project-tracker/phases/${encodeURIComponent(phaseId)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePhase: (phaseId) => request(`/project-tracker/phases/${encodeURIComponent(phaseId)}`, { method: 'DELETE' }),
+  addPhaseMember: (phaseId, body) =>
+    request(`/project-tracker/phases/${encodeURIComponent(phaseId)}/members`, { method: 'POST', body: JSON.stringify(body) }),
+  removePhaseMember: (memberId) =>
+    request(`/project-tracker/phase-members/${encodeURIComponent(memberId)}`, { method: 'DELETE' }),
+  listLogs: (phaseId) => request(`/project-tracker/phases/${encodeURIComponent(phaseId)}/logs`),
+  addLog: (phaseId, body) =>
+    request(`/project-tracker/phases/${encodeURIComponent(phaseId)}/logs`, { method: 'POST', body: JSON.stringify(body) }),
+  listFinance: (projectId) => request(`/project-tracker/projects/${encodeURIComponent(projectId)}/finance-lines`),
+  addFinance: (projectId, body) =>
+    request(`/project-tracker/projects/${encodeURIComponent(projectId)}/finance-lines`, { method: 'POST', body: JSON.stringify(body) }),
+  listNotes: (projectId) => request(`/project-tracker/projects/${encodeURIComponent(projectId)}/notes`),
+  addNote: (projectId, body) =>
+    request(`/project-tracker/projects/${encodeURIComponent(projectId)}/notes`, { method: 'POST', body: JSON.stringify(body) }),
+  listAttachments: (projectId) => request(`/project-tracker/projects/${encodeURIComponent(projectId)}/attachments`),
+  uploadAttachments: (projectId, files, phaseId) => {
+    const formData = new FormData();
+    Array.from(files || []).forEach((f) => formData.append('files', f));
+    if (phaseId) formData.append('phase_id', phaseId);
+    return fetch(`${API}/project-tracker/projects/${encodeURIComponent(projectId)}/attachments`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  attachmentDownloadUrl: (projectId, attachmentId) =>
+    `${API}/project-tracker/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+};
+
+/** Resources register — assets, inventory, stock movements, rich attachments. */
+export const resourcesRegister = {
+  dashboard: () => request('/resources-register/dashboard'),
+  listAssets: (params) => {
+    const q = new URLSearchParams(params || {}).toString();
+    return request(`/resources-register/assets${q ? `?${q}` : ''}`);
+  },
+  createAsset: (body) => request('/resources-register/assets', { method: 'POST', body: JSON.stringify(body) }),
+  getAsset: (id) => request(`/resources-register/assets/${encodeURIComponent(id)}`),
+  updateAsset: (id, body) =>
+    request(`/resources-register/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteAsset: (id) => request(`/resources-register/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listServiceEvents: (assetId) => request(`/resources-register/assets/${encodeURIComponent(assetId)}/service-events`),
+  addServiceEvent: (assetId, body) =>
+    request(`/resources-register/assets/${encodeURIComponent(assetId)}/service-events`, { method: 'POST', body: JSON.stringify(body) }),
+  listInventory: (params) => {
+    const q = new URLSearchParams(params || {}).toString();
+    return request(`/resources-register/inventory/items${q ? `?${q}` : ''}`);
+  },
+  createInventoryItem: (body) => request('/resources-register/inventory/items', { method: 'POST', body: JSON.stringify(body) }),
+  getInventoryItem: (id) => request(`/resources-register/inventory/items/${encodeURIComponent(id)}`),
+  updateInventoryItem: (id, body) =>
+    request(`/resources-register/inventory/items/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteInventoryItem: (id) => request(`/resources-register/inventory/items/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listMovements: (itemId) => request(`/resources-register/inventory/items/${encodeURIComponent(itemId)}/movements`),
+  addMovement: (itemId, body) =>
+    request(`/resources-register/inventory/items/${encodeURIComponent(itemId)}/movements`, { method: 'POST', body: JSON.stringify(body) }),
+  listAttachments: (entityType, entityId) =>
+    request(
+      `/resources-register/attachments?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`
+    ),
+  uploadAttachments: (entityType, entityId, files, meta = {}) => {
+    const formData = new FormData();
+    Array.from(files || []).forEach((f) => formData.append('files', f));
+    if (meta.document_category) formData.append('document_category', meta.document_category);
+    if (meta.expiry_date) formData.append('expiry_date', meta.expiry_date);
+    if (meta.renewal_date) formData.append('renewal_date', meta.renewal_date);
+    if (meta.maintenance_interval_days != null) formData.append('maintenance_interval_days', String(meta.maintenance_interval_days));
+    if (meta.notes) formData.append('notes', meta.notes);
+    if (meta.display_name) formData.append('display_name', meta.display_name);
+    return fetch(
+      `${API}/resources-register/attachments/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+      { method: 'POST', body: formData, credentials: 'include' }
+    ).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  updateAttachment: (id, body) =>
+    request(`/resources-register/attachments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteAttachment: (id) => request(`/resources-register/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  attachmentDownloadUrl: (attachmentId) =>
+    `${API}/resources-register/attachments/${encodeURIComponent(attachmentId)}/download`,
+};
+
+/** Contractor / haulier management API (`/api/contractor`). */
 export const contractor = {
   context: () => request('/contractor/context'),
-  contractors: {
-    list: () => request('/contractor/contractors'),
-    create: (body) => request('/contractor/contractors', { method: 'POST', body: JSON.stringify(body) }),
+  listContractors: () => request('/contractor/contractors'),
+  createContractor: (body) => request('/contractor/contractors', { method: 'POST', body: JSON.stringify(body) }),
+  updateContractor: (id, body) =>
+    request(`/contractor/contractors/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  getInfo: () => request('/contractor/info'),
+  updateInfo: (body) => request('/contractor/info', { method: 'PATCH', body: JSON.stringify(body) }),
+  listExpiries: () => request('/contractor/expiries'),
+  createExpiry: (body) => request('/contractor/expiries', { method: 'POST', body: JSON.stringify(body) }),
+  updateExpiry: (id, body) =>
+    request(`/contractor/expiries/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteExpiry: (id) => request(`/contractor/expiries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  libraryDocumentTypes: () => request('/contractor/library/document-types'),
+  listLibrary: () => request('/contractor/library'),
+  uploadLibraryDocument: (file, documentType, linkedEntityType, linkedEntityId) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('document_type', documentType || 'other');
+    if (linkedEntityType && linkedEntityId) {
+      formData.append('linked_entity_type', linkedEntityType);
+      formData.append('linked_entity_id', linkedEntityId);
+    }
+    return fetch(`${API}/contractor/library`, { method: 'POST', body: formData, credentials: 'include' }).then((res) =>
+      res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))
+    );
   },
-  trucks: {
-    list: () => request('/contractor/trucks'),
-    create: (body) => request('/contractor/trucks', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/trucks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    bulk: (body) => request('/contractor/trucks/bulk', { method: 'POST', body: JSON.stringify(body) }),
-  },
-  drivers: {
-    list: () => request('/contractor/drivers'),
-    create: (body) => request('/contractor/drivers', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/drivers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    bulk: (body) => request('/contractor/drivers/bulk', { method: 'POST', body: JSON.stringify(body) }),
-  },
-  incidents: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return request(`/contractor/incidents${q ? `?${q}` : ''}`);
-    },
-    get: (id) => request(`/contractor/incidents/${id != null ? String(id) : ''}`),
-    create: (body) => request('/contractor/incidents', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/incidents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    resolveWithDetails: (id, formData) =>
-      fetch(`${API}/contractor/incidents/${id}/resolve`, {
-        method: 'PATCH',
-        body: formData,
-        credentials: 'include',
-      }).then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        return data;
-      }).catch((err) => { throw wrapNetworkError(err); }),
-    /** Submit offloading slip later (incident must be resolved). */
-    submitOffloadingSlip: (id, formData) =>
-      fetch(`${API}/contractor/incidents/${id}/offloading-slip`, {
-        method: 'PATCH',
-        body: formData,
-        credentials: 'include',
-      }).then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        return data;
-      }).catch((err) => { throw wrapNetworkError(err); }),
-    /** Fetch an attachment as blob (for view/download). Uses credentials. */
-    getAttachmentBlob: (id, type) =>
-      fetch(`${API}/contractor/incidents/${id}/attachments/${type}`, { credentials: 'include' }).then((res) => {
-        if (!res.ok) throw new Error(res.status === 404 ? 'Attachment not found' : 'Failed to load attachment');
-        return res.blob();
-      }).catch((err) => { throw wrapNetworkError(err); }),
-    createWithAttachments: (formData) =>
-      fetch(`${API}/contractor/incidents`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include',
-      }).then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        return data;
-      }).catch((err) => {
-        throw wrapNetworkError(err);
-      }),
-  },
-  expiries: {
-    list: () => request('/contractor/expiries'),
-    create: (body) => request('/contractor/expiries', { method: 'POST', body: JSON.stringify(body) }),
-  },
-  suspensions: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return request(`/contractor/suspensions${q ? `?${q}` : ''}`);
-    },
-    create: (body) => request('/contractor/suspensions', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/suspensions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  },
-  reinstatementRequests: () => request('/contractor/reinstatement-requests'),
-    reinstatementHistory: () => request('/contractor/reinstatement-history'),
-  complianceRecords: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return request(`/contractor/compliance-records${q ? `?${q}` : ''}`);
-    },
-    get: (id) => request(`/contractor/compliance-records/${id}`),
-    respond: (id, responseText, files = null) => {
-      if (files && files.length > 0) {
-        const formData = new FormData();
-        formData.append('responseText', responseText ?? '');
-        for (let i = 0; i < files.length; i++) formData.append('attachments', files[i]);
-        return fetch(`${API}/contractor/compliance-records/${id}/respond`, {
-          method: 'PATCH',
-          body: formData,
-          credentials: 'include',
-        }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-      }
-      return request(`/contractor/compliance-records/${id}/respond`, { method: 'PATCH', body: JSON.stringify({ responseText: responseText ?? '' }) });
-    },
-    attachmentUrl: (inspectionId, attachmentId) => `${API}/contractor/compliance-records/${inspectionId}/attachments/${attachmentId}`,
-  },
-  messages: {
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
-      return request(`/contractor/messages${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    create: (body, files = null) => {
-      if (files && files.length > 0) {
-        const formData = new FormData();
-        if (body?.subject != null) formData.append('subject', body.subject);
-        if (body?.body != null) formData.append('body', body.body);
-        if (body?.contractor_id != null) formData.append('contractor_id', body.contractor_id);
-        for (let i = 0; i < files.length; i++) formData.append('attachments', files[i]);
-        return fetch(`${API}/contractor/messages`, {
-          method: 'POST',
-          body: formData,
-          credentials: 'include',
-        }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-      }
-      return request('/contractor/messages', { method: 'POST', body: JSON.stringify(body) });
-    },
-    markRead: (id) => request(`/contractor/messages/${id}/read`, { method: 'PATCH' }),
-    attachmentUrl: (messageId, attachmentId) => `${API}/contractor/messages/${messageId}/attachments/${attachmentId}`,
-  },
-  routes: {
-    list: () => request('/contractor/routes'),
-    enrolledByTruck: (truckId) => request(`/contractor/routes/enrolled-by-truck/${encodeURIComponent(truckId)}`),
-    get: (id, params = {}) => {
-      const q = new URLSearchParams();
-      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
-      if (params.enrollmentPortal) q.set('enrollmentPortal', params.enrollmentPortal);
-      const qs = q.toString();
-      return request(`/contractor/routes/${id}${qs ? `?${qs}` : ''}`);
-    },
-    create: (body) => request('/contractor/routes', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/contractor/routes/${id}`, { method: 'DELETE' }),
-    enrollTrucks: (routeId, truckIds) => request(`/contractor/routes/${routeId}/trucks?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
-    enrollDrivers: (routeId, driverIds) => request(`/contractor/routes/${routeId}/drivers?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
-    unenrollTruck: (routeId, truckId) => request(`/contractor/routes/${routeId}/trucks/${truckId}?enrollmentPortal=1`, { method: 'DELETE' }),
-    unenrollDriver: (routeId, driverId) => request(`/contractor/routes/${routeId}/drivers/${driverId}?enrollmentPortal=1`, { method: 'DELETE' }),
-  },
-  rectorMyRoutes: () => request('/contractor/rector-my-routes'),
-  routeFactors: {
-    list: (routeId) => request(`/contractor/route-factors${routeId ? `?routeId=${encodeURIComponent(routeId)}` : ''}`),
-    create: (body) => request('/contractor/route-factors', { method: 'POST', body: JSON.stringify(body) }),
-    bulkCreate: (body) => request('/contractor/route-factors/bulk', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/route-factors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/contractor/route-factors/${id}`, { method: 'DELETE' }),
-  },
-  distributionHistory: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return request(`/contractor/distribution-history${q ? `?${q}` : ''}`);
-    },
-    contractors: () => request('/contractor/distribution/contractors'),
-    create: (body) => request('/contractor/distribution-history', { method: 'POST', body: JSON.stringify(body) }),
-    sendEmail: (body) => request('/contractor/distribution/send-email', { method: 'POST', body: JSON.stringify(body) }),
-    exportUrl: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return `${getApiBase()}/contractor/distribution-history/export${q ? `?${q}` : ''}`;
-    },
-  },
-  pilotDistribution: {
-    list: () => request('/contractor/pilot-distribution'),
-    history: () => request('/contractor/pilot-distribution/history'),
-    create: (body) => request('/contractor/pilot-distribution', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/pilot-distribution/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/contractor/pilot-distribution/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  },
-  enrollment: {
-    approvedTrucks: (contractorId, opts = {}) => {
-      const q = new URLSearchParams();
-      if (contractorId) q.set('contractor_id', contractorId);
-      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
-      const qs = q.toString();
-      return request(`/contractor/enrollment/approved-trucks${qs ? `?${qs}` : ''}`);
-    },
-    approvedDrivers: (contractorId, opts = {}) => {
-      const q = new URLSearchParams();
-      if (contractorId) q.set('contractor_id', contractorId);
-      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
-      const qs = q.toString();
-      return request(`/contractor/enrollment/approved-drivers${qs ? `?${qs}` : ''}`);
-    },
-    downloadFleetList: (routeId, contractorId, opts = {}) => {
-      const q = new URLSearchParams();
-      if (routeId) q.set('routeId', routeId);
-      if (contractorId) q.set('contractor_id', contractorId);
-      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
-      const qs = q.toString();
-      return fetch(`${API}/contractor/enrollment/fleet-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
-        .then((res) => {
-          if (!res.ok) throw new Error('Failed to download fleet list');
-          return res.blob();
-        })
-        .then((blob) => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'fleet-list.csv';
-          a.click();
-          URL.revokeObjectURL(a.href);
-        });
-    },
-    downloadDriverList: (routeId, contractorId, opts = {}) => {
-      const q = new URLSearchParams();
-      if (routeId) q.set('routeId', routeId);
-      if (contractorId) q.set('contractor_id', contractorId);
-      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
-      const qs = q.toString();
-      return fetch(`${API}/contractor/enrollment/driver-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
-        .then((res) => {
-          if (!res.ok) throw new Error('Failed to download driver list');
-          return res.blob();
-        })
-        .then((blob) => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'driver-list.csv';
-          a.click();
-          URL.revokeObjectURL(a.href);
-        });
-    },
-  },
-  info: {
-    get: () => request('/contractor/info'),
-    update: (body) => request('/contractor/info', { method: 'PATCH', body: JSON.stringify(body) }),
-  },
-  subcontractors: {
-    list: () => request('/contractor/subcontractors'),
-    create: (body) => request('/contractor/subcontractors', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/subcontractors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/contractor/subcontractors/${id}`, { method: 'DELETE' }),
-  },
-  library: {
-    documentTypes: () => request('/contractor/library/document-types'),
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.linked_entity_type) q.set('linked_entity_type', params.linked_entity_type);
-      if (params.linked_entity_id) q.set('linked_entity_id', params.linked_entity_id);
-      const s = q.toString();
-      return request(`/contractor/library${s ? `?${s}` : ''}`);
-    },
-    upload: (file, documentType = 'other', link = {}) => {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('document_type', documentType);
-      if (link.linked_entity_type && link.linked_entity_id) {
-        formData.append('linked_entity_type', link.linked_entity_type);
-        formData.append('linked_entity_id', link.linked_entity_id);
-      }
-      return fetch(`${API}/contractor/library`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include',
-      }).then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        return data;
-      }).catch((err) => { throw wrapNetworkError(err); });
-    },
-    patchLink: (id, body) => request(`/contractor/library/${encodeURIComponent(id)}/link`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/contractor/library/${id}`, { method: 'DELETE' }),
-    downloadUrl: (id) => `${API}/contractor/library/${id}/download`,
-  },
-};
-
-export const commandCentre = {
-  myTabs: () => request('/command-centre/my-tabs'),
-  permissions: () => request('/command-centre/permissions'),
-  grantPermission: (userId, tabId) => request('/command-centre/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
-  revokePermission: (userId, tabId) => request(`/command-centre/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`, { method: 'DELETE' }),
-  approvers: () => request('/command-centre/approvers'),
-  trends: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.dateFrom) q.set('dateFrom', params.dateFrom);
-    if (params.dateTo) q.set('dateTo', params.dateTo);
-    if (params.route) q.set('route', params.route);
-    return request(`/command-centre/trends${q.toString() ? `?${q.toString()}` : ''}`);
-  },
-  deliveryTimeline: (days = 30) => request(`/command-centre/delivery-timeline?days=${encodeURIComponent(days)}`),
-  shiftReports: {
-    list: (requestsOnly) => request(`/command-centre/shift-reports${requestsOnly ? '?requests=1' : ''}`),
-    listDecidedByMe: () => request('/command-centre/shift-reports?decidedByMe=1'),
-    get: (id) => request(`/command-centre/shift-reports/${id}`),
-    create: (body) => request('/command-centre/shift-reports', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/command-centre/shift-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => request(`/command-centre/shift-reports/${id}`, { method: 'DELETE' }),
-    submit: (id, submitted_to_user_id) => request(`/command-centre/shift-reports/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_to_user_id }) }),
-    addComment: (id, comment_text) => request(`/command-centre/shift-reports/${id}/comments`, { method: 'POST', body: JSON.stringify({ comment_text }) }),
-    markCommentAddressed: (reportId, commentId) => request(`/command-centre/shift-reports/${reportId}/comments/${commentId}/addressed`, { method: 'PATCH' }),
-    getEvaluation: (id) => request(`/command-centre/shift-reports/${id}/evaluation`),
-    submitEvaluation: (id, body) => request(`/command-centre/shift-reports/${id}/evaluation`, { method: 'POST', body: JSON.stringify(body) }),
-    requestOverride: (id) => request(`/command-centre/shift-reports/${id}/request-override`, { method: 'POST' }),
-    approve: (id, overrideCode) => request(`/command-centre/shift-reports/${id}/approve`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
-    reject: (id, overrideCode) => request(`/command-centre/shift-reports/${id}/reject`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
-    provisional: (id, overrideCode) => request(`/command-centre/shift-reports/${id}/provisional`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
-    revokeApproval: (id) => request(`/command-centre/shift-reports/${id}/revoke-approval`, { method: 'PATCH' }),
-  },
-  shiftItems: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.days != null) q.set('days', params.days);
-    if (params.route) q.set('route', params.route);
-    return request(`/command-centre/shift-items${q.toString() ? `?${q.toString()}` : ''}`);
-  },
-  shiftReportExport: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.section) q.set('section', params.section);
-    if (params.dateFrom) q.set('dateFrom', params.dateFrom);
-    if (params.dateTo) q.set('dateTo', params.dateTo);
-    if (params.route) q.set('route', params.route);
-    return request(`/command-centre/shift-report-export${q.toString() ? `?${q.toString()}` : ''}`);
-  },
-  library: () => request('/command-centre/library'),
-  messages: {
-    list: (params = {}) => contractor.messages.list(params),
-    create: (body, files = null) => contractor.messages.create(body, files),
-    markRead: (id) => request(`/contractor/messages/${id}/read`, { method: 'PATCH' }),
-    attachmentUrl: (messageId, attachmentId) => `${API}/contractor/messages/${messageId}/attachments/${attachmentId}`,
-  },
-  notesReminders: {
-    list: (onlyMine = false) => request(`/command-centre/notes-reminders${onlyMine ? '?only_mine=1' : ''}`),
-    create: (body) => request('/command-centre/notes-reminders', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/command-centre/notes-reminders/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    remove: (id) => request(`/command-centre/notes-reminders/${id}`, { method: 'DELETE' }),
-  },
-  libraryDocuments: {
-    list: () => request('/command-centre/library/documents'),
-    upload: (file) => {
-      const formData = new FormData();
-      formData.append('file', file);
-      return fetch(`${getApiBase()}/command-centre/library/documents`, { method: 'POST', body: formData, credentials: 'include' })
-        .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-    },
-    downloadUrl: (id) => `${getApiBase()}/command-centre/library/documents/${id}/download`,
-  },
-  investigationReports: {
-    list: (approvedOnly) => request(`/command-centre/investigation-reports${approvedOnly ? '?approved=1' : ''}`),
-    create: (body) => request('/command-centre/investigation-reports', { method: 'POST', body: JSON.stringify(body) }),
-    approve: (id) => request(`/command-centre/investigation-reports/${id}/approve`, { method: 'PATCH' }),
-  },
-  complianceInspections: {
-    list: () => request('/command-centre/compliance-inspections'),
-    create: (body) => request('/command-centre/compliance-inspections', { method: 'POST', body: JSON.stringify(body) }),
-    reply: (id, replyText) => request(`/command-centre/compliance-inspections/${id}/reply`, { method: 'PATCH', body: JSON.stringify({ replyText }) }),
-    attachmentUrl: (inspectionId, attachmentId) => `${API}/command-centre/compliance-inspections/${inspectionId}/attachments/${attachmentId}`,
-  },
-  suspendTruck: (truckId, reason, options = {}) => request('/command-centre/suspend-truck', {
-    method: 'POST',
-    body: JSON.stringify({
-      truck_id: truckId,
-      reason: reason || undefined,
-      permanent: options.permanent !== false,
-      duration_days: options.duration_days ?? undefined,
-    }),
-  }),
-  suspensions: {
-    list: (status) => request(`/command-centre/suspensions${status ? `?status=${encodeURIComponent(status)}` : ''}`),
-    reinstate: (suspensionId) => request('/command-centre/reinstate-suspension', { method: 'POST', body: JSON.stringify({ suspensionId }) }),
-  },
-  fleetApplications: {
-    list: (status) => request(`/command-centre/fleet-applications${status ? `?status=${encodeURIComponent(status)}` : ''}`),
-    get: (id) => request(`/command-centre/fleet-applications/${id}`),
-    getComments: (id) => request(`/command-centre/fleet-applications/${id}/comments`),
-    addComment: (id, body) => request(`/command-centre/fleet-applications/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
-    approve: (id, body = {}) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH', body: JSON.stringify(body) }),
-    bulkApprove: (ids, body = {}) => request('/command-centre/fleet-applications/bulk-approve', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
-    decline: (id, declineReason) => request(`/command-centre/fleet-applications/${id}/decline`, { method: 'PATCH', body: JSON.stringify({ decline_reason: declineReason }) }),
-  },
-  /** Rectors (users in access_route_factors) for "Notify rectors" when approving fleet applications */
-  rectors: () => request('/command-centre/rectors'),
-  fleetIntegration: {
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.tenantId) q.set('tenantId', params.tenantId);
-      return request(`/command-centre/fleet-integration${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-  },
-  deleteFleetDrivers: {
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.tenant_id) q.set('tenant_id', params.tenant_id);
-      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
-      if (params.type) q.set('type', params.type);
-      return request(`/command-centre/delete-fleet-drivers/list${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    deleteTruck: (id) => request(`/command-centre/delete-fleet-drivers/truck/${id}`, { method: 'DELETE' }),
-    deleteDriver: (id) => request(`/command-centre/delete-fleet-drivers/driver/${id}`, { method: 'DELETE' }),
-    deleteBreakdown: (id) => request(`/command-centre/delete-fleet-drivers/breakdown/${id}`, { method: 'DELETE' }),
-  },
-  contractorsDetails: () => request('/command-centre/contractors-details'),
-  breakdowns: {
-    tenants: () => request('/command-centre/breakdowns/tenants'),
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.resolved !== undefined && params.resolved !== '') q.set('resolved', params.resolved);
-      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
-      if (params.dateTo) q.set('dateTo', params.dateTo);
-      if (params.type) q.set('type', params.type);
-      if (params.severity) q.set('severity', params.severity);
-      if (params.tenantId) q.set('tenantId', params.tenantId);
-      return request(`/command-centre/breakdowns${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    get: (id) => request(`/command-centre/breakdowns/${id}`),
-    resolve: (id, resolutionNote) =>
-      request(`/command-centre/breakdowns/${id}/resolve`, {
-        method: 'PATCH',
-        body: JSON.stringify({ resolution_note: resolutionNote }),
-      }),
-    notifyRector: (id, rectorUserIds) =>
-      request(`/command-centre/breakdowns/${id}/notify-rector`, {
-        method: 'POST',
-        body: JSON.stringify({ rector_user_ids: rectorUserIds }),
-      }),
-    attachmentUrl: (id, type) => `${API}/command-centre/breakdowns/${id}/attachments/${type}`,
-  },
-  truckAnalysis: {
-    controllers: () => request('/command-centre/truck-analysis/controllers'),
-    listSessions: () => request('/command-centre/truck-analysis/sessions'),
-    createSession: (payload) =>
-      request('/command-centre/truck-analysis/sessions', { method: 'POST', body: JSON.stringify({ payload }) }),
-    getSession: (id) => request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}`),
-    saveSession: (id, payload) =>
-      request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ payload }),
-      }),
-    handover: (id, summary) =>
-      request(`/command-centre/truck-analysis/sessions/${encodeURIComponent(id)}/handover`, {
-        method: 'POST',
-        body: JSON.stringify({ summary }),
-      }),
-  },
-  rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
-};
-
-export const fuelSupply = {
-  myTabs: () => request('/fuel-supply/my-tabs'),
-  permissions: () => request('/fuel-supply/permissions'),
-  grantPermission: (userId, tabId) =>
-    request('/fuel-supply/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
-  revokePermission: (userId, tabId) =>
-    request(`/fuel-supply/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`, { method: 'DELETE' }),
-  events: (limit) => request(`/fuel-supply/events${limit ? `?limit=${limit}` : ''}`),
-  orders: () => request('/fuel-supply/orders'),
-  order: (id) => request(`/fuel-supply/orders/${encodeURIComponent(id)}`),
-  createOrder: (body) => request('/fuel-supply/orders', { method: 'POST', body: JSON.stringify(body) }),
-  patchOrder: (id, body) => request(`/fuel-supply/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  reorderOrder: (id, body) =>
-    request(`/fuel-supply/orders/${encodeURIComponent(id)}/reorder`, { method: 'POST', body: JSON.stringify(body) }),
-  addActivity: (orderId, body) =>
-    request(`/fuel-supply/orders/${encodeURIComponent(orderId)}/activities`, { method: 'POST', body: JSON.stringify(body) }),
-  addDelivery: (orderId, formData) =>
-    fetch(`${API}/fuel-supply/orders/${encodeURIComponent(orderId)}/deliveries`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include',
-    }).then(async (res) => {
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || res.statusText);
-      return data;
-    }).catch((err) => { throw wrapNetworkError(err); }),
-  receiptUrl: (deliveryId) => `${API}/fuel-supply/deliveries/${encodeURIComponent(deliveryId)}/receipt`,
-  activities: () => request('/fuel-supply/activities'),
-  activitiesFiltered: (params = {}) => {
-    const q = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => {
-      if (v != null && v !== '') q.set(k, String(v));
-    });
-    const s = q.toString();
-    return request(`/fuel-supply/activities${s ? `?${s}` : ''}`);
-  },
-  reconciliationsList: () => request('/fuel-supply/reconciliations'),
-  analyticsMonthly: (months) =>
-    request(`/fuel-supply/analytics/monthly${months != null ? `?months=${encodeURIComponent(months)}` : ''}`),
-  vehicles: () => request('/fuel-supply/vehicles'),
-  createVehicle: (body) => request('/fuel-supply/vehicles', { method: 'POST', body: JSON.stringify(body) }),
-  patchVehicle: (id, body) =>
-    request(`/fuel-supply/vehicles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  trips: (params = {}) => {
-    const q = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => {
-      if (v != null && v !== '') q.set(k, String(v));
-    });
-    const s = q.toString();
-    return request(`/fuel-supply/trips${s ? `?${s}` : ''}`);
-  },
-  tripsSummary: () => request('/fuel-supply/trips/summary'),
-  createTrip: (body) => request('/fuel-supply/trips', { method: 'POST', body: JSON.stringify(body) }),
-  trip: (id) => request(`/fuel-supply/trips/${encodeURIComponent(id)}`),
-  patchTrip: (id, body) =>
-    request(`/fuel-supply/trips/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  addTripStop: (tripId, formData) =>
-    fetch(`${API}/fuel-supply/trips/${encodeURIComponent(tripId)}/stops`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include',
-    })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        return data;
-      })
-      .catch((err) => {
-        throw wrapNetworkError(err);
-      }),
-  tripGaugeUrl: (stopId) => `${API}/fuel-supply/trip-stops/${encodeURIComponent(stopId)}/gauge`,
-  tripSlipUrl: (stopId) => `${API}/fuel-supply/trip-stops/${encodeURIComponent(stopId)}/slip`,
-  addReconciliation: (orderId, body) =>
-    request(`/fuel-supply/orders/${encodeURIComponent(orderId)}/reconciliations`, { method: 'POST', body: JSON.stringify(body) }),
-  patchReconciliation: (id, body) =>
-    request(`/fuel-supply/reconciliations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  customerRequests: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.status != null && params.status !== '') q.set('status', String(params.status));
-    const s = q.toString();
-    return request(`/fuel-supply/customer-requests${s ? `?${s}` : ''}`);
-  },
-  customerRequest: (id) => request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}`),
-  approveCustomerRequest: (id, body) =>
-    request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(body || {}),
-    }),
-  rejectCustomerRequest: (id, body) =>
-    request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}/reject`, {
-      method: 'POST',
-      body: JSON.stringify(body || {}),
-    }),
-};
-
-export const fuelCustomerPortal = {
-  myRequests: () => request('/fuel-customer-portal/requests'),
-  createRequest: (body) =>
-    request('/fuel-customer-portal/requests', { method: 'POST', body: JSON.stringify(body || {}) }),
-};
-
-export const progressReports = {
-  list: () => request('/progress-reports'),
-  get: (id) => request(`/progress-reports/${id}`),
-  /** Users in same tenant for email recipient selection (id, full_name, email) */
-  recipients: () => request('/progress-reports/users'),
-  /** Send report by email. body: { to_user_ids: [], cc_emails: [], message?: string, pdf_base64, pdf_filename } */
-  sendEmail: (id, body) => request(`/progress-reports/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
-  create: (body) => request('/progress-reports', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id, body) => request(`/progress-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  delete: (id) => request(`/progress-reports/${id}`, { method: 'DELETE' }),
-};
-
-export const actionPlans = {
-  list: () => request('/action-plans'),
-  get: (id) => request(`/action-plans/${id}`),
-  /** Users in same tenant for email recipient selection (id, full_name, email) */
-  recipients: () => request('/action-plans/users'),
-  /** Send plan by email. body: { to_user_ids: [], cc_emails: [], message?: string, pdf_base64, pdf_filename } */
-  sendEmail: (id, body) => request(`/action-plans/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
-  create: (body) => request('/action-plans', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id, body) => request(`/action-plans/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  delete: (id) => request(`/action-plans/${id}`, { method: 'DELETE' }),
-};
-
-export const monthlyPerformanceReports = {
-  list: () => request('/monthly-performance-reports'),
-  get: (id) => request(`/monthly-performance-reports/${id}`),
-  create: (body) => request('/monthly-performance-reports', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id, body) => request(`/monthly-performance-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  delete: (id) => request(`/monthly-performance-reports/${id}`, { method: 'DELETE' }),
+  deleteLibraryDocument: (id) => request(`/contractor/library/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  libraryDownloadUrl: (id) => `${API}/contractor/library/${encodeURIComponent(id)}/download`,
+  listSubcontractors: () => request('/contractor/subcontractors'),
+  createSubcontractor: (body) => request('/contractor/subcontractors', { method: 'POST', body: JSON.stringify(body) }),
+  updateSubcontractor: (id, body) =>
+    request(`/contractor/subcontractors/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteSubcontractor: (id) => request(`/contractor/subcontractors/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
 
 const rec = (path, options = {}) => request(`/recruitment${path}`, { ...options, body: options.body ? JSON.stringify(options.body) : options.body });
@@ -850,54 +452,6 @@ export const recruitment = {
   panelAddQuestion: (body) => rec('/panel/add-question', { method: 'POST', body }),
 };
 
-export const tasks = {
-  list: (params = {}) => {
-    const q = new URLSearchParams(params).toString();
-    return request(`/tasks${q ? `?${q}` : ''}`);
-  },
-  get: (id) => request(`/tasks/${id}`),
-  create: (body) => request('/tasks', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id, body) => request(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  assign: (id, body) => request(`/tasks/${id}/assign`, { method: 'POST', body: JSON.stringify(body) }),
-  addProgressUpdate: (id, body) => request(`/tasks/${id}/progress-updates`, { method: 'POST', body: JSON.stringify(body) }),
-  addComment: (id, body) => request(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify(body) }),
-  addCommentAttachments: (taskId, commentId, files) => {
-    const formData = new FormData();
-    Array.from(files).forEach((file) => formData.append('files', file));
-    return fetch(`${API}/tasks/${taskId}/comments/${commentId}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
-      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-  },
-  commentAttachmentDownloadUrl: (taskId, commentId, attachmentId) =>
-    `${API}/tasks/${taskId}/comments/${commentId}/attachments/${attachmentId}/download`,
-  addReminder: (id, body) => request(`/tasks/${id}/reminders`, { method: 'POST', body: JSON.stringify(body) }),
-  dismissReminder: (taskId, reminderId) => request(`/tasks/${taskId}/reminders/${reminderId}/dismiss`, { method: 'PATCH' }),
-  uploadAttachment: (id, file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return fetch(`${API}/tasks/${id}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
-      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-  },
-  attachmentDownloadUrl: (id, attachmentId) => `${API}/tasks/${id}/attachments/${attachmentId}/download`,
-  tenantUsers: () => request('/tasks/users/tenant'),
-  library: {
-    folders: {
-      list: () => request('/tasks/library/folders'),
-      create: (body) => request('/tasks/library/folders', { method: 'POST', body: JSON.stringify(body) }),
-    },
-    files: {
-      list: (folderId) => request(`/tasks/library/files${folderId != null && folderId !== '' ? `?folder_id=${encodeURIComponent(folderId)}` : '?folder_id='}`),
-      upload: (file, folderId) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        if (folderId != null && folderId !== '') formData.append('folder_id', folderId);
-        return fetch(`${API}/tasks/library/files`, { method: 'POST', body: formData, credentials: 'include' })
-          .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
-      },
-      downloadUrl: (id) => `${API}/tasks/library/files/${id}/download`,
-    },
-  },
-};
-
 const pm = (path, options = {}) => request(`/profile-management${path}`, options);
 
 export const profileManagement = {
@@ -1009,8 +563,6 @@ export const profileManagement = {
     managementReview: (id, body) => pm(`/shift-swaps/${id}/management`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   tenantUsers: () => pm('/users/tenant'),
-  /** Tenant users who can access Command Centre (page or tab grant) — for Profile work schedule peer overlay. */
-  commandCentreSchedulePeers: () => pm('/users/command-centre-peers'),
 };
 
 const sc = (path, options = {}) => request(`/shift-clock${path}`, options);
@@ -1054,19 +606,13 @@ export const shiftClock = {
 
 const ss = (path, options = {}) => request(`/shift-score${path}`, options);
 
-/** Shift productivity score — punctuality, evaluations, tasks, report hand-in (rolling window). */
+/** Shift productivity score — shift clock in/out vs roster, Tasks tracker assignments, CC evaluations/reports/team progress (rolling window). */
 export const shiftScore = {
   me: (params = {}) => {
     const q = new URLSearchParams();
     if (params.days != null) q.set('days', String(params.days));
     const qs = q.toString();
     return ss(`/me${qs ? `?${qs}` : ''}`);
-  },
-  commandCentreDashboard: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.days != null) q.set('days', String(params.days));
-    const qs = q.toString();
-    return ss(`/command-centre-dashboard${qs ? `?${qs}` : ''}`);
   },
   tenant: (params = {}) => {
     const q = new URLSearchParams();
@@ -1186,66 +732,6 @@ export const userCareer = {
   },
   cvDownloadUrl: (id) => `${getApiBase()}/user-career/cv/${encodeURIComponent(id)}/download`,
   deleteCv: (id) => uc(`/cv/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-};
-
-const to = (path, options = {}) => request(`/transport-operations${path}`, options);
-
-export const transportOperations = {
-  tenantUsers: () => to('/tenant-users'),
-  trucks: {
-    list: () => to('/trucks'),
-    create: (body) => to('/trucks', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => to(`/trucks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => to(`/trucks/${id}`, { method: 'DELETE' }),
-  },
-  drivers: {
-    list: () => to('/drivers'),
-    create: (body) => to('/drivers', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => to(`/drivers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => to(`/drivers/${id}`, { method: 'DELETE' }),
-  },
-  routes: {
-    list: () => to('/routes'),
-    create: (body) => to('/routes', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => to(`/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => to(`/routes/${id}`, { method: 'DELETE' }),
-  },
-  shiftReports: {
-    list: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.pending_my_approval) q.set('pending_my_approval', '1');
-      return to(`/shift-reports${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    get: (id) => to(`/shift-reports/${id}`),
-    create: (body) => to('/shift-reports', { method: 'POST', body: JSON.stringify(body) }),
-    evaluationQuestions: (id) => to(`/shift-reports/${id}/evaluation-questions`),
-    getEvaluation: (id) => to(`/shift-reports/${id}/evaluation`),
-    submitEvaluation: (id, body) => to(`/shift-reports/${id}/evaluation`, { method: 'POST', body: JSON.stringify(body) }),
-    approve: (id) => to(`/shift-reports/${id}/approve`, { method: 'PATCH', body: JSON.stringify({}) }),
-  },
-  presentations: {
-    insights: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
-      if (params.dateTo) q.set('dateTo', params.dateTo);
-      return to(`/presentations/insights${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    recommendations: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.status) q.set('status', params.status);
-      return to(`/presentations/recommendations${q.toString() ? `?${q.toString()}` : ''}`);
-    },
-    createRecommendation: (body) => to('/presentations/recommendations', { method: 'POST', body: JSON.stringify(body) }),
-    updateRecommendation: (id, body) => to(`/presentations/recommendations/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    saveRecommendationsFromInsights: (recommendations) => to('/presentations/insights/save-recommendations', { method: 'POST', body: JSON.stringify({ recommendations }) }),
-    pptxDownloadUrl: (params = {}) => {
-      const q = new URLSearchParams();
-      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
-      if (params.dateTo) q.set('dateTo', params.dateTo);
-      if (params.shift) q.set('shift', params.shift);
-      return `${getApiBase()}/transport-operations/presentations/pptx${q.toString() ? `?${q.toString()}` : ''}`;
-    },
-  },
 };
 
 const acc = (path, options = {}) => request(`/accounting${path}`, options);
@@ -1369,80 +855,5 @@ export const accounting = {
       return fetch(`${API}/accounting/documentation/figures/upload`, { method: 'POST', body: formData, credentials: 'include' })
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
     },
-  },
-};
-
-function trk(path, options = {}) {
-  return request(`/tracking${path}`, options);
-}
-
-/** Tracking & integration — fleet providers, weighbridges, live trips, alarms. */
-export const tracking = {
-  dashboard: () => trk('/dashboard'),
-  /** Moves MOCK-* trips only; use with Live mode after db:tracking-mock */
-  demo: {
-    tick: () => trk('/demo/tick', { method: 'POST' }),
-  },
-  /** Fleet trucks from Contractor page (same tenant). */
-  contractorTrucks: {
-    list: () => trk('/contractor-trucks'),
-  },
-  providers: {
-    list: () => trk('/providers'),
-    create: (body) => trk('/providers', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => trk(`/providers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => trk(`/providers/${id}`, { method: 'DELETE' }),
-  },
-  vehicles: {
-    list: () => trk('/vehicles'),
-    create: (body) => trk('/vehicles', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => trk(`/vehicles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => trk(`/vehicles/${id}`, { method: 'DELETE' }),
-  },
-  weighbridges: {
-    list: () => trk('/weighbridges'),
-    create: (body) => trk('/weighbridges', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => trk(`/weighbridges/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => trk(`/weighbridges/${id}`, { method: 'DELETE' }),
-  },
-  routes: {
-    list: () => trk('/routes'),
-    create: (body) => trk('/routes', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => trk(`/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id) => trk(`/routes/${id}`, { method: 'DELETE' }),
-  },
-  geofences: {
-    list: () => trk('/geofences'),
-    create: (body) => trk('/geofences', { method: 'POST', body: JSON.stringify(body) }),
-    delete: (id) => trk(`/geofences/${id}`, { method: 'DELETE' }),
-  },
-  settings: {
-    get: () => trk('/settings'),
-    update: (body) => trk('/settings', { method: 'PATCH', body: JSON.stringify(body) }),
-  },
-  trips: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return trk(`/trips${q ? `?${q}` : ''}`);
-    },
-    create: (body) => trk('/trips', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => trk(`/trips/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    activateDelivery: (id) => trk(`/trips/${id}/activate-delivery`, { method: 'POST' }),
-    telemetry: (id, body) => trk(`/trips/${id}/telemetry`, { method: 'POST', body: JSON.stringify(body) }),
-    complete: (id, body) => trk(`/trips/${id}/complete`, { method: 'POST', body: JSON.stringify(body) }),
-    deviation: (id, body) => trk(`/trips/${id}/deviation`, { method: 'POST', body: JSON.stringify(body) }),
-  },
-  deliveries: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return trk(`/deliveries${q ? `?${q}` : ''}`);
-    },
-  },
-  alarms: {
-    list: (params = {}) => {
-      const q = new URLSearchParams(params).toString();
-      return trk(`/alarms${q ? `?${q}` : ''}`);
-    },
-    acknowledge: (id) => trk(`/alarms/${id}/ack`, { method: 'PATCH' }),
   },
 };

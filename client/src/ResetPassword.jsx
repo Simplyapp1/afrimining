@@ -45,49 +45,49 @@ export default function ResetPassword() {
 
   if (!tokenFromUrl) {
     return (
-      <div className="min-h-screen flex flex-col bg-[#171717]">
+      <div className="min-h-screen flex flex-col bg-surface-900">
         <div className="flex-1 flex items-center justify-center p-6">
-          <div className="w-full max-w-[340px] bg-[#262626]/90 rounded-xl border border-[#404040]/80 p-6 text-center">
+          <div className="w-full max-w-[340px] bg-surface-800/90 rounded-xl border border-surface-600/80 p-6 text-center">
             <h2 className="text-lg font-semibold text-white">Invalid reset link</h2>
-            <p className="mt-2 text-sm text-[#a3a3a3]">This link is missing the reset token. Use the link from your email or request a new one.</p>
-            <Link to="/forgot-password" className="mt-4 inline-block text-sm font-medium text-[#f87171] hover:text-[#fca5a5]">Request new reset link</Link>
+            <p className="mt-2 text-sm text-surface-400">This link is missing the reset token. Use the link from your email or request a new one.</p>
+            <Link to="/forgot-password" className="mt-4 inline-block text-sm font-medium text-brand-400 hover:text-brand-300">Request new reset link</Link>
             <p className="mt-4">
-              <Link to="/login" className="text-xs text-[#a3a3a3] hover:text-white">← Back to sign in</Link>
+              <Link to="/login" className="text-xs text-surface-400 hover:text-white">← Back to sign in</Link>
             </p>
           </div>
         </div>
-        <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#171717]" />
+        <AppAttributionFooter className="text-surface-500 border-t border-surface-800 bg-surface-900" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0f0f0f]">
+    <div className="min-h-screen flex flex-col bg-surface-950">
       <div className="flex flex-1 flex-col md:flex-row min-h-0">
       <div
         className="hidden md:flex md:w-1/2 p-10 flex-col justify-center"
-        style={{ background: 'linear-gradient(135deg, #0a0a0a 0%, #450a0a 50%, #1c0a0a 100%)' }}
+        style={{ background: 'linear-gradient(135deg, #020617 0%, #1e3a8a 48%, #0f172a 100%)' }}
       >
         <div className="max-w-sm">
-          <h1 className="text-2xl font-bold text-white tracking-tight">Thinkers Afrika</h1>
-          <p className="text-[#fecaca] text-base mt-1.5 font-medium">Management System</p>
-          <p className="text-[#fca5a5]/80 mt-3 text-sm leading-relaxed">
+          <h1 className="text-2xl font-bold text-white tracking-tight">Simplyapp</h1>
+          <p className="text-brand-200 text-base mt-1.5 font-medium">Management System</p>
+          <p className="text-brand-200/85 mt-3 text-sm leading-relaxed">
             Enter the code from your email and choose a new password.
           </p>
         </div>
       </div>
 
-      <div className="flex-1 flex items-center justify-center p-6 md:p-10 bg-[#171717]">
+      <div className="flex-1 flex items-center justify-center p-6 md:p-10 bg-surface-900">
         <div className="w-full max-w-[340px]">
           <div className="md:hidden text-center mb-6">
-            <h1 className="text-xl font-bold text-white">Thinkers Afrika</h1>
-            <p className="text-[#b91c1c] text-sm font-medium mt-0.5">Management System</p>
+            <h1 className="text-xl font-bold text-white">Simplyapp</h1>
+            <p className="text-brand-500 text-sm font-medium mt-0.5">Management System</p>
           </div>
 
-          <div className="bg-[#262626]/90 rounded-xl shadow-2xl shadow-black/20 border border-[#404040]/80 p-6 backdrop-blur-sm">
+          <div className="bg-surface-800/90 rounded-xl shadow-2xl shadow-slate-950/30 border border-surface-600/80 p-6 backdrop-blur-sm">
             <div className="mb-5">
               <h2 className="text-lg font-semibold text-white">Reset password</h2>
-              <p className="text-[#a3a3a3] text-xs mt-0.5">Enter the code from your email and your new password</p>
+              <p className="text-surface-400 text-xs mt-0.5">Enter the code from your email and your new password</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -103,7 +103,7 @@ export default function ResetPassword() {
               )}
 
               <div>
-                <label htmlFor="code" className="block text-xs font-medium text-[#e5e5e5] mb-1">Code from email</label>
+                <label htmlFor="code" className="block text-xs font-medium text-surface-200 mb-1">Code from email</label>
                 <input
                   id="code"
                   type="text"
@@ -111,19 +111,19 @@ export default function ResetPassword() {
                   autoComplete="one-time-code"
                   value={code}
                   onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition font-mono tracking-widest"
+                  className="w-full rounded-lg border border-surface-600 bg-surface-900 px-3 py-2.5 text-sm text-white placeholder:text-surface-500 focus:ring-2 focus:ring-brand-500/60 focus:border-brand-500 outline-none transition font-mono tracking-widest"
                   placeholder="e.g. 123456"
                   required
                 />
               </div>
               <div>
-                <label htmlFor="new_password" className="block text-xs font-medium text-[#e5e5e5] mb-1">New password</label>
+                <label htmlFor="new_password" className="block text-xs font-medium text-surface-200 mb-1">New password</label>
                 <input
                   id="new_password"
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
+                  className="w-full rounded-lg border border-surface-600 bg-surface-900 px-3 py-2.5 text-sm text-white placeholder:text-surface-500 focus:ring-2 focus:ring-brand-500/60 focus:border-brand-500 outline-none transition"
                   placeholder="At least 8 characters"
                   required
                   minLength={8}
@@ -131,13 +131,13 @@ export default function ResetPassword() {
                 />
               </div>
               <div>
-                <label htmlFor="confirm_password" className="block text-xs font-medium text-[#e5e5e5] mb-1">Confirm password</label>
+                <label htmlFor="confirm_password" className="block text-xs font-medium text-surface-200 mb-1">Confirm password</label>
                 <input
                   id="confirm_password"
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
+                  className="w-full rounded-lg border border-surface-600 bg-surface-900 px-3 py-2.5 text-sm text-white placeholder:text-surface-500 focus:ring-2 focus:ring-brand-500/60 focus:border-brand-500 outline-none transition"
                   placeholder="Same as above"
                   required
                   minLength={8}
@@ -148,25 +148,24 @@ export default function ResetPassword() {
               <button
                 type="submit"
                 disabled={loading || !!success}
-                className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-[#b91c1c] hover:bg-[#991b1b] disabled:opacity-50 transition-colors focus:ring-2 focus:ring-[#b91c1c] focus:ring-offset-2 focus:ring-offset-[#262626]"
+                className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 transition-colors focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-surface-800"
               >
                 {loading ? 'Saving…' : success ? 'Saved' : 'Save new password'}
               </button>
             </form>
 
             <p className="mt-4 text-center">
-              <Link to="/login" className="text-xs font-medium text-[#f87171] hover:text-[#fca5a5] focus:outline-none focus:underline">
+              <Link to="/login" className="text-xs font-medium text-brand-400 hover:text-brand-300 focus:outline-none focus:underline">
                 ← Back to sign in
               </Link>
             </p>
           </div>
 
-          <p className="mt-4 text-center text-[10px] text-[#525252]">Thinkers Afrika Smart Administration System</p>
-          <p className="mt-1 text-center text-[10px] text-[#525252]">For support, please contact the application developer: Vincent Mogashoa on: <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#737373] hover:text-[#a3a3a3] underline">vincent@thinkersafrika.co.za</a></p>
+          <p className="mt-4 text-center text-[10px] text-surface-600">Simplyapp administration</p>
         </div>
       </div>
       </div>
-      <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#0f0f0f]" />
+      <AppAttributionFooter className="text-surface-500 border-t border-surface-800 bg-surface-950" />
     </div>
   );
 }

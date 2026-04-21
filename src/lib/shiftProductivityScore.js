@@ -1,8 +1,9 @@
 import { addCalendarDays } from './appTime.js';
+import { isOvernightBand, sqlTimeToHHmm } from './workScheduleTimes.js';
 
 /**
  * Shift productivity score — rules (rolling window, e.g. 30 days):
- * - Punctuality: on-time clock-in vs scheduled day/night start → +15; late (beyond grace) → -15
+ * - Punctuality: clock-in vs scheduled start (+15 / −15); clock-out vs scheduled end for completed sessions (+15 / −15 if overstay past grace)
  * - Controller evaluation (per approved report evaluated): ≥ threshold Yes → +20; else → -20
  * - Tasks (assignee): completed on/before due date → +30; completed after due or still overdue → -30
  * - Shift report submission by shift-end + 15 min (06:15 / 18:15 SAST anchor) → +50; else → -50
@@ -58,6 +59,55 @@ export function punctualityPoints(clockInAtMs, workDateYmd, shiftType) {
   const grace = SP.CLOCK_GRACE_MINUTES * 60 * 1000;
   if (clockInAtMs <= expected + grace) return { points: SP.PUNCTUALITY_ON, detail: 'on_time' };
   return { points: SP.PUNCTUALITY_LATE, detail: 'late' };
+}
+
+/** Clock session row may include joined entry work_start_time as entry_work_start (or work_start_time). */
+export function punctualityPointsForClockSession(clockInAtMs, workDateYmd, row) {
+  const st = String(row?.shift_type || 'day').toLowerCase();
+  const hm = sqlTimeToHHmm(row?.entry_work_start ?? row?.work_start_time);
+  let hour = 6;
+  let minute = 0;
+  if (hm) {
+    const parts = hm.split(':').map((x) => parseInt(x, 10));
+    hour = Number.isFinite(parts[0]) ? parts[0] : 6;
+    minute = Number.isFinite(parts[1]) ? parts[1] : 0;
+  } else if (st === 'night') {
+    hour = 18;
+    minute = 0;
+  }
+  const expected = zonedWallToUtcMs(workDateYmd, hour, minute);
+  if (!Number.isFinite(expected) || !Number.isFinite(clockInAtMs)) return { points: 0, detail: 'no_data' };
+  const grace = SP.CLOCK_GRACE_MINUTES * 60 * 1000;
+  if (clockInAtMs <= expected + grace) return { points: SP.PUNCTUALITY_ON, detail: 'clock_in_on_time' };
+  return { points: SP.PUNCTUALITY_LATE, detail: 'clock_in_late' };
+}
+
+/** Completed shift: expected wall-clock end on roster (overnight bands end the next calendar morning). */
+export function punctualityPointsForClockOut(clockOutAtMs, workDateYmd, row) {
+  const st = String(row?.shift_type || 'day').toLowerCase();
+  const startHm = sqlTimeToHHmm(row?.entry_work_start ?? row?.work_start_time);
+  const endHm = sqlTimeToHHmm(row?.entry_work_end ?? row?.work_end_time);
+  let hour = 18;
+  let minute = 0;
+  let ymd = workDateYmd;
+  if (endHm) {
+    const parts = endHm.split(':').map((x) => parseInt(x, 10));
+    hour = Number.isFinite(parts[0]) ? parts[0] : 18;
+    minute = Number.isFinite(parts[1]) ? parts[1] : 0;
+    if (startHm && isOvernightBand(startHm, endHm)) ymd = addCalendarDays(workDateYmd, 1);
+  } else if (st === 'night') {
+    hour = 6;
+    minute = 0;
+    ymd = addCalendarDays(workDateYmd, 1);
+  } else {
+    hour = 18;
+    minute = 0;
+  }
+  const expectedEnd = zonedWallToUtcMs(ymd, hour, minute);
+  if (!Number.isFinite(expectedEnd) || !Number.isFinite(clockOutAtMs)) return { points: 0, detail: 'no_data' };
+  const grace = SP.CLOCK_GRACE_MINUTES * 60 * 1000;
+  if (clockOutAtMs <= expectedEnd + grace) return { points: SP.PUNCTUALITY_ON, detail: 'clock_out_on_time' };
+  return { points: SP.PUNCTUALITY_LATE, detail: 'clock_out_late' };
 }
 
 export function inferReportShiftType(row) {

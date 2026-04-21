@@ -6,26 +6,35 @@ import { randomUUID } from 'crypto';
 import { query, getPool } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
-import { taskAssignedHtml, taskCompletedHtml, taskOverdueHtml } from '../lib/emailTemplates.js';
+import {
+  taskAssignedHtml,
+  taskCompletedHtml,
+  taskOverdueHtml,
+  taskReminderDueHtml,
+  taskNewCommentHtml,
+  taskUpdatedNotifyHtml,
+} from '../lib/emailTemplates.js';
 
 const router = Router();
 const uploadsDir = path.join(process.cwd(), 'uploads', 'tasks');
-const taskUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const tenantId = String(req.user?.tenant_id || 'anon');
-      const taskId = String(req.params?.id || 'new');
-      const dir = path.join(uploadsDir, tenantId, taskId);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-      const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
-      cb(null, `${Date.now()}-${safe}`);
-    },
-  }),
-  limits: { fileSize: 25 * 1024 * 1024 },
-}).single('file');
+const taskUploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const tenantId = String(req.user?.tenant_id || 'anon');
+    const taskId = String(req.params?.id || 'new');
+    const dir = path.join(uploadsDir, tenantId, taskId);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${Date.now()}-${safe}`);
+  },
+});
+const taskUpload = multer({ storage: taskUploadStorage, limits: { fileSize: 25 * 1024 * 1024 } }).single('file');
+const taskUploadMany = multer({ storage: taskUploadStorage, limits: { fileSize: 25 * 1024 * 1024 } }).fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'files', maxCount: 25 },
+]);
 
 const commentUploadsDir = path.join(process.cwd(), 'uploads', 'tasks');
 const commentAttachmentsUpload = multer({
@@ -67,6 +76,30 @@ async function isTaskAssignee(taskId, userId) {
     { taskId, userId }
   );
   return (r.recordset || []).length > 0;
+}
+
+async function canPostTaskComment(req, taskId) {
+  if (req.user?.role === 'super_admin' || req.user?.role === 'tenant_admin') return true;
+  if (await isTaskAssignee(taskId, req.user.id)) return true;
+  const r = await query(`SELECT created_by FROM tasks WHERE id = @id`, { id: taskId });
+  const row = r.recordset?.[0];
+  return row && getRow(row, 'created_by') === req.user.id;
+}
+
+async function canSeeAssigneeOnlyNotes(req, taskId) {
+  if (req.user?.role === 'super_admin' || req.user?.role === 'tenant_admin') return true;
+  if (await isTaskAssignee(taskId, req.user.id)) return true;
+  const r = await query(`SELECT created_by FROM tasks WHERE id = @id`, { id: taskId });
+  const row = r.recordset?.[0];
+  return row && getRow(row, 'created_by') === req.user.id;
+}
+
+async function replaceTaskLabels(taskId, labels) {
+  await query(`DELETE FROM task_labels WHERE task_id = @taskId`, { taskId });
+  const list = [...new Set((labels || []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 40);
+  for (const label of list) {
+    await query(`INSERT INTO task_labels (task_id, label) VALUES (@taskId, @label)`, { taskId, label: label.slice(0, 120) });
+  }
 }
 
 /** Run overdue task notifications: find tasks with due_date < today and status != completed, email assignees. Call daily (cron or setInterval). */
@@ -114,6 +147,87 @@ export async function runOverdueTaskNotifications() {
   return { sent, tasks: overdueTasks.length };
 }
 
+/** Fire due task reminders (one-off dismisses; hourly/daily bumps next_fire_at). */
+export async function runTaskReminderNotifications() {
+  if (!isEmailConfigured()) return { sent: 0, reminders: 0 };
+  const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+  let due;
+  try {
+    due = await query(
+      `SELECT r.id, r.task_id, r.user_id, r.remind_at, r.note, r.recurrence, r.next_fire_at, t.title
+       FROM task_reminders r
+       INNER JOIN tasks t ON t.id = r.task_id
+       WHERE r.dismissed_at IS NULL
+         AND COALESCE(r.next_fire_at, r.remind_at) <= SYSUTCDATETIME()`
+    );
+  } catch (e) {
+    if ((e.message || '').includes('Invalid column') || (e.message || '').includes('next_fire_at')) {
+      return { sent: 0, reminders: 0, migrationRequired: true };
+    }
+    throw e;
+  }
+  const rows = due.recordset || [];
+  let sent = 0;
+  for (const row of rows) {
+    const rid = getRow(row, 'id');
+    const taskId = getRow(row, 'task_id');
+    const taskTitle = getRow(row, 'title');
+    const note = getRow(row, 'note');
+    const remindAt = getRow(row, 'remind_at');
+    const nextFire = getRow(row, 'next_fire_at');
+    const recurrence = String(getRow(row, 'recurrence') || 'none').toLowerCase();
+
+    const emailsResult = await query(
+      `SELECT DISTINCT u.email, u.full_name FROM (
+         SELECT user_id FROM task_assignments WHERE task_id = @taskId
+         UNION SELECT created_by FROM tasks WHERE id = @taskId
+       ) x INNER JOIN users u ON u.id = x.user_id
+       WHERE u.email IS NOT NULL AND LTRIM(RTRIM(ISNULL(u.email, N''))) <> N''`,
+      { taskId }
+    );
+    const html = taskReminderDueHtml({
+      taskTitle,
+      note,
+      remindAt: nextFire || remindAt,
+      taskId,
+      appUrl,
+    });
+    const subject = `Reminder: ${taskTitle}`;
+    for (const u of emailsResult.recordset || []) {
+      const em = getRow(u, 'email');
+      if (em) {
+        try {
+          await sendEmail({ to: em, subject, body: html, html: true });
+          sent++;
+        } catch (err) {
+          console.error('[tasks] Reminder email error:', em, err?.message || err);
+        }
+      }
+    }
+
+    if (recurrence === 'hourly') {
+      await query(
+        `UPDATE task_reminders SET next_fire_at = DATEADD(HOUR, 1, COALESCE(next_fire_at, remind_at)) WHERE id = @rid`,
+        { rid }
+      );
+    } else if (recurrence === 'daily') {
+      await query(
+        `UPDATE task_reminders SET next_fire_at = DATEADD(DAY, 1, COALESCE(next_fire_at, remind_at)) WHERE id = @rid`,
+        { rid }
+      );
+    } else {
+      await query(
+        `UPDATE task_reminders SET dismissed_at = SYSUTCDATETIME(), next_fire_at = NULL WHERE id = @rid`,
+        { rid }
+      );
+    }
+  }
+  if (rows.length) {
+    console.log('[tasks] Reminder notifications: %d reminder(s), %d email(s)', rows.length, sent);
+  }
+  return { sent, reminders: rows.length };
+}
+
 /** GET /api/tasks/overdue-notify?secret=CRON_SECRET – trigger overdue emails (for cron). No auth when secret matches. */
 router.get('/overdue-notify', async (req, res, next) => {
   try {
@@ -129,14 +243,44 @@ router.get('/overdue-notify', async (req, res, next) => {
   }
 });
 
+/** GET /api/tasks/reminder-notify?secret= – due task reminders (hourly/daily/one-off). */
+router.get('/reminder-notify', async (req, res, next) => {
+  try {
+    const secret = (req.query.secret || '').trim();
+    const cronSecret = (process.env.CRON_SECRET || '').trim();
+    if (cronSecret && secret !== cronSecret) {
+      return res.status(403).json({ error: 'Invalid or missing secret' });
+    }
+    const result = await runTaskReminderNotifications();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess('tasks'));
 
-/** List tasks: filter by assigned_to_me, created_by_me, status; tenant-scoped */
+/** List tasks: filters, search, priority, label, assignee, sort; tenant-scoped */
 router.get('/', async (req, res, next) => {
   try {
-    const { assigned_to_me, created_by_me, status, page = 1, limit = 50 } = req.query;
+    const {
+      assigned_to_me,
+      created_by_me,
+      scope,
+      status,
+      priority,
+      label,
+      assignee_user_id,
+      search,
+      due_from,
+      due_to,
+      sort = 'created_at',
+      sort_dir = 'desc',
+      page = 1,
+      limit = 50,
+    } = req.query;
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
 
@@ -146,7 +290,8 @@ router.get('/', async (req, res, next) => {
     let where = 'WHERE t.tenant_id = @tenantId';
     const params = { tenantId, offset, limitNum };
 
-    if (assigned_to_me === 'true' || assigned_to_me === '1') {
+    const myOnly = scope === 'my' || assigned_to_me === 'true' || assigned_to_me === '1';
+    if (myOnly) {
       where += ' AND EXISTS (SELECT 1 FROM task_assignments a WHERE a.task_id = t.id AND a.user_id = @userId)';
       params.userId = req.user.id;
     }
@@ -158,21 +303,55 @@ router.get('/', async (req, res, next) => {
       where += ' AND t.[status] = @status';
       params.status = status;
     }
+    if (priority && priority !== 'all') {
+      where += ' AND ISNULL(t.priority, N\'medium\') = @priority';
+      params.priority = String(priority);
+    }
+    if (label && String(label).trim()) {
+      where += ' AND EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label = @label)';
+      params.label = String(label).trim().slice(0, 120);
+    }
+    if (assignee_user_id && String(assignee_user_id).trim()) {
+      where += ' AND EXISTS (SELECT 1 FROM task_assignments a2 WHERE a2.task_id = t.id AND a2.user_id = @assigneeUserId)';
+      params.assigneeUserId = assignee_user_id;
+    }
+    if (search && String(search).trim()) {
+      where += ' AND (t.title LIKE @searchLike OR t.[description] LIKE @searchLike)';
+      const raw = String(search).trim().replace(/%/g, '').replace(/_/g, '').slice(0, 120);
+      params.searchLike = `%${raw}%`;
+    }
+    if (due_from) {
+      where += ' AND (t.due_date IS NULL OR CAST(t.due_date AS DATE) >= CAST(@dueFrom AS DATE))';
+      params.dueFrom = due_from;
+    }
+    if (due_to) {
+      where += ' AND (t.due_date IS NULL OR CAST(t.due_date AS DATE) <= CAST(@dueTo AS DATE))';
+      params.dueTo = due_to;
+    }
 
-    const countResult = await query(
-      `SELECT COUNT(*) AS total FROM tasks t ${where}`,
-      params
-    );
+    const sortMap = {
+      created_at: 't.created_at',
+      due_date: 't.due_date',
+      start_date: 't.start_date',
+      title: 't.title',
+      priority: 't.priority',
+      progress: 't.progress',
+      status: 't.[status]',
+    };
+    const orderCol = sortMap[String(sort)] || 't.created_at';
+    const orderDir = String(sort_dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const countResult = await query(`SELECT COUNT(*) AS total FROM tasks t ${where}`, params);
     const total = countResult.recordset[0].total;
 
     const result = await query(
-      `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+      `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.start_time, t.due_time,
+              t.priority, t.progress, t.[status], t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
               u.full_name AS created_by_name
        FROM tasks t
        LEFT JOIN users u ON u.id = t.created_by
        ${where}
-       ORDER BY t.created_at DESC
+       ORDER BY ${orderCol} ${orderDir}
        OFFSET @offset ROWS FETCH NEXT @limitNum ROWS ONLY`,
       params
     );
@@ -184,7 +363,9 @@ router.get('/', async (req, res, next) => {
     }
     const placeholders = taskIds.map((_, i) => `@tid${i}`).join(',');
     const reqPool = pool.request();
-    taskIds.forEach((id, i) => { reqPool.input(`tid${i}`, id); });
+    taskIds.forEach((id, i) => {
+      reqPool.input(`tid${i}`, id);
+    });
     const assignResult = await reqPool.query(
       `SELECT a.task_id, a.user_id, u.full_name AS assignee_name, u.email AS assignee_email
        FROM task_assignments a
@@ -197,24 +378,50 @@ router.get('/', async (req, res, next) => {
       if (!assigneesByTask[tid]) assigneesByTask[tid] = [];
       assigneesByTask[tid].push({ user_id: getRow(row, 'user_id'), full_name: getRow(row, 'assignee_name'), email: getRow(row, 'assignee_email') });
     }
-    const tasksWithAssignees = tasks.map((t) => ({
+    let labelsByTask = {};
+    try {
+      const lr = await reqPool.query(`SELECT task_id, label FROM task_labels WHERE task_id IN (${placeholders})`);
+      for (const row of lr.recordset || []) {
+        const tid = getRow(row, 'task_id');
+        if (!labelsByTask[tid]) labelsByTask[tid] = [];
+        labelsByTask[tid].push(getRow(row, 'label'));
+      }
+    } catch (_) {
+      labelsByTask = {};
+    }
+    const tasksOut = tasks.map((t) => ({
       ...t,
       assignees: assigneesByTask[t.id] || [],
+      labels: labelsByTask[t.id] || [],
     }));
 
     res.json({
-      tasks: tasksWithAssignees,
+      tasks: tasksOut,
       pagination: { page: Math.floor(offset / limitNum) + 1, limit: limitNum, total },
     });
   } catch (err) {
+    if ((err.message || '').includes('Invalid column name') && (err.message || '').includes('priority')) {
+      return res.status(503).json({ error: 'Tasks Tracker schema not applied. Run: npm run db:tasks-tracker-expand' });
+    }
     next(err);
   }
 });
 
-/** Create task: title, description, key_actions (JSON array), start_date, due_date, assignee_ids[]; send email to assignees */
+/** Create task: title, description, key_actions, dates/times, priority, labels[], assignee_ids[]; email assignees */
 router.post('/', async (req, res, next) => {
   try {
-    const { title, description, key_actions, start_date, due_date, assignee_ids } = req.body || {};
+    const {
+      title,
+      description,
+      key_actions,
+      start_date,
+      due_date,
+      start_time,
+      due_time,
+      priority,
+      labels,
+      assignee_ids,
+    } = req.body || {};
     if (!title || !String(title).trim()) return res.status(400).json({ error: 'Task title is required' });
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
@@ -224,11 +431,14 @@ router.post('/', async (req, res, next) => {
       : (typeof key_actions === 'string' ? key_actions : null);
     const startDate = start_date || null;
     const dueDate = due_date || null;
+    const prio = ['low', 'medium', 'high', 'urgent'].includes(priority) ? priority : 'medium';
+    const st = start_time != null && String(start_time).trim() ? String(start_time).trim().slice(0, 16) : null;
+    const dt = due_time != null && String(due_time).trim() ? String(due_time).trim().slice(0, 16) : null;
 
     const insertResult = await query(
-      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, created_by)
+      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, start_time, due_time, priority, created_by)
        OUTPUT INSERTED.id, INSERTED.title, INSERTED.created_at
-       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @createdBy)`,
+       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @startTime, @dueTime, @priority, @createdBy)`,
       {
         tenantId,
         title: String(title).trim(),
@@ -236,6 +446,9 @@ router.post('/', async (req, res, next) => {
         keyActions: keyActionsStr,
         startDate,
         dueDate,
+        startTime: st,
+        dueTime: dt,
+        priority: prio,
         createdBy: req.user.id,
       }
     );
@@ -251,6 +464,12 @@ router.post('/', async (req, res, next) => {
         `INSERT INTO task_assignments (task_id, user_id, assigned_by) VALUES (@taskId, @userId, @assignedBy)`,
         { taskId, userId, assignedBy: req.user.id }
       );
+    }
+
+    try {
+      await replaceTaskLabels(taskId, labels);
+    } catch (e) {
+      if (!(e.message || '').includes('task_labels')) throw e;
     }
 
     if (assigneeIds.length > 0) {
@@ -293,6 +512,10 @@ router.post('/', async (req, res, next) => {
         key_actions: key_actions || [],
         start_date: startDate,
         due_date: dueDate,
+        start_time: st,
+        due_time: dt,
+        priority: prio,
+        labels: Array.isArray(labels) ? labels : [],
         progress: 0,
         status: 'not_started',
         created_by: req.user.id,
@@ -301,6 +524,9 @@ router.post('/', async (req, res, next) => {
       },
     });
   } catch (err) {
+    if ((err.message || '').includes('Invalid column') && (err.message || '').includes('priority')) {
+      return res.status(503).json({ error: 'Run npm run db:tasks-tracker-expand for Tasks Tracker fields.' });
+    }
     next(err);
   }
 });
@@ -310,8 +536,8 @@ router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
-      `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+      `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.start_time, t.due_time,
+              t.priority, t.progress, t.[status], t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
               u.full_name AS created_by_name, u.email AS created_by_email
        FROM tasks t
        LEFT JOIN users u ON u.id = t.created_by
@@ -331,40 +557,84 @@ router.get('/:id', async (req, res, next) => {
       { id }
     );
 
+    let taskLabels = [];
+    try {
+      const lr = await query(`SELECT label FROM task_labels WHERE task_id = @id ORDER BY label`, { id });
+      taskLabels = (lr.recordset || []).map((r) => getRow(r, 'label')).filter(Boolean);
+    } catch (_) {
+      taskLabels = [];
+    }
+
+    const canSeePrivateNotes = await canSeeAssigneeOnlyNotes(req, id);
+
     let progressUpdates = [];
     let comments = [];
     let reminders = [];
     try {
-      const progressResult = await query(
-        `SELECT p.id, p.task_id, p.user_id, p.progress, p.note, p.created_at, u.full_name AS user_name
-         FROM task_progress_updates p
-         LEFT JOIN users u ON u.id = p.user_id
-         WHERE p.task_id = @id ORDER BY p.created_at DESC`,
-        { id }
-      );
+      let progressResult;
+      try {
+        progressResult = await query(
+          `SELECT p.id, p.task_id, p.user_id, p.progress, p.note, p.entry_type, p.created_at, u.full_name AS user_name
+           FROM task_progress_updates p
+           LEFT JOIN users u ON u.id = p.user_id
+           WHERE p.task_id = @id ORDER BY p.created_at DESC`,
+          { id }
+        );
+      } catch (e) {
+        if ((e.message || '').includes('entry_type')) {
+          progressResult = await query(
+            `SELECT p.id, p.task_id, p.user_id, p.progress, p.note, p.created_at, u.full_name AS user_name
+             FROM task_progress_updates p
+             LEFT JOIN users u ON u.id = p.user_id
+             WHERE p.task_id = @id ORDER BY p.created_at DESC`,
+            { id }
+          );
+        } else throw e;
+      }
       progressUpdates = (progressResult.recordset || []).map((r) => ({
         id: getRow(r, 'id'),
         user_id: getRow(r, 'user_id'),
         user_name: getRow(r, 'user_name'),
         progress: getRow(r, 'progress'),
         note: getRow(r, 'note'),
+        entry_type: getRow(r, 'entry_type') || 'progress',
         created_at: getRow(r, 'created_at'),
       }));
-      const commentsResult = await query(
-        `SELECT c.id, c.task_id, c.user_id, c.body, c.created_at, u.full_name AS user_name
-         FROM task_comments c
-         LEFT JOIN users u ON u.id = c.user_id
-         WHERE c.task_id = @id ORDER BY c.created_at ASC`,
-        { id }
-      );
-      comments = (commentsResult.recordset || []).map((r) => ({
-        id: getRow(r, 'id'),
-        user_id: getRow(r, 'user_id'),
-        user_name: getRow(r, 'user_name'),
-        body: getRow(r, 'body'),
-        created_at: getRow(r, 'created_at'),
-        attachments: [],
-      }));
+      let commentsResult;
+      try {
+        commentsResult = await query(
+          `SELECT c.id, c.task_id, c.user_id, c.body, c.visibility, c.created_at, u.full_name AS user_name
+           FROM task_comments c
+           LEFT JOIN users u ON u.id = c.user_id
+           WHERE c.task_id = @id ORDER BY c.created_at ASC`,
+          { id }
+        );
+      } catch (e) {
+        if ((e.message || '').includes('visibility')) {
+          commentsResult = await query(
+            `SELECT c.id, c.task_id, c.user_id, c.body, c.created_at, u.full_name AS user_name
+             FROM task_comments c
+             LEFT JOIN users u ON u.id = c.user_id
+             WHERE c.task_id = @id ORDER BY c.created_at ASC`,
+            { id }
+          );
+        } else throw e;
+      }
+      comments = (commentsResult.recordset || [])
+        .filter((r) => {
+          const vis = (getRow(r, 'visibility') || 'all').toLowerCase();
+          if (vis === 'assignees' || vis === 'assignees_only') return canSeePrivateNotes;
+          return true;
+        })
+        .map((r) => ({
+          id: getRow(r, 'id'),
+          user_id: getRow(r, 'user_id'),
+          user_name: getRow(r, 'user_name'),
+          body: getRow(r, 'body'),
+          visibility: getRow(r, 'visibility') != null ? getRow(r, 'visibility') : 'all',
+          created_at: getRow(r, 'created_at'),
+          attachments: [],
+        }));
       const commentIds = comments.map((c) => c.id).filter(Boolean);
       if (commentIds.length > 0) {
         const placeholders = commentIds.map((_, i) => `@cid${i}`).join(',');
@@ -389,19 +659,34 @@ router.get('/:id', async (req, res, next) => {
         }
         comments.forEach((c) => { c.attachments = attByComment[c.id] || []; });
       }
-      const remindersResult = await query(
-        `SELECT r.id, r.task_id, r.user_id, r.remind_at, r.note, r.created_at, r.dismissed_at, u.full_name AS user_name
-         FROM task_reminders r
-         LEFT JOIN users u ON u.id = r.user_id
-         WHERE r.task_id = @id ORDER BY r.remind_at ASC`,
-        { id }
-      );
+      let remindersResult;
+      try {
+        remindersResult = await query(
+          `SELECT r.id, r.task_id, r.user_id, r.remind_at, r.note, r.recurrence, r.next_fire_at, r.created_at, r.dismissed_at, u.full_name AS user_name
+           FROM task_reminders r
+           LEFT JOIN users u ON u.id = r.user_id
+           WHERE r.task_id = @id ORDER BY r.remind_at ASC`,
+          { id }
+        );
+      } catch (e) {
+        if ((e.message || '').includes('recurrence') || (e.message || '').includes('next_fire_at')) {
+          remindersResult = await query(
+            `SELECT r.id, r.task_id, r.user_id, r.remind_at, r.note, r.created_at, r.dismissed_at, u.full_name AS user_name
+             FROM task_reminders r
+             LEFT JOIN users u ON u.id = r.user_id
+             WHERE r.task_id = @id ORDER BY r.remind_at ASC`,
+            { id }
+          );
+        } else throw e;
+      }
       reminders = (remindersResult.recordset || []).map((r) => ({
         id: getRow(r, 'id'),
         user_id: getRow(r, 'user_id'),
         user_name: getRow(r, 'user_name'),
         remind_at: getRow(r, 'remind_at'),
         note: getRow(r, 'note'),
+        recurrence: getRow(r, 'recurrence') || 'none',
+        next_fire_at: getRow(r, 'next_fire_at'),
         created_at: getRow(r, 'created_at'),
         dismissed_at: getRow(r, 'dismissed_at'),
       }));
@@ -429,6 +714,7 @@ router.get('/:id', async (req, res, next) => {
       task: {
         ...task,
         key_actions,
+        labels: taskLabels,
         assignees,
         attachments,
         progress_updates: progressUpdates,
@@ -446,7 +732,20 @@ router.get('/:id', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { progress, progress_note, status, title, description, key_actions, start_date, due_date } = req.body || {};
+    const {
+      progress,
+      progress_note,
+      status,
+      title,
+      description,
+      key_actions,
+      start_date,
+      due_date,
+      start_time,
+      due_time,
+      priority,
+      labels,
+    } = req.body || {};
 
     const existing = await query(`SELECT id, tenant_id, created_by, [status], title FROM tasks WHERE id = @id`, { id });
     const row = existing.recordset[0];
@@ -481,24 +780,55 @@ router.patch('/:id', async (req, res, next) => {
     }
     if (start_date !== undefined) { updates.push('start_date = @startDate'); params.startDate = start_date || null; }
     if (due_date !== undefined) { updates.push('due_date = @dueDate'); params.dueDate = due_date || null; }
+    if (start_time !== undefined) {
+      updates.push('start_time = @startTime');
+      params.startTime = start_time != null && String(start_time).trim() ? String(start_time).trim().slice(0, 16) : null;
+    }
+    if (due_time !== undefined) {
+      updates.push('due_time = @dueTime');
+      params.dueTime = due_time != null && String(due_time).trim() ? String(due_time).trim().slice(0, 16) : null;
+    }
+    if (priority !== undefined) {
+      const pr = ['low', 'medium', 'high', 'urgent'].includes(priority) ? priority : 'medium';
+      updates.push('priority = @priority');
+      params.priority = pr;
+    }
 
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    updates.push('updated_at = SYSUTCDATETIME()');
+    if (Array.isArray(labels)) {
+      try {
+        await replaceTaskLabels(id, labels);
+      } catch (e) {
+        if (!(e.message || '').includes('task_labels')) throw e;
+      }
+    }
 
-    await query(
-      `UPDATE tasks SET ${updates.join(', ')} WHERE id = @id`,
-      params
-    );
+    if (updates.length === 0 && !Array.isArray(labels)) return res.status(400).json({ error: 'No fields to update' });
+    if (updates.length > 0) {
+      updates.push('updated_at = SYSUTCDATETIME()');
+      await query(`UPDATE tasks SET ${updates.join(', ')} WHERE id = @id`, params);
+    }
 
     if (newProgress !== undefined) {
       try {
         const assignee = await isTaskAssignee(id, req.user.id);
-        if (assignee) {
+        const creatorId = getRow(row, 'created_by');
+        const isPrivileged = req.user.role === 'super_admin' || req.user.role === 'tenant_admin';
+        const canLogProgress = assignee || creatorId === req.user.id || isPrivileged;
+        if (canLogProgress) {
           const note = progress_note != null ? String(progress_note).trim() : null;
-          await query(
-            `INSERT INTO task_progress_updates (task_id, user_id, progress, note) VALUES (@taskId, @userId, @progress, @note)`,
-            { taskId: id, userId: req.user.id, progress: newProgress, note: note || null }
-          );
+          try {
+            await query(
+              `INSERT INTO task_progress_updates (task_id, user_id, progress, note, entry_type) VALUES (@taskId, @userId, @progress, @note, N'progress')`,
+              { taskId: id, userId: req.user.id, progress: newProgress, note: note || null }
+            );
+          } catch (e) {
+            if ((e.message || '').includes('entry_type')) {
+              await query(
+                `INSERT INTO task_progress_updates (task_id, user_id, progress, note) VALUES (@taskId, @userId, @progress, @note)`,
+                { taskId: id, userId: req.user.id, progress: newProgress, note: note || null }
+              );
+            } else throw e;
+          }
         }
       } catch (_) { /* activity tables may not exist yet */ }
     }
@@ -518,6 +848,57 @@ router.patch('/:id', async (req, res, next) => {
       });
       if (creator && getRow(creator, 'email')) {
         sendEmail({ to: getRow(creator, 'email'), subject: `Task completed: ${getRow(row, 'title')}`, body: html, html: true }).catch((e) => console.error('[tasks] Completed email error:', e?.message));
+      }
+    }
+
+    const patchBody = req.body || {};
+    const patchKeys = Object.keys(patchBody).filter((k) => patchBody[k] !== undefined);
+    const onlyProgressTweak = patchKeys.length > 0 && patchKeys.every((k) => ['progress', 'progress_note'].includes(k));
+    const substantiveUpdate = patchKeys.some((k) =>
+      ['title', 'description', 'start_date', 'due_date', 'start_time', 'due_time', 'priority', 'status', 'labels', 'key_actions'].includes(k)
+    );
+    if (isEmailConfigured() && substantiveUpdate && !onlyProgressTweak && newStatus !== 'completed') {
+      try {
+        const summaryLines = [];
+        if (title !== undefined) summaryLines.push(['Title', String(title).trim()]);
+        if (description !== undefined) {
+          const d = description != null ? String(description) : '';
+          summaryLines.push(['Description', d.length > 220 ? `${d.slice(0, 220)}…` : d || '—']);
+        }
+        if (start_date !== undefined) summaryLines.push(['Start date', params.startDate != null ? String(params.startDate) : '—']);
+        if (due_date !== undefined) summaryLines.push(['Due date', params.dueDate != null ? String(params.dueDate) : '—']);
+        if (start_time !== undefined) summaryLines.push(['Start time', params.startTime != null ? String(params.startTime) : '—']);
+        if (due_time !== undefined) summaryLines.push(['Due time', params.dueTime != null ? String(params.dueTime) : '—']);
+        if (priority !== undefined) summaryLines.push(['Priority', params.priority || '—']);
+        if (status !== undefined) summaryLines.push(['Status', newStatus || '—']);
+        if (Array.isArray(labels)) summaryLines.push(['Labels', labels.length ? labels.join(', ') : '(cleared)']);
+        if (key_actions !== undefined) summaryLines.push(['Key actions', 'Updated']);
+
+        if (summaryLines.length > 0) {
+          const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+          const taskTitleForMail = title !== undefined ? String(title).trim() : getRow(row, 'title');
+          const emailsResult = await query(
+            `SELECT DISTINCT u.email FROM (
+               SELECT user_id FROM task_assignments WHERE task_id = @taskId
+               UNION SELECT created_by FROM tasks WHERE id = @taskId
+             ) x INNER JOIN users u ON u.id = x.user_id
+             WHERE u.id <> @excludeId AND u.email IS NOT NULL AND LTRIM(RTRIM(ISNULL(u.email, N''))) <> N''`,
+            { taskId: id, excludeId: req.user.id }
+          );
+          const html = taskUpdatedNotifyHtml({
+            taskTitle: taskTitleForMail,
+            summaryLines,
+            taskId: id,
+            appUrl,
+          });
+          const subject = `Task updated: ${taskTitleForMail}`;
+          for (const u of emailsResult.recordset || []) {
+            const em = getRow(u, 'email');
+            if (em) sendEmail({ to: em, subject, body: html, html: true }).catch((e) => console.error('[tasks] update notify', e?.message));
+          }
+        }
+      } catch (e) {
+        console.error('[tasks] substantive update email:', e?.message || e);
       }
     }
 
@@ -615,26 +996,61 @@ router.post('/:id/assign', async (req, res, next) => {
   }
 });
 
-/** Upload attachment */
-router.post('/:id/attachments', taskUpload, async (req, res, next) => {
+/** Upload one or many attachments (multipart field `file` or `files[]`) */
+router.post('/:id/attachments', taskUploadMany, async (req, res, next) => {
   try {
     const { id } = req.params;
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const fromFields = req.files || {};
+    const list = [...(fromFields.file || []), ...(fromFields.files || [])];
+    if (!list.length) return res.status(400).json({ error: 'No file uploaded' });
 
-    const taskResult = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
+    const taskResult = await query(`SELECT id, tenant_id, title FROM tasks WHERE id = @id`, { id });
     const task = taskResult.recordset[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(task, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
 
-    const relativePath = path.relative(path.join(process.cwd(), 'uploads'), req.file.path);
-    const insertResult = await query(
-      `INSERT INTO task_attachments (task_id, file_name, file_path, uploaded_by)
-       OUTPUT INSERTED.id, INSERTED.file_name, INSERTED.created_at
-       VALUES (@taskId, @fileName, @filePath, @uploadedBy)`,
-      { taskId: id, fileName: req.file.originalname || req.file.filename, filePath: relativePath.replace(/\\/g, '/'), uploadedBy: req.user.id }
-    );
-    const att = insertResult.recordset[0];
-    res.status(201).json({ attachment: { id: getRow(att, 'id'), file_name: getRow(att, 'file_name'), created_at: getRow(att, 'created_at') } });
+    const uploaded = [];
+    for (const file of list) {
+      const relativePath = path.relative(path.join(process.cwd(), 'uploads'), file.path);
+      const insertResult = await query(
+        `INSERT INTO task_attachments (task_id, file_name, file_path, uploaded_by)
+         OUTPUT INSERTED.id, INSERTED.file_name, INSERTED.created_at
+         VALUES (@taskId, @fileName, @filePath, @uploadedBy)`,
+        {
+          taskId: id,
+          fileName: file.originalname || file.filename,
+          filePath: relativePath.replace(/\\/g, '/'),
+          uploadedBy: req.user.id,
+        }
+      );
+      const att = insertResult.recordset[0];
+      uploaded.push({ id: getRow(att, 'id'), file_name: getRow(att, 'file_name'), created_at: getRow(att, 'created_at') });
+    }
+
+    if (isEmailConfigured() && uploaded.length) {
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      const emailsResult = await query(
+        `SELECT DISTINCT u.email FROM (
+           SELECT user_id FROM task_assignments WHERE task_id = @taskId
+           UNION SELECT created_by FROM tasks WHERE id = @taskId
+         ) x INNER JOIN users u ON u.id = x.user_id
+         WHERE u.id <> @excludeId AND u.email IS NOT NULL AND LTRIM(RTRIM(ISNULL(u.email, N''))) <> N''`,
+        { taskId: id, excludeId: req.user.id }
+      );
+      const html = taskUpdatedNotifyHtml({
+        taskTitle: getRow(task, 'title'),
+        summaryLines: [[`Attachments added (${uploaded.length})`, uploaded.map((a) => a.file_name).join(', ')]],
+        taskId: id,
+        appUrl,
+      });
+      const subject = `Task updated — files: ${getRow(task, 'title')}`;
+      for (const u of emailsResult.recordset || []) {
+        const em = getRow(u, 'email');
+        if (em) sendEmail({ to: em, subject, body: html, html: true }).catch((e) => console.error('[tasks] attach email', e?.message));
+      }
+    }
+
+    res.status(201).json({ attachments: uploaded, attachment: uploaded[0] });
   } catch (err) {
     next(err);
   }
@@ -659,34 +1075,55 @@ router.get('/:id/attachments/:attachmentId/download', async (req, res, next) => 
   }
 });
 
-/** Add a timestamped progress update (assignees only). Body: { progress, note? }. Also updates task.progress. */
+/** Add a timestamped progress update (assignees). Body: { progress?, note?, entry_type?: 'progress' | 'daily_transcription' } */
 router.post('/:id/progress-updates', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { progress, note } = req.body || {};
-    const taskResult = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
+    const { progress, note, entry_type } = req.body || {};
+    const taskResult = await query(`SELECT id, tenant_id, progress, created_by FROM tasks WHERE id = @id`, { id });
     const task = taskResult.recordset[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(task, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
     const assignee = await isTaskAssignee(id, req.user.id);
-    if (!assignee) return res.status(403).json({ error: 'Only assignees can document progress' });
+    const isCreator = getRow(task, 'created_by') === req.user.id;
+    const isPrivileged = req.user.role === 'super_admin' || req.user.role === 'tenant_admin';
+    if (!assignee && !isCreator && !isPrivileged) {
+      return res.status(403).json({ error: 'Only assignees or the task creator can document progress' });
+    }
 
-    const p = Math.max(0, Math.min(100, parseInt(progress, 10) ?? 0));
+    const et = entry_type === 'daily_transcription' ? 'daily_transcription' : 'progress';
+    let p = Math.max(0, Math.min(100, parseInt(progress, 10) ?? NaN));
+    if (Number.isNaN(p)) {
+      p = Math.max(0, Math.min(100, parseInt(getRow(task, 'progress'), 10) || 0));
+    }
     const noteStr = note != null ? String(note).trim() : null;
 
     await query(`UPDATE tasks SET progress = @progress, updated_at = SYSUTCDATETIME() WHERE id = @taskId`, { taskId: id, progress: p });
-    const insertResult = await query(
-      `INSERT INTO task_progress_updates (task_id, user_id, progress, note)
-       OUTPUT INSERTED.id, INSERTED.progress, INSERTED.note, INSERTED.created_at
-       VALUES (@taskId, @userId, @progress, @note)`,
-      { taskId: id, userId: req.user.id, progress: p, note: noteStr }
-    );
+    let insertResult;
+    try {
+      insertResult = await query(
+        `INSERT INTO task_progress_updates (task_id, user_id, progress, note, entry_type)
+         OUTPUT INSERTED.id, INSERTED.progress, INSERTED.note, INSERTED.entry_type, INSERTED.created_at
+         VALUES (@taskId, @userId, @progress, @note, @entryType)`,
+        { taskId: id, userId: req.user.id, progress: p, note: noteStr, entryType: et }
+      );
+    } catch (e) {
+      if ((e.message || '').includes('entry_type')) {
+        insertResult = await query(
+          `INSERT INTO task_progress_updates (task_id, user_id, progress, note)
+           OUTPUT INSERTED.id, INSERTED.progress, INSERTED.note, INSERTED.created_at
+           VALUES (@taskId, @userId, @progress, @note)`,
+          { taskId: id, userId: req.user.id, progress: p, note: noteStr }
+        );
+      } else throw e;
+    }
     const row = insertResult.recordset[0];
     res.status(201).json({
       progress_update: {
         id: getRow(row, 'id'),
         progress: getRow(row, 'progress'),
         note: getRow(row, 'note'),
+        entry_type: getRow(row, 'entry_type') || et,
         created_at: getRow(row, 'created_at'),
       },
       task: { progress: p },
@@ -696,30 +1133,74 @@ router.post('/:id/progress-updates', async (req, res, next) => {
   }
 });
 
-/** Add a comment (assignees only). Body: { body } */
+/** Add a note (assignees, creator, or tenant admin). Body: { body, visibility?: 'all' | 'assignees' } */
 router.post('/:id/comments', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { body: commentBody } = req.body || {};
-    const taskResult = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
+    const { body: commentBody, visibility } = req.body || {};
+    const taskResult = await query(`SELECT id, tenant_id, title, created_by FROM tasks WHERE id = @id`, { id });
     const task = taskResult.recordset[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(task, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
-    const assignee = await isTaskAssignee(id, req.user.id);
-    if (!assignee) return res.status(403).json({ error: 'Only assignees can add comments' });
+    const canPost = await canPostTaskComment(req, id);
+    if (!canPost) return res.status(403).json({ error: 'You cannot add notes on this task' });
     if (!commentBody || !String(commentBody).trim()) return res.status(400).json({ error: 'Comment body is required' });
 
-    const insertResult = await query(
-      `INSERT INTO task_comments (task_id, user_id, body)
-       OUTPUT INSERTED.id, INSERTED.body, INSERTED.created_at
-       VALUES (@taskId, @userId, @body)`,
-      { taskId: id, userId: req.user.id, body: String(commentBody).trim() }
-    );
+    const visRaw = (visibility || 'all').toLowerCase();
+    const vis = visRaw === 'assignees' || visRaw === 'assignees_only' ? 'assignees' : 'all';
+
+    let insertResult;
+    try {
+      insertResult = await query(
+        `INSERT INTO task_comments (task_id, user_id, body, visibility)
+         OUTPUT INSERTED.id, INSERTED.body, INSERTED.visibility, INSERTED.created_at
+         VALUES (@taskId, @userId, @body, @visibility)`,
+        { taskId: id, userId: req.user.id, body: String(commentBody).trim(), visibility: vis }
+      );
+    } catch (e) {
+      if ((e.message || '').includes('visibility')) {
+        insertResult = await query(
+          `INSERT INTO task_comments (task_id, user_id, body)
+           OUTPUT INSERTED.id, INSERTED.body, INSERTED.created_at
+           VALUES (@taskId, @userId, @body)`,
+          { taskId: id, userId: req.user.id, body: String(commentBody).trim() }
+        );
+      } else throw e;
+    }
     const row = insertResult.recordset[0];
+
+    if (isEmailConfigured()) {
+      const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+      const excerpt = String(commentBody).trim().slice(0, 220);
+      const visLabel = vis === 'assignees' ? 'Assignees only' : 'Everyone on the task';
+      const emailsResult = await query(
+        `SELECT DISTINCT u.email, u.full_name, u.id FROM (
+           SELECT user_id FROM task_assignments WHERE task_id = @taskId
+           UNION SELECT created_by FROM tasks WHERE id = @taskId
+         ) x INNER JOIN users u ON u.id = x.user_id
+         WHERE u.id <> @excludeId AND u.email IS NOT NULL AND LTRIM(RTRIM(ISNULL(u.email, N''))) <> N''`,
+        { taskId: id, excludeId: req.user.id }
+      );
+      const html = taskNewCommentHtml({
+        taskTitle: getRow(task, 'title'),
+        authorName: req.user.full_name || req.user.email,
+        excerpt,
+        visibilityLabel: visLabel,
+        taskId: id,
+        appUrl,
+      });
+      const subject = `New note on task: ${getRow(task, 'title')}`;
+      for (const u of emailsResult.recordset || []) {
+        const em = getRow(u, 'email');
+        if (em) sendEmail({ to: em, subject, body: html, html: true }).catch((err) => console.error('[tasks] comment email', err?.message));
+      }
+    }
+
     res.status(201).json({
       comment: {
         id: getRow(row, 'id'),
         body: getRow(row, 'body'),
+        visibility: getRow(row, 'visibility') || vis,
         created_at: getRow(row, 'created_at'),
         user_name: req.user.full_name || req.user.email,
       },
@@ -738,8 +1219,8 @@ router.post('/:id/comments/:commentId/attachments', commentAttachmentsUpload, as
     const task = taskResult.recordset[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(task, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
-    const assignee = await isTaskAssignee(id, req.user.id);
-    if (!assignee) return res.status(403).json({ error: 'Only assignees can add comment attachments' });
+    const canPost = await canPostTaskComment(req, id);
+    if (!canPost) return res.status(403).json({ error: 'Forbidden' });
     const commentResult = await query(
       `SELECT id FROM task_comments WHERE id = @commentId AND task_id = @taskId`,
       { taskId: id, commentId }
@@ -796,33 +1277,59 @@ router.get('/:id/comments/:commentId/attachments/:attachmentId/download', async 
   }
 });
 
-/** Add a reminder (assignees only). Body: { remind_at, note? } — remind_at ISO datetime */
+/** Add a reminder. Body: { remind_at, note?, recurrence?: 'none'|'hourly'|'daily' } */
 router.post('/:id/reminders', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { remind_at, note } = req.body || {};
+    const { remind_at, note, recurrence } = req.body || {};
     const taskResult = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
     const task = taskResult.recordset[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(task, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
-    const assignee = await isTaskAssignee(id, req.user.id);
-    if (!assignee) return res.status(403).json({ error: 'Only assignees can add reminders' });
+    const canPost = await canPostTaskComment(req, id);
+    if (!canPost) return res.status(403).json({ error: 'Forbidden' });
     const remindAt = remind_at ? new Date(remind_at) : null;
     if (!remindAt || isNaN(remindAt.getTime())) return res.status(400).json({ error: 'Valid remind_at is required' });
 
     const noteStr = note != null ? String(note).trim().slice(0, 500) : null;
-    const insertResult = await query(
-      `INSERT INTO task_reminders (task_id, user_id, remind_at, note)
-       OUTPUT INSERTED.id, INSERTED.remind_at, INSERTED.note, INSERTED.created_at
-       VALUES (@taskId, @userId, @remindAt, @note)`,
-      { taskId: id, userId: req.user.id, remindAt: remindAt.toISOString(), note: noteStr }
-    );
+    const rec = ['hourly', 'daily', 'none'].includes(String(recurrence || '').toLowerCase())
+      ? String(recurrence).toLowerCase()
+      : 'none';
+    const nextFire = remindAt.toISOString();
+
+    let insertResult;
+    try {
+      insertResult = await query(
+        `INSERT INTO task_reminders (task_id, user_id, remind_at, note, recurrence, next_fire_at)
+         OUTPUT INSERTED.id, INSERTED.remind_at, INSERTED.note, INSERTED.recurrence, INSERTED.next_fire_at, INSERTED.created_at
+         VALUES (@taskId, @userId, @remindAt, @note, @recurrence, @nextFire)`,
+        {
+          taskId: id,
+          userId: req.user.id,
+          remindAt: remindAt.toISOString(),
+          note: noteStr,
+          recurrence: rec,
+          nextFire,
+        }
+      );
+    } catch (e) {
+      if ((e.message || '').includes('recurrence') || (e.message || '').includes('next_fire_at')) {
+        insertResult = await query(
+          `INSERT INTO task_reminders (task_id, user_id, remind_at, note)
+           OUTPUT INSERTED.id, INSERTED.remind_at, INSERTED.note, INSERTED.created_at
+           VALUES (@taskId, @userId, @remindAt, @note)`,
+          { taskId: id, userId: req.user.id, remindAt: remindAt.toISOString(), note: noteStr }
+        );
+      } else throw e;
+    }
     const row = insertResult.recordset[0];
     res.status(201).json({
       reminder: {
         id: getRow(row, 'id'),
         remind_at: getRow(row, 'remind_at'),
         note: getRow(row, 'note'),
+        recurrence: getRow(row, 'recurrence') || rec,
+        next_fire_at: getRow(row, 'next_fire_at') || nextFire,
         created_at: getRow(row, 'created_at'),
         user_name: req.user.full_name || req.user.email,
       },

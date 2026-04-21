@@ -15,6 +15,7 @@ import {
   isEarlyMorningInAppZone,
   toYmdFromDbOrString,
 } from '../lib/appTime.js';
+import { isOvernightBand, sqlTimeToHHmm } from '../lib/workScheduleTimes.js';
 
 const router = Router();
 
@@ -39,20 +40,32 @@ async function findExpectedScheduleEntries(userId, tenantId) {
   const t = todayYmd();
   const y = yesterdayYmd();
   const r = await query(
-    `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes
+    `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, e.notes
      FROM work_schedule_entries e
      INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
-     WHERE (e.work_date = @t OR (e.work_date = @y AND e.shift_type = N'night'))`,
+     WHERE (
+       e.work_date = @t
+       OR (
+         e.work_date = @y
+         AND (
+           e.shift_type = N'night'
+           OR (e.work_start_time IS NOT NULL AND e.work_end_time IS NOT NULL AND e.work_start_time > e.work_end_time)
+         )
+       )
+     )`,
     { userId, tenantId, t, y }
   );
   const rows = r.recordset || [];
   const early = isEarlyMorningInAppZone();
   return rows.filter((row) => {
     const ds = toYmdFromDbOrString(getRow(row, 'work_date'));
-    const st = getRow(row, 'shift_type');
+    const st = String(getRow(row, 'shift_type') || '').toLowerCase();
+    const ws = sqlTimeToHHmm(getRow(row, 'work_start_time'));
+    const we = sqlTimeToHHmm(getRow(row, 'work_end_time'));
+    const overnight = st === 'night' || isOvernightBand(ws, we);
     if (early) {
       if (ds === t) return true;
-      if (st === 'night' && ds === y) return true;
+      if (overnight && ds === y) return true;
       return false;
     }
     return ds === t;
@@ -248,7 +261,7 @@ router.post('/session', requirePageAccess('profile'), async (req, res, next) => 
     if (!schedule_entry_id || !work_date) return res.status(400).json({ error: 'schedule_entry_id and work_date required' });
     const wd = String(work_date).slice(0, 10);
     const er = await query(
-      `SELECT e.id, e.work_date, e.shift_type, s.user_id, s.tenant_id
+      `SELECT e.id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, s.user_id, s.tenant_id
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id
        WHERE e.id = @eid AND s.tenant_id = @tenantId AND s.user_id = @userId`,
@@ -581,7 +594,7 @@ router.get('/team-day', requireProfileOrManagement, async (req, res, next) => {
     for (const u of users) {
       const uid = getRow(u, 'id');
       const er = await query(
-        `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes
+        `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.work_start_time, e.work_end_time, e.notes
          FROM work_schedule_entries e
          INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @uid
          WHERE e.work_date = @date`,

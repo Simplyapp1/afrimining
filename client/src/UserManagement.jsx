@@ -12,18 +12,12 @@ const PAGE_ROLES = [
   { id: 'management', label: 'Management' },
   { id: 'users', label: 'Users' },
   { id: 'tenants', label: 'Tenants' },
-  { id: 'contractor', label: 'Contractor' },
-  { id: 'command_centre', label: 'Command Centre' },
-  { id: 'access_management', label: 'Access management' },
-  { id: 'rector', label: 'Rector' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'transport_operations', label: 'Transport operations' },
+  { id: 'tasks', label: 'Tasks tracker' },
+  { id: 'project_tracker', label: 'Project tracker' },
+  { id: 'resources_register', label: 'Resources register' },
+  { id: 'contractor_management', label: 'Contractor management' },
   { id: 'recruitment', label: 'Recruitment' },
-  { id: 'letters', label: 'Letters' },
   { id: 'accounting_management', label: 'Accounting management' },
-  { id: 'tracking_integration', label: 'Tracking & integration' },
-  { id: 'fuel_supply_management', label: 'Fuel supply management' },
-  { id: 'fuel_customer_orders', label: 'Customer diesel orders (portal)' },
   { id: 'team_leader_admin', label: 'Team leader admin' },
   { id: 'performance_evaluations', label: 'Performance evaluations' },
   { id: 'auditor', label: 'Auditor' },
@@ -86,10 +80,6 @@ export default function UserManagement() {
   const [approvalForm, setApprovalForm] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [approvalsLoading, setApprovalsLoading] = useState(false);
-  const [formContractors, setFormContractors] = useState([]);
-  const [formContractorsLoading, setFormContractorsLoading] = useState(false);
-  const [newContractorName, setNewContractorName] = useState('');
-  const [addingContractor, setAddingContractor] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [blockRequestsLoading, setBlockRequestsLoading] = useState(false);
 
@@ -284,19 +274,18 @@ export default function UserManagement() {
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `thinkers-users-${todayYmd()}.csv`;
+    a.download = `simplyapp-users-${todayYmd()}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
   const openCreate = () => {
-    setFormUser({ email: '', full_name: '', password: '', role: 'user', id_number: '', cellphone: '', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [], contractor_ids: [] });
-    setFormContractors([]);
+    setFormUser({ email: '', full_name: '', password: '', role: 'user', id_number: '', cellphone: '', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [] });
     setModal('create');
     setError('');
   };
 
-  /** Open Add user form pre-filled from an existing user (tenants, page roles, contractors). You only change name, email, password. */
+  /** Open Add user form pre-filled from an existing user (tenants, page roles). You only change name, email, password. */
   const openCreateFromUser = (u) => {
     const tenantIds = (Array.isArray(u.tenant_ids) && u.tenant_ids.length > 0)
       ? u.tenant_ids.map((id) => (id != null ? String(id) : '')).filter(Boolean)
@@ -311,9 +300,7 @@ export default function UserManagement() {
       tenant_id: tenantIds[0] || me?.tenant_id || '',
       tenant_ids: tenantIds,
       page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
-      contractor_ids: (Array.isArray(u.contractor_ids) ? u.contractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
     });
-    setFormContractors([]);
     setModal('create');
     setError('');
   };
@@ -328,82 +315,9 @@ export default function UserManagement() {
       cellphone: u.cellphone ?? '',
       page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
       tenant_ids: tenantIds,
-      contractor_ids: (Array.isArray(u.contractor_ids) ? u.contractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
     });
-    setFormContractors([]);
     setModal('edit');
     setError('');
-  };
-
-  // Resolve tenant IDs to the same format as tenants list (so API receives correct IDs)
-  const resolveTenantIdsForContractors = useCallback(() => {
-    const tenantIds = formUser?.tenant_ids;
-    if (!Array.isArray(tenantIds) || tenantIds.length === 0) return [];
-    return tenantIds
-      .map((tid) => {
-        const id = tid != null ? String(tid).trim() : '';
-        if (!id) return null;
-        const fromList = tenants.find((t) => String(t.id) === id || String(t.id).toLowerCase() === id.toLowerCase());
-        return fromList ? String(fromList.id) : id;
-      })
-      .filter(Boolean);
-  }, [formUser?.tenant_ids, tenants]);
-
-  // Load contractors for form user's tenants (for Contractor assignment)
-  useEffect(() => {
-    const ids = resolveTenantIdsForContractors();
-    if (!modal || ids.length === 0) {
-      setFormContractors([]);
-      setFormContractorsLoading(false);
-      return;
-    }
-    setFormContractorsLoading(true);
-    usersApi.contractorsForTenants(ids)
-      .then((d) => {
-        setFormContractors(d.contractors || []);
-        if (d._error) setError(d._error);
-      })
-      .catch((err) => {
-        setFormContractors([]);
-        setError(err?.message || 'Could not load contractors');
-      })
-      .finally(() => setFormContractorsLoading(false));
-  }, [modal, resolveTenantIdsForContractors]);
-
-  const refreshFormContractors = useCallback(() => {
-    const ids = resolveTenantIdsForContractors();
-    if (ids.length === 0) return;
-    setFormContractorsLoading(true);
-    setError('');
-    usersApi.contractorsForTenants(ids)
-      .then((d) => {
-        setFormContractors(d.contractors || []);
-        if (d._error) setError(d._error);
-      })
-      .catch((err) => {
-        setFormContractors([]);
-        setError(err?.message || 'Could not load contractors');
-      })
-      .finally(() => setFormContractorsLoading(false));
-  }, [resolveTenantIdsForContractors]);
-
-  const addContractorCompany = async (e) => {
-    e.preventDefault();
-    const name = (newContractorName || '').trim();
-    const tenantIds = formUser?.tenant_ids;
-    if (!name || !Array.isArray(tenantIds) || tenantIds.length === 0) return;
-    const tenantId = tenantIds[0];
-    setAddingContractor(true);
-    setError('');
-    try {
-      await usersApi.createContractor({ tenant_id: tenantId, name });
-      setNewContractorName('');
-      refreshFormContractors();
-    } catch (err) {
-      setError(err?.message || 'Could not add contractor');
-    } finally {
-      setAddingContractor(false);
-    }
   };
 
   const saveUser = async () => {
@@ -421,7 +335,7 @@ export default function UserManagement() {
           cellphone: formUser.cellphone?.trim() || undefined,
           tenant_ids: (formUser.tenant_ids || []).length ? formUser.tenant_ids : (formUser.tenant_id ? [formUser.tenant_id] : []),
           page_roles: formUser.page_roles || [],
-          contractor_ids: formUser.contractor_ids || [],
+          contractor_ids: [],
         });
       } else {
         await usersApi.update(formUser.id, {
@@ -433,7 +347,7 @@ export default function UserManagement() {
           cellphone: formUser.cellphone?.trim() ?? undefined,
           tenant_ids: formUser.tenant_ids,
           page_roles: formUser.page_roles || [],
-          contractor_ids: formUser.contractor_ids || [],
+          contractor_ids: [],
           ...(formUser.password ? { password: formUser.password } : {}),
         });
       }
@@ -732,7 +646,7 @@ export default function UserManagement() {
                     <td className="px-4 py-2 text-surface-600">{formatDate(u.last_login_at)}</td>
                     <td className="px-4 py-2 text-right">
                       {canManageUsers && (
-                        <button type="button" onClick={() => openCreateFromUser(u)} className="text-brand-600 hover:underline mr-2" title="Add a new user with same tenants, page access and contractors">Add like this</button>
+                        <button type="button" onClick={() => openCreateFromUser(u)} className="text-brand-600 hover:underline mr-2" title="Add a new user with same tenants and page access">Add like this</button>
                       )}
                       {canManageUsers && u.id !== me?.id && (
                         <button type="button" onClick={() => openEdit(u)} className="text-brand-600 hover:underline mr-2">Edit</button>
@@ -1173,65 +1087,6 @@ export default function UserManagement() {
                     ))}
                   </div>
                   {tenants.length === 0 && <p className="text-sm text-surface-500">No tenants. Create tenants first.</p>}
-                </div>
-              )}
-              {(formUser.page_roles || []).includes('contractor') && (formUser.tenant_ids || []).length > 0 && (
-                <div>
-                  <label className="block text-sm font-medium text-surface-700 mb-1">Contractor companies</label>
-                  <p className="text-xs text-surface-500 mb-2">One tenant can have many contractor companies (e.g. Teshuah Trucks, Matsimane). Choose which ones this user can access. Leave all unchecked for roles that see all (e.g. Command Centre).</p>
-                  <div className="flex items-center gap-2 mb-2">
-                    {formContractorsLoading ? (
-                      <p className="text-sm text-surface-500">Loading…</p>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={refreshFormContractors}
-                        className="text-xs text-surface-600 hover:text-surface-900 underline"
-                      >
-                        Refresh list
-                      </button>
-                    )}
-                  </div>
-                  {!formContractorsLoading && (
-                    <>
-                      <div className="flex flex-wrap gap-3 max-h-36 overflow-y-auto mb-3">
-                        {formContractors.length === 0 ? (
-                          <p className="text-sm text-surface-500">No contractor companies yet. Add one below, or click Refresh list to try again.</p>
-                        ) : (
-                          formContractors.map((c) => (
-                            <label key={c.id} className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={(formUser.contractor_ids || []).map((x) => String(x)).includes(String(c.id))}
-                                onChange={(e) => {
-                                  const current = (formUser.contractor_ids || []).map((x) => String(x));
-                                  const next = new Set(current);
-                                  const cid = String(c.id);
-                                  if (e.target.checked) next.add(cid);
-                                  else next.delete(cid);
-                                  setFormUser((f) => ({ ...f, contractor_ids: [...next] }));
-                                }}
-                                className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
-                              />
-                              <span className="text-sm text-surface-700">{c.name}</span>
-                            </label>
-                          ))
-                        )}
-                      </div>
-                      <form onSubmit={addContractorCompany} className="flex gap-2 items-center flex-wrap">
-                        <input
-                          type="text"
-                          value={newContractorName}
-                          onChange={(e) => setNewContractorName(e.target.value)}
-                          placeholder="New company name (e.g. Teshuah Trucks)"
-                          className="flex-1 min-w-[140px] rounded-lg border border-surface-300 px-3 py-1.5 text-sm"
-                        />
-                        <button type="submit" disabled={addingContractor || !newContractorName.trim()} className="px-3 py-1.5 text-sm rounded-lg bg-surface-200 text-surface-800 hover:bg-surface-300 disabled:opacity-50">
-                          {addingContractor ? 'Adding…' : 'Add company'}
-                        </button>
-                      </form>
-                    </>
-                  )}
                 </div>
               )}
             </div>

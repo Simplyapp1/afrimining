@@ -17,12 +17,12 @@
 
 1. Go to [render.com](https://render.com) and sign in (GitHub is easiest).
 2. **Dashboard** → **New** → **Web Service**.
-3. **Connect** your repository (e.g. `thinkers-app`).
+3. **Connect** your repository (e.g. `simplyapp`).
 4. Use these settings:
 
    | Field | Value |
    |--------|--------|
-   | **Name** | `thinkers-app` (or any name) |
+   | **Name** | `simplyapp` (or any name) |
    | **Region** | Choose nearest to your users |
    | **Branch** | `main` (or your default branch) |
    | **Runtime** | **Node** |

@@ -5,7 +5,7 @@ import { useTheme } from './ThemeContext';
 import Sidebar, { useSidebarState } from './components/Sidebar';
 import ThemeToggle from './components/ThemeToggle';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
-import { tenants as tenantsApi, commandCentre as ccApi } from './api';
+import { tenants as tenantsApi } from './api';
 import { PATH_PAGE_IDS, canAccessPage, getFirstAllowedPath } from './lib/pageAccess.js';
 
 function IconMenu({ className }) {
@@ -36,7 +36,6 @@ export default function Layout() {
   const [globalSearch, setGlobalSearch] = useState('');
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchIndex, setGlobalSearchIndex] = useState(0);
-  const [ccAllowedTabs, setCcAllowedTabs] = useState([]);
   const globalSearchRef = useCallback((node) => { if (!node) return; }, []);
   /** Bumps when the user clicks refresh so the active page remounts and reloads data. */
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
@@ -49,18 +48,6 @@ export default function Layout() {
       setTenantList([]);
     }
   }, [user?.tenant_ids]);
-
-  useEffect(() => {
-    if (!canAccessPage(user, 'command_centre')) {
-      setCcAllowedTabs([]);
-      return;
-    }
-    let cancelled = false;
-    ccApi.myTabs()
-      .then((r) => { if (!cancelled) setCcAllowedTabs(r.tabs || []); })
-      .catch(() => { if (!cancelled) setCcAllowedTabs([]); });
-    return () => { cancelled = true; };
-  }, [user]);
 
   useEffect(() => {
     const pathname = location.pathname || '';
@@ -76,54 +63,8 @@ export default function Layout() {
     navigate('/login');
   };
 
-  const commandCentreTabTargets = canAccessPage(user, 'command_centre') ? [
-    { id: 'cc:dashboard', label: 'Command Centre · Main dashboard', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'dashboard', keywords: ['overview', 'home'] },
-    { id: 'cc:reports', label: 'Command Centre · Report composition', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'reports', keywords: ['shift', 'create report', 'compose'] },
-    { id: 'cc:saved_reports', label: 'Command Centre · View saved shift reports', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'saved_reports', keywords: ['saved', 'history', 'approved report'] },
-    { id: 'cc:trends', label: 'Command Centre · Trends', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'trends', keywords: ['analytics', 'graph', 'insights'] },
-    { id: 'cc:requests', label: 'Command Centre · Requests', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'requests', keywords: ['pending', 'approval request'] },
-    { id: 'cc:messages', label: 'Command Centre · Messages platform', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'messages', keywords: ['chat', 'communication'] },
-    { id: 'cc:delivery', label: 'Command Centre · Delivery management', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'delivery', keywords: ['deliveries', 'loads'] },
-    { id: 'cc:breakdowns', label: 'Command Centre · Reported breakdowns', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'breakdowns', keywords: ['incidents', 'downtime'] },
-    { id: 'cc:applications', label: 'Command Centre · Fleet & driver applications', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'applications', keywords: ['fleet', 'driver', 'truck', 'application', 'enrollment'] },
-    { id: 'cc:contractor_expiries', label: 'Command Centre · Contractor expiries', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'contractor_expiries', keywords: ['expiry', 'expir', 'licence', 'license', 'roadworthy', 'permit', 'certificate'] },
-  ].filter((t) => ccAllowedTabs.includes(t.commandCentreTab)) : [];
-  const contractorTabTargets = canAccessPage(user, 'contractor') ? [
-    { id: 'ct:dashboard', label: 'Contractor · Dashboard', path: '/contractor', section: 'Contractor', tab: 'dashboard', key: 'contractor-global-target-tab', keywords: ['overview', 'home'] },
-    { id: 'ct:trucks', label: 'Contractor · Add truck', path: '/contractor', section: 'Contractor', tab: 'trucks', key: 'contractor-global-target-tab', keywords: ['fleet', 'truck', 'vehicle'] },
-    { id: 'ct:fleet', label: 'Contractor · Fleet', path: '/contractor', section: 'Contractor', tab: 'fleet', key: 'contractor-global-target-tab', keywords: ['truck', 'vehicle', 'fleet list'] },
-    { id: 'ct:drivers', label: 'Contractor · Add driver', path: '/contractor', section: 'Contractor', tab: 'drivers', key: 'contractor-global-target-tab', keywords: ['driver', 'operator'] },
-    { id: 'ct:driver-register', label: 'Contractor · Driver register', path: '/contractor', section: 'Contractor', tab: 'driver-register', key: 'contractor-global-target-tab', keywords: ['driver', 'register', 'license'] },
-    { id: 'ct:import-all', label: 'Contractor · Import all', path: '/contractor', section: 'Contractor', tab: 'import-all', key: 'contractor-global-target-tab' },
-    { id: 'ct:enrollment', label: 'Contractor · Fleet and driver enrollment', path: '/contractor', section: 'Contractor', tab: 'enrollment', key: 'contractor-global-target-tab' },
-    { id: 'ct:incidents', label: 'Contractor · Report breakdown / incidents', path: '/contractor', section: 'Contractor', tab: 'incidents', key: 'contractor-global-target-tab' },
-    { id: 'ct:expiries', label: 'Contractor · Expiries', path: '/contractor', section: 'Contractor', tab: 'expiries', key: 'contractor-global-target-tab' },
-    { id: 'ct:suspensions', label: 'Contractor · Suspensions and appeals', path: '/contractor', section: 'Contractor', tab: 'suspensions', key: 'contractor-global-target-tab' },
-    { id: 'ct:messages', label: 'Contractor · Messages', path: '/contractor', section: 'Contractor', tab: 'messages', key: 'contractor-global-target-tab' },
-  ] : [];
-  const accessManagementTabTargets = canAccessPage(user, 'access_management') ? [
-    { id: 'am:dashboard', label: 'Access Management · Dashboard', path: '/access-management', section: 'Access Management', tab: 'dashboard', key: 'access-management-global-target-tab' },
-    { id: 'am:routes', label: 'Access Management · Route management', path: '/access-management', section: 'Access Management', tab: 'routes', key: 'access-management-global-target-tab' },
-    { id: 'am:rectors', label: 'Access Management · Route rectors', path: '/access-management', section: 'Access Management', tab: 'rectors', key: 'access-management-global-target-tab' },
-    { id: 'am:distribution', label: 'Access Management · List distribution', path: '/access-management', section: 'Access Management', tab: 'distribution', key: 'access-management-global-target-tab' },
-    { id: 'am:pilot', label: 'Access Management · Pilot distribution', path: '/access-management', section: 'Access Management', tab: 'pilot-distribution', key: 'access-management-global-target-tab' },
-    { id: 'am:history', label: 'Access Management · Distribution history', path: '/access-management', section: 'Access Management', tab: 'distribution-history', key: 'access-management-global-target-tab' },
-  ] : [];
-  const rectorTabTargets = canAccessPage(user, 'rector') ? [
-    { id: 'rt:fleet', label: 'Rector · Approved fleet & drivers', path: '/rector', section: 'Rector', tab: 'fleet', key: 'rector-global-target-tab' },
-    { id: 'rt:incidents', label: 'Rector · Breakdowns & incidents', path: '/rector', section: 'Rector', tab: 'incidents', key: 'rector-global-target-tab' },
-    { id: 'rt:suspensions', label: 'Rector · Suspensions', path: '/rector', section: 'Rector', tab: 'suspensions', key: 'rector-global-target-tab' },
-    { id: 'rt:compliance', label: 'Rector · Compliance inspections', path: '/rector', section: 'Rector', tab: 'compliance', key: 'rector-global-target-tab' },
-    { id: 'rt:shift-reports', label: 'Rector · Shift reports', path: '/rector', section: 'Rector', tab: 'shift-reports', key: 'rector-global-target-tab' },
-  ] : [];
-
   const routePath = location.pathname || '';
-  const globalTargets =
-    routePath.startsWith('/command-centre') ? commandCentreTabTargets :
-      routePath.startsWith('/contractor') ? contractorTabTargets :
-        routePath.startsWith('/access-management') ? accessManagementTabTargets :
-          routePath.startsWith('/rector') ? rectorTabTargets :
-            [...commandCentreTabTargets, ...contractorTabTargets, ...accessManagementTabTargets, ...rectorTabTargets];
+  const globalTargets = [];
   const q = globalSearch.trim().toLowerCase();
   const scoreTarget = (target, query) => {
     if (!query) return 1;
@@ -151,9 +92,6 @@ export default function Layout() {
 
   const goToTarget = (target) => {
     if (!target) return;
-    if (target.commandCentreTab) {
-      try { sessionStorage.setItem('cc-global-target-tab', target.commandCentreTab); } catch (_) {}
-    }
     if (target.tab && target.key) {
       try { sessionStorage.setItem(target.key, target.tab); } catch (_) {}
     }

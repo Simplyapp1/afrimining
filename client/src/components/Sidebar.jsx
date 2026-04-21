@@ -3,8 +3,8 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 import { canAccessPage, PATH_PAGE_IDS } from '../lib/pageAccess.js';
 
-const SIDEBAR_KEY = 'thinkers-sidebar-collapsed';
-const SIDEBAR_HIDDEN_KEY = 'thinkers-sidebar-hidden';
+const SIDEBAR_KEY = 'simplyapp-sidebar-collapsed';
+const SIDEBAR_HIDDEN_KEY = 'simplyapp-sidebar-hidden';
 
 function IconUsers({ className }) {
   return (
@@ -18,46 +18,6 @@ function IconTenants({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-    </svg>
-  );
-}
-
-function IconContractor({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-    </svg>
-  );
-}
-
-function IconCommandCentre({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-    </svg>
-  );
-}
-
-function IconAccess({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-    </svg>
-  );
-}
-
-function IconRector({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-    </svg>
-  );
-}
-
-function IconTasks({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
     </svg>
   );
 }
@@ -111,14 +71,6 @@ function IconRecruitment({ className }) {
   );
 }
 
-function IconLetters({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
-  );
-}
-
 function IconAccounting({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -127,14 +79,38 @@ function IconAccounting({ className }) {
   );
 }
 
-function IconFuel({ className }) {
+function IconTasks({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9h6m-6 4h6" />
     </svg>
   );
 }
 
+function IconProjects({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  );
+}
+
+function IconResources({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+    </svg>
+  );
+}
+
+function IconContractor({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 4h1m-1 4h1m4-4h1" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10 3v4h4V3" />
+    </svg>
+  );
+}
 
 function IconChevronLeft({ className }) {
   return (
@@ -192,25 +168,16 @@ const navSections = [
     items: [
       { to: '/users', label: 'Users', icon: IconUsers, shortcut: '⌘1', pageId: 'users' },
       { to: '/tenants', label: 'Tenants', icon: IconTenants, shortcut: '⌘2', pageId: 'tenants' },
-    ],
-  },
-  {
-    label: 'Operations',
-    items: [
-      { to: '/contractor', label: 'Contractor', icon: IconContractor, shortcut: '⌘3', pageId: 'contractor' },
-      { to: '/command-centre', label: 'Command Centre', icon: IconCommandCentre, shortcut: '⌘4', pageId: 'command_centre' },
-      { to: '/fuel-supply-management', label: 'Fuel supply', icon: IconFuel, shortcut: '⌘8', pageId: 'fuel_supply_management' },
-      { to: '/fuel-customer-orders', label: 'Customer diesel orders', icon: IconFuel, shortcut: '', pageId: 'fuel_customer_orders' },
-      { to: '/access-management', label: 'Access management', icon: IconAccess, shortcut: '⌘5', pageId: 'access_management' },
-      { to: '/rector', label: 'Rector', icon: IconRector, shortcut: '⌘6', pageId: 'rector' },
-      { to: '/tasks', label: 'Tasks', icon: IconTasks, shortcut: '⌘7', pageId: 'tasks' },
+      { to: '/tasks-tracker', label: 'Tasks tracker', icon: IconTasks, shortcut: '', pageId: 'tasks' },
+      { to: '/project-tracker', label: 'Project tracker', icon: IconProjects, shortcut: '', pageId: 'project_tracker' },
+      { to: '/resources-register', label: 'Resources register', icon: IconResources, shortcut: '⌘0', pageId: 'resources_register' },
+      { to: '/contractor-management', label: 'Contractor management', icon: IconContractor, shortcut: '', pageId: 'contractor_management' },
     ],
   },
   {
     label: 'HR',
     items: [
       { to: '/recruitment', label: 'Recruitment', icon: IconRecruitment, shortcut: '⌘9', pageId: 'recruitment' },
-      { to: '/letters', label: 'Letters', icon: IconLetters, shortcut: '⌘0', pageId: 'letters' },
     ],
   },
   {
@@ -242,7 +209,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '8': '/fuel-supply-management', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '9': '/recruitment', '0': '/resources-register', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {

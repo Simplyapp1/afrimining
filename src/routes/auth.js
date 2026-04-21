@@ -9,6 +9,7 @@ import { passwordResetHtml } from '../lib/emailTemplates.js';
 import { parseClientCoords } from '../lib/geo.js';
 import { getClientIp } from '../lib/clientIp.js';
 import { insertUserLoginActivity } from '../lib/userLoginActivity.js';
+import { resolveUserTenantContext, normTenantId } from '../lib/resolveUserTenantContext.js';
 
 const router = Router();
 const SALT_ROUNDS = 10;
@@ -66,12 +67,6 @@ router.post('/login', async (req, res, next) => {
         code: 'account_locked',
       });
     }
-    let tenant_ids = [];
-    try {
-      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: user.id });
-      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
-    } catch (_) {}
-    if (tenant_ids.length === 0 && user.tenant_id) tenant_ids = [user.tenant_id];
     const hash = user.password_hash;
     if (!hash || typeof hash !== 'string') {
       console.error('Login: invalid password_hash for user', user.id);
@@ -118,6 +113,12 @@ router.post('/login', async (req, res, next) => {
       }
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+    const { tenant_ids, currentTenantId: loginTenantId } = await resolveUserTenantContext({
+      userId: user.id,
+      sessionTenantId: null,
+      primaryTenantId: user.tenant_id,
+      role: user.role,
+    });
     let page_roles = [];
     try {
       const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @id`, { id: user.id });
@@ -127,13 +128,17 @@ router.post('/login', async (req, res, next) => {
       const { PAGE_IDS } = await import('./users.js');
       page_roles = PAGE_IDS.slice();
     }
-    const sessionTenantId = user.tenant_id || tenant_ids[0] || null;
+    const sessionTenantId = loginTenantId;
+    let tenantNameForResponse = user.tenant_name;
     let tenantPlanForAccess = user.tenant_plan;
-    if (sessionTenantId && String(sessionTenantId) !== String(user.tenant_id ?? '')) {
+    if (sessionTenantId) {
       try {
-        const tp = await query(`SELECT [plan] AS p FROM tenants WHERE id = @id`, { id: sessionTenantId });
+        const tp = await query(`SELECT name AS n, [plan] AS p FROM tenants WHERE id = @id`, { id: sessionTenantId });
         const row = tp.recordset?.[0];
-        tenantPlanForAccess = row?.p ?? row?.P ?? tenantPlanForAccess;
+        if (row) {
+          tenantNameForResponse = row.n ?? row.N ?? tenantNameForResponse;
+          tenantPlanForAccess = row.p ?? row.P ?? tenantPlanForAccess;
+        }
       } catch (_) {}
     }
     if (
@@ -172,7 +177,7 @@ router.post('/login', async (req, res, next) => {
       console.error('Login: audit log failed', auditErr);
     }
     try {
-      const tid = sessionTenantId || user.tenant_id;
+      const tid = sessionTenantId;
       if (tid) {
         await insertUserLoginActivity(query, {
           tenantId: tid,
@@ -193,7 +198,7 @@ router.post('/login', async (req, res, next) => {
         id: user.id,
         tenant_id: req.session.tenantId,
         tenant_ids: tenant_ids,
-        tenant_name: user.tenant_name,
+        tenant_name: tenantNameForResponse,
         tenant_plan: tenantPlanForAccess,
         email: user.email,
         full_name: user.full_name,
@@ -220,14 +225,23 @@ router.post('/switch-tenant', async (req, res, next) => {
   try {
     const { tenant_id } = req.body || {};
     if (!tenant_id) return res.status(400).json({ error: 'tenant_id required' });
-    const check = await query(
-      `SELECT 1 FROM user_tenants WHERE user_id = @userId AND tenant_id = @tenantId`,
-      { userId: req.session.userId, tenantId: tenant_id }
-    );
-    if (!check.recordset?.length) {
-      const primary = await query(`SELECT tenant_id FROM users WHERE id = @id`, { id: req.session.userId });
-      const primaryId = primary.recordset?.[0]?.tenant_id;
-      if (primaryId !== tenant_id) return res.status(403).json({ error: 'You do not have access to this tenant' });
+    const roleRow = await query(`SELECT role FROM users WHERE id = @id`, { id: req.session.userId });
+    const userRole = roleRow.recordset?.[0]?.role ?? roleRow.recordset?.[0]?.Role;
+    if (String(userRole || '').toLowerCase() === 'super_admin') {
+      const exists = await query(`SELECT 1 AS ok FROM tenants WHERE id = @tenantId`, { tenantId: tenant_id });
+      if (!exists.recordset?.length) return res.status(404).json({ error: 'Tenant not found' });
+    } else {
+      const check = await query(
+        `SELECT 1 FROM user_tenants WHERE user_id = @userId AND tenant_id = @tenantId`,
+        { userId: req.session.userId, tenantId: tenant_id }
+      );
+      if (!check.recordset?.length) {
+        const primary = await query(`SELECT tenant_id FROM users WHERE id = @id`, { id: req.session.userId });
+        const primaryId = primary.recordset?.[0]?.tenant_id ?? primary.recordset?.[0]?.tenant_Id;
+        if (String(primaryId || '') !== String(tenant_id || '')) {
+          return res.status(403).json({ error: 'You do not have access to this tenant' });
+        }
+      }
     }
     req.session.tenantId = tenant_id;
     const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: tenant_id });
@@ -273,22 +287,25 @@ router.get('/me', async (req, res, next) => {
       const { PAGE_IDS } = await import('./users.js');
       page_roles = PAGE_IDS.slice();
     }
-    let tenant_ids = [];
-    try {
-      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: req.session.userId });
-      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
-    } catch (_) {}
-    if (tenant_ids.length === 0 && get(row, 'tenant_id')) tenant_ids = [get(row, 'tenant_id')];
     const primaryTenantId = get(row, 'tenant_id');
-    const currentTenantId = req.session.tenantId && tenant_ids.includes(req.session.tenantId) ? req.session.tenantId : (primaryTenantId || tenant_ids[0] || null);
+    const { tenant_ids, currentTenantId } = await resolveUserTenantContext({
+      userId: req.session.userId,
+      sessionTenantId: req.session.tenantId,
+      primaryTenantId,
+      role,
+    });
+    if (currentTenantId && normTenantId(req.session.tenantId) !== normTenantId(currentTenantId)) {
+      req.session.tenantId = currentTenantId;
+    }
     let tenantName = get(row, 'tenant_name');
     let tenantPlan = get(row, 'tenant_plan');
-    if (currentTenantId && currentTenantId !== primaryTenantId) {
+    if (currentTenantId) {
       try {
         const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: currentTenantId });
         if (trow.recordset?.[0]) {
-          tenantName = trow.recordset[0].name ?? trow.recordset[0].name;
-          tenantPlan = trow.recordset[0].plan ?? trow.recordset[0].plan;
+          const tr = trow.recordset[0];
+          tenantName = tr.name ?? tr.Name ?? tenantName;
+          tenantPlan = tr.plan ?? tr.Plan ?? tenantPlan;
         }
       } catch (_) {}
     }
@@ -438,7 +455,7 @@ router.post('/forgot-password', async (req, res, next) => {
     try {
       emailResult = await sendEmail({
         to: user.email,
-        subject: 'Reset your password – Thinkers',
+        subject: 'Reset your password – Simplyapp',
         body: html,
         html: true,
       });

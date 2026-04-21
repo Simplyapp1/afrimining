@@ -2,36 +2,69 @@
 export const PATH_PAGE_IDS = {
   '/users': 'users',
   '/tenants': 'tenants',
-  '/contractor': 'contractor',
-  '/command-centre': 'command_centre',
-  '/access-management': 'access_management',
-  '/rector': 'rector',
-  '/tasks': 'tasks',
   '/profile': 'profile',
   '/management': 'management',
+  '/tasks-tracker': 'tasks',
+  '/project-tracker': 'project_tracker',
+  '/resources-register': 'resources_register',
+  '/contractor-management': 'contractor_management',
   '/recruitment': 'recruitment',
-  '/letters': 'letters',
   '/accounting-management': 'accounting_management',
-  '/fuel-supply-management': 'fuel_supply_management',
-  '/fuel-customer-orders': 'fuel_customer_orders',
   '/team-leader-admin': 'team_leader_admin',
   '/performance-evaluations': 'performance_evaluations',
   '/auditor': 'auditor',
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/fuel-supply-management', '/fuel-customer-orders', '/access-management', '/rector', '/tasks', '/recruitment', '/letters', '/accounting-management'];
+export const ALL_PATHS_ORDER = [
+  '/profile',
+  '/team-leader-admin',
+  '/performance-evaluations',
+  '/auditor',
+  '/management',
+  '/tasks-tracker',
+  '/project-tracker',
+  '/resources-register',
+  '/contractor-management',
+  '/users',
+  '/tenants',
+  '/recruitment',
+  '/accounting-management',
+];
 
 /**
  * Whether the user can access the given page.
  * Only super_admin sees all screens. Everyone else (including tenant_admin and enterprise tenants) needs page_id in page_roles.
  */
+function normalizedPageRoles(user) {
+  const raw = user?.page_roles;
+  if (Array.isArray(raw)) return raw;
+  if (raw == null) return [];
+  return [raw];
+}
+
 export function canAccessPage(user, pageId) {
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   const pid = String(pageId).toLowerCase();
-  const roles = user.page_roles;
-  if (!roles || roles.length === 0) return false;
-  return roles.some((r) => String(r).toLowerCase() === pid);
+  const roles = normalizedPageRoles(user);
+  if (!roles.length) return false;
+  const norm = roles.map((r) => String(r).toLowerCase());
+  if (norm.includes(pid)) return true;
+  /**
+   * Project tracker: explicit role, or any “Management” sidebar page (users/tenants/tasks/management).
+   * Keeps sidebar/API aligned with src/lib/projectTrackerAccess.js on the server.
+   */
+  if (
+    (pid === 'project_tracker' || pid === 'resources_register') &&
+    (norm.includes('tasks') || norm.includes('management') || norm.includes('users') || norm.includes('tenants'))
+  ) {
+    return true;
+  }
+  /** Contractor management: same API access as legacy contractor portal + ops roles. */
+  if (pid === 'contractor_management') {
+    return norm.some((r) => ['contractor', 'command_centre', 'access_management', 'rector'].includes(r));
+  }
+  return false;
 }
 
 /**

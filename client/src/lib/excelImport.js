@@ -244,7 +244,7 @@ async function downloadExcelJSWorkbook(workbook, filename) {
 
 export async function downloadTruckTemplate() {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   workbook.created = new Date();
   const ws = workbook.addWorksheet('Trucks', {
     views: [{ state: 'frozen', ySplit: 1 }],
@@ -290,7 +290,7 @@ export async function downloadTruckTemplate() {
 
 export async function downloadDriverTemplate() {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   workbook.created = new Date();
   const ws = workbook.addWorksheet('Drivers', {
     views: [{ state: 'frozen', ySplit: 1 }],
@@ -328,7 +328,7 @@ export async function downloadDriverTemplate() {
 /** Consolidated template: one workbook with Trucks and Drivers sheets */
 export async function downloadConsolidatedTemplate() {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Thinkers';
+  workbook.creator = 'Simplyapp';
   workbook.created = new Date();
 
   const wsTrucks = workbook.addWorksheet('Trucks', {

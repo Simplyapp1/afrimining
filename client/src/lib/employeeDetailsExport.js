@@ -361,7 +361,7 @@ function drawTwoColumnGrid(doc, ctx, sectionTitle, colLeft, colRight, rows) {
 /** @param {Array<Record<string, unknown>>} bundles */
 export async function downloadEmployeeDetailsExcel(bundles) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Thinkers Management';
+  wb.creator = 'Simplyapp';
   const sheet = wb.addWorksheet('Employee details', {
     views: [{ state: 'frozen', ySplit: 1 }],
   });

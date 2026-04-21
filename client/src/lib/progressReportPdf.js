@@ -255,7 +255,7 @@ export function generateProgressReportPdf(report, options = {}) {
     } catch (_) {}
   }
 
-  const docTypeText = 'Thinkers Afrika Progress Report Document';
+  const docTypeText = 'Simplyapp Progress Report Document';
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...TEXT_MUTED);
@@ -348,7 +348,7 @@ export function generateProgressReportPdf(report, options = {}) {
       MARGIN,
       PAGE_HEIGHT - 8
     );
-    const footerRight = 'Thinkers Afrika';
+    const footerRight = 'Simplyapp';
     doc.text(footerRight, MARGIN + CONTENT_WIDTH - doc.getTextWidth(footerRight), PAGE_HEIGHT - 8);
   }
 

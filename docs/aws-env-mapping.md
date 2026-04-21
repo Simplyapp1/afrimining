@@ -22,4 +22,4 @@ Use this mapping during deployment. Azure keys stay supported for rollback parit
 
 ## Secret Layout Recommendation
 
-Store one JSON secret in AWS Secrets Manager (example key: `thinkers/<env>/app-env`) with keys such as `SQLSERVER_HOST`, `SQLSERVER_DATABASE`, `SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_PORT`, matching what [`infra/terraform/main.tf`](../infra/terraform/main.tf) outputs for the app container.
+Store one JSON secret in AWS Secrets Manager (example key: `simplyapp/<env>/app-env`) with keys such as `SQLSERVER_HOST`, `SQLSERVER_DATABASE`, `SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_PORT`, matching what [`infra/terraform/main.tf`](../infra/terraform/main.tf) outputs for the app container.

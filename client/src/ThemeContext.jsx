@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useCallback, useLayoutEffect, useState } from 'react';
 
-const STORAGE_KEY = 'thinkers-theme';
+const STORAGE_KEY = 'simplyapp-theme';
+const LEGACY_THEME_KEY = 'thinkers-theme';
 
 const ThemeContext = createContext(null);
 
 function readStoredTheme() {
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
+    const v = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_THEME_KEY);
     if (v === 'dark' || v === 'light') return v;
   } catch (_) {}
   // Default light — matches the app before dark mode existed (do not follow OS preference).
@@ -24,6 +25,7 @@ export function ThemeProvider({ children }) {
     applyDomTheme(theme);
     try {
       localStorage.setItem(STORAGE_KEY, theme);
+      localStorage.removeItem(LEGACY_THEME_KEY);
     } catch (_) {}
   }, [theme]);
 

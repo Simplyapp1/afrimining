@@ -1,6 +1,6 @@
-# Deploying Thinkers on Netlify
+# Deploying Simplyapp on Netlify
 
-This guide covers deploying the **Thinkers** app so the **frontend** runs on Netlify. The **backend** (Express + Azure SQL) must run on a different host.
+This guide covers deploying the **Simplyapp** frontend on Netlify. The **backend** (Express + Azure SQL) must run on a different host.
 
 ---
 
@@ -63,7 +63,7 @@ Note the **API base URL** (e.g. `https://your-api.onrender.com` or `https://your
 
 ```bash
 # Install CLI once: npm install -g netlify-cli
-cd /path/to/thinkers-app
+cd /path/to/simplyapp
 netlify login
 netlify init   # link to existing site or create new
 # Set env var (one-time)

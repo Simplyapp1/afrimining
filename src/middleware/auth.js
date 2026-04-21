@@ -1,7 +1,23 @@
 import { query } from '../db.js';
+import { rolesAllowManagementSurrogateAccess } from '../lib/projectTrackerAccess.js';
+import { resolveUserTenantContext, normTenantId } from '../lib/resolveUserTenantContext.js';
 
 /** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'team_leader_admin', 'performance_evaluations', 'auditor'];
+const PAGE_IDS = [
+  'profile',
+  'management',
+  'users',
+  'tenants',
+  'tasks',
+  'project_tracker',
+  'resources_register',
+  'contractor_management',
+  'recruitment',
+  'accounting_management',
+  'team_leader_admin',
+  'performance_evaluations',
+  'auditor',
+];
 
 /** Only platform super_admin skips page assignments (full app). Everyone else needs user_page_roles rows. */
 export function isPageAccessExempt(user) {
@@ -56,23 +72,25 @@ export async function loadUser(req, res, next) {
           'This account is locked after failed sign-in attempts. A super administrator can unlock it under User management → Block requests, or complete Forgot password to clear the lock after setting a new password.',
       });
     }
-    let tenant_ids = [];
-    try {
-      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @userId`, { userId: req.session.userId });
-      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
-    } catch (_) {}
     const primaryTenantId = get(row, 'tenant_id');
-    if (tenant_ids.length === 0 && primaryTenantId) tenant_ids = [primaryTenantId];
-    const sessionTenantId = req.session.tenantId;
-    const currentTenantId = (sessionTenantId && tenant_ids.includes(sessionTenantId)) ? sessionTenantId : (primaryTenantId || tenant_ids[0] || null);
+    const { tenant_ids, currentTenantId } = await resolveUserTenantContext({
+      userId: req.session.userId,
+      sessionTenantId: req.session.tenantId,
+      primaryTenantId,
+      role: get(row, 'role'),
+    });
+    if (currentTenantId && normTenantId(req.session.tenantId) !== normTenantId(currentTenantId)) {
+      req.session.tenantId = currentTenantId;
+    }
     let tenant_name = get(row, 'tenant_name');
     let tenant_plan = get(row, 'tenant_plan');
-    if (currentTenantId && currentTenantId !== primaryTenantId) {
+    if (currentTenantId) {
       try {
         const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: currentTenantId });
         if (trow.recordset?.[0]) {
-          tenant_name = trow.recordset[0].name ?? trow.recordset[0].name;
-          tenant_plan = trow.recordset[0].plan ?? trow.recordset[0].plan;
+          const tr = trow.recordset[0];
+          tenant_name = tr.name ?? tr.Name ?? tenant_name;
+          tenant_plan = tr.plan ?? tr.Plan ?? tenant_plan;
         }
       } catch (_) {}
     }
@@ -145,7 +163,11 @@ export function requirePageAccess(allowedPageIds) {
     if (req.user.role === 'super_admin') return next();
     const roles = req.user.page_roles || [];
     const roleNorm = roles.map((r) => String(r).toLowerCase());
-    const hasAccess = allowedNorm.some((pid) => roleNorm.includes(pid));
+    const hasAccess = allowedNorm.some((pid) => {
+      if (roleNorm.includes(pid)) return true;
+      if (rolesAllowManagementSurrogateAccess(roleNorm, pid)) return true;
+      return false;
+    });
     if (hasAccess) return next();
     return res.status(403).json({ error: 'You do not have access to this page.' });
   };

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Create application database on SQL Server (e.g. RDS). Connects to `master`, then CREATE DATABASE.
- * Usage: APP_DB_NAME=thinkers node scripts/create-app-database.js
+ * Usage: APP_DB_NAME=simplyapp node scripts/create-app-database.js
  * Requires same env as src/db.js (SQLSERVER_* or legacy AWS_SQL_* / AZURE_SQL_*).
  */
 import 'dotenv/config';
@@ -9,7 +9,7 @@ import sql from 'mssql';
 
 const firstNonEmpty = (...values) => values.find((v) => typeof v === 'string' && v.trim().length > 0);
 
-const dbName = (process.env.APP_DB_NAME || 'thinkers').trim();
+const dbName = (process.env.APP_DB_NAME || 'simplyapp').trim();
 if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
   console.error('APP_DB_NAME must be alphanumeric/underscore only.');
   process.exit(1);

@@ -3,17 +3,18 @@
  * Uses PDFKit built-in fonts only (Helvetica).
  */
 
+/** Navy / dark blue — used across quotation, invoice, PO, and statement PDFs. */
 export const PDF_THEME = {
-  accent: '#7F1D1D', // dark red (brand)
-  accentBar: '#991B1B',
+  accent: '#0f2744',
+  accentBar: '#1e3a8a',
   ink: '#111827',
   inkSoft: '#374151',
   muted: '#6b7280',
   line: '#e5e7eb',
-  tableHead: '#7F1D1D',
-  tableZebra: '#f8fafc',
+  tableHead: '#0f2744',
+  tableZebra: '#f0f7ff',
   panelBg: '#fafafa',
-  totalBar: '#7F1D1D',
+  totalBar: '#0f2744',
 };
 
 const PAGE = { w: 595.28, h: 841.89, margin: 48 };

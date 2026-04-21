@@ -125,7 +125,7 @@ export function buildShiftReportTemplateWordHtml(report, options = {}) {
     logoBlock,
     '<h1>SHIFT REPORT</h1>',
     `<p class="sub">${h(routeLine)}</p>`,
-    `<p class="sub">Thinkers Afrika's Official Controller Shift Documentation</p>`,
+    `<p class="sub">Simplyapp official controller shift documentation</p>`,
     '<hr />',
     sectionBar('Report information'),
     kvTable(infoRows.filter(([, v]) => v != null && String(v).trim() !== '')),

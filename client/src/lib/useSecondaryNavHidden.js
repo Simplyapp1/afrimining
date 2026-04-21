@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const STORAGE_PREFIX = 'thinkers-secondary-nav-hidden-';
+const STORAGE_PREFIX = 'simplyapp-secondary-nav-hidden-';
 
 /**
  * Persisted state for hiding the secondary (in-page) nav so content can use full width.

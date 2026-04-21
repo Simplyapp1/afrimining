@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Thinkers – User & Tenant Management</title>
+    <title>Simplyapp – User & Tenant Management</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <script>
       (function () {
         try {
-          var isDark = localStorage.getItem('thinkers-theme') === 'dark';
+          var isDark = localStorage.getItem('simplyapp-theme') === 'dark' || localStorage.getItem('thinkers-theme') === 'dark';
           document.documentElement.classList.toggle('dark', isDark);
         } catch (e) {
           document.documentElement.classList.remove('dark');

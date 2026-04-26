@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { research as researchApi, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import InfoHint from './components/InfoHint.jsx';
 
 function inputClass() {
   return 'w-full rounded-lg border border-surface-300 bg-white dark:bg-surface-900 px-3 py-2 text-sm text-surface-900 dark:text-surface-100';
@@ -39,6 +40,61 @@ function scanQueueEntryFromFile(file) {
   return { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, file, previewUrl };
 }
 
+function analyzeCameraFrame(videoEl, canvasEl) {
+  if (!videoEl || !canvasEl || videoEl.videoWidth < 100 || videoEl.videoHeight < 100) return null;
+  const w = 320;
+  const h = Math.max(180, Math.round((videoEl.videoHeight / videoEl.videoWidth) * w));
+  canvasEl.width = w;
+  canvasEl.height = h;
+  const ctx = canvasEl.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(videoEl, 0, 0, w, h);
+  const img = ctx.getImageData(0, 0, w, h);
+  const px = img.data;
+  const lum = new Float32Array(w * h);
+  let sum = 0;
+  for (let i = 0, p = 0; i < lum.length; i += 1, p += 4) {
+    const y = px[p] * 0.2126 + px[p + 1] * 0.7152 + px[p + 2] * 0.0722;
+    lum[i] = y;
+    sum += y;
+  }
+  const avg = sum / lum.length;
+  let varianceAcc = 0;
+  for (let i = 0; i < lum.length; i += 1) {
+    const d = lum[i] - avg;
+    varianceAcc += d * d;
+  }
+  const std = Math.sqrt(varianceAcc / lum.length);
+
+  // Simple sharpness proxy from neighboring luminance differences.
+  let edgeAcc = 0;
+  let edgeCount = 0;
+  for (let y = 0; y < h - 1; y += 1) {
+    for (let x = 0; x < w - 1; x += 1) {
+      const i = y * w + x;
+      edgeAcc += Math.abs(lum[i] - lum[i + 1]) + Math.abs(lum[i] - lum[i + w]);
+      edgeCount += 2;
+    }
+  }
+  const edge = edgeCount ? edgeAcc / edgeCount : 0;
+
+  const issues = [];
+  if (avg < 72) issues.push('Too dark — add light or move closer to the light source.');
+  if (avg > 210) issues.push('Too bright / glare — reduce direct light or tilt the page to remove reflections.');
+  if (std < 26) issues.push('Low contrast — avoid shadows and ensure black marks are clearly visible.');
+  if (edge < 14) issues.push('Blurry frame — hold still and keep the page flat/focused.');
+
+  const score = Math.max(0, Math.round(100 - issues.length * 22 - Math.max(0, 16 - edge) * 1.2));
+  return {
+    score,
+    avg,
+    std,
+    edge,
+    status: issues.length ? 'needs_attention' : 'good',
+    issues,
+  };
+}
+
 function VarSelect({ def, value, onChange, disabled }) {
   const opts = useMemo(() => {
     const vl = def?.valueLabels || {};
@@ -69,6 +125,299 @@ function VarSelect({ def, value, onChange, disabled }) {
   );
 }
 
+function DistributionBars({ counts, min, max }) {
+  const entries = [];
+  for (let k = min; k <= max; k += 1) entries.push({ k, n: Number(counts[String(k)] || 0) });
+  const maxN = Math.max(1, ...entries.map((e) => e.n));
+  return (
+    <div className="flex gap-1 h-9 items-end min-w-max">
+      {entries.map(({ k, n }) => (
+        <div key={k} className="flex flex-col items-center w-6 shrink-0">
+          <div
+            className="w-3 rounded-sm bg-brand-500/85 dark:bg-brand-400/75"
+            style={{ height: `${Math.max(n ? 4 : 1, (n / maxN) * 28)}px` }}
+            title={`${k}: ${n}`}
+          />
+          <span className="text-[9px] leading-none text-surface-500 mt-0.5 tabular-nums">{k}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ResearchResultsAnalysis({
+  data,
+  loading,
+  includeDraft,
+  setIncludeDraft,
+  onRefresh,
+  onExport,
+  exportBusy,
+}) {
+  const sectionBlocks = useMemo(() => {
+    if (!data?.variables?.length) return [];
+    const bySec = { A: [], B: [], C: [], D: [] };
+    for (const v of data.variables) {
+      const s = v.section || 'A';
+      if (bySec[s]) bySec[s].push(v);
+    }
+    return ['A', 'B', 'C', 'D'].map((sec) => {
+      const vars = bySec[sec] || [];
+      if (!vars.length) return null;
+      const avgRate = vars.reduce((s, x) => s + (x.response_rate_pct || 0), 0) / vars.length;
+      const likerts = vars.filter((x) => String(x.scale_type || '').startsWith('likert') && x.mean != null);
+      const meanLikert =
+        likerts.length > 0
+          ? Math.round((likerts.reduce((s, x) => s + x.mean, 0) / likerts.length) * 1000) / 1000
+          : null;
+      return {
+        sec,
+        vars,
+        avgRate: Math.round(avgRate * 10) / 10,
+        meanLikert,
+      };
+    }).filter(Boolean);
+  }, [data]);
+
+  if (loading && !data) {
+    return <p className="text-sm text-surface-500">Loading analysis…</p>;
+  }
+
+  const n = data?.participants_in_scope ?? 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        <button type="button" className={btnSecondary()} disabled={loading} onClick={onRefresh}>
+          Refresh analysis
+        </button>
+        {loading ? <span className="text-xs text-surface-500 self-center">Updating…</span> : null}
+        <label className="inline-flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300 cursor-pointer">
+          <input type="checkbox" checked={includeDraft} onChange={(e) => setIncludeDraft(e.target.checked)} />
+          Include draft participants
+        </label>
+        <button type="button" className={btnSecondary()} disabled={exportBusy} onClick={onExport}>
+          Download Excel
+        </button>
+      </div>
+
+      {data?.dataset_note ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
+          {data.dataset_note}
+        </div>
+      ) : null}
+
+      {n === 0 ? null : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950 p-3">
+              <p className="text-xs text-surface-500">In scope</p>
+              <p className="text-xl font-bold text-surface-900 dark:text-surface-50 tabular-nums">{n}</p>
+              <p className="text-[11px] text-surface-500 mt-1">participants</p>
+            </div>
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950 p-3">
+              <p className="text-xs text-surface-500">Complete</p>
+              <p className="text-xl font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
+                {data.complete_count ?? 0}
+              </p>
+            </div>
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950 p-3">
+              <p className="text-xs text-surface-500">Draft</p>
+              <p className="text-xl font-bold text-amber-800 dark:text-amber-200 tabular-nums">{data.draft_count ?? 0}</p>
+            </div>
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950 p-3">
+              <p className="text-xs text-surface-500">Generated</p>
+              <p className="text-sm font-medium text-surface-800 dark:text-surface-200">
+                {data.generated_at ? formatDt(data.generated_at) : '—'}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {sectionBlocks.map((block) => (
+              <div
+                key={block.sec}
+                className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950 p-3 space-y-1"
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Section {block.sec}</p>
+                <p className="text-sm text-surface-800 dark:text-surface-200">
+                  Avg response rate: <strong className="tabular-nums">{block.avgRate}%</strong>
+                </p>
+                {block.meanLikert != null ? (
+                  <p className="text-sm text-surface-800 dark:text-surface-200">
+                    Mean (Likert 1–5): <strong className="tabular-nums">{block.meanLikert}</strong>
+                  </p>
+                ) : (
+                  <p className="text-xs text-surface-500">No Likert items in this section.</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {data.inferential ? (
+            <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4 space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-surface-900 dark:text-surface-100">
+                  Reliability (Cronbach&apos;s α) &amp; factor screening
+                </h3>
+                <p className="text-xs text-surface-500 mt-1 max-w-3xl">
+                  α uses listwise-complete cases on each section&apos;s Likert block (B, C, D). Item–total r correlates each item with the
+                  section total minus that item. Bartlett and eigenvalues are exploratory only — use SPSS/R for CFA/EFA when reporting.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                {(data.inferential.reliability || []).map((rel) => (
+                  <div
+                    key={rel.section}
+                    className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/50 dark:bg-surface-900/40 p-3 space-y-2"
+                  >
+                    <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Section {rel.section}</p>
+                    <p className="text-sm text-surface-800 dark:text-surface-200">
+                      Cronbach&apos;s α:{' '}
+                      <strong className="tabular-nums">{rel.alpha != null ? rel.alpha : '—'}</strong>
+                      {rel.n_listwise != null ? (
+                        <span className="text-surface-500 font-normal">
+                          {' '}
+                          (n = {rel.n_listwise} listwise, k = {rel.k})
+                        </span>
+                      ) : null}
+                    </p>
+                    {rel.note ? <p className="text-xs text-amber-800 dark:text-amber-200">{rel.note}</p> : null}
+                    {rel.items?.length ? (
+                      <div className="overflow-x-auto max-h-48 overflow-y-auto">
+                        <table className="min-w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-surface-500 border-b border-surface-200 dark:border-surface-700">
+                              <th className="py-1 pr-2">Item</th>
+                              <th className="py-1 pr-2 tabular-nums">α if deleted</th>
+                              <th className="py-1 tabular-nums">r (item–total)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rel.items.map((it) => (
+                              <tr key={it.code} className="border-b border-surface-100 dark:border-surface-800/80">
+                                <td className="py-1 pr-2 font-mono font-medium text-brand-600 dark:text-brand-400">{it.code}</td>
+                                <td className="py-1 pr-2 tabular-nums">
+                                  {it.alpha_if_deleted != null ? it.alpha_if_deleted : '—'}
+                                </td>
+                                <td className="py-1 tabular-nums">
+                                  {it.item_total_correlation != null ? it.item_total_correlation : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {data.inferential.exploratory_factor_screening ? (
+                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/30 dark:bg-surface-900/30 p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">All Likert items (V6–V47)</p>
+                  <p className="text-sm text-surface-800 dark:text-surface-200">
+                    Listwise n:{' '}
+                    <strong className="tabular-nums">{data.inferential.exploratory_factor_screening.n_listwise}</strong>
+                    {' · '}
+                    Items:{' '}
+                    <strong className="tabular-nums">{data.inferential.exploratory_factor_screening.p_items}</strong>
+                  </p>
+                  {data.inferential.exploratory_factor_screening.bartlett_note ? (
+                    <p className="text-xs text-amber-800 dark:text-amber-200">
+                      {data.inferential.exploratory_factor_screening.bartlett_note}
+                    </p>
+                  ) : null}
+                  {data.inferential.exploratory_factor_screening.bartlett_chi_sq != null ? (
+                    <p className="text-sm text-surface-800 dark:text-surface-200">
+                      Bartlett test of sphericity: χ² ≈{' '}
+                      <strong className="tabular-nums">{data.inferential.exploratory_factor_screening.bartlett_chi_sq}</strong>
+                      {data.inferential.exploratory_factor_screening.bartlett_df != null ? (
+                        <>
+                          {' '}
+                          (df = {data.inferential.exploratory_factor_screening.bartlett_df})
+                        </>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  {data.inferential.exploratory_factor_screening.eigenvalues_top?.length ? (
+                    <div>
+                      <p className="text-xs text-surface-500 mb-1">
+                        Approximate top eigenvalues of R (scree-style; power method + deflation):
+                      </p>
+                      <p className="text-xs font-mono text-surface-700 dark:text-surface-300 break-all">
+                        {data.inferential.exploratory_factor_screening.eigenvalues_top.join(', ')}
+                      </p>
+                    </div>
+                  ) : null}
+                  {data.inferential.exploratory_factor_screening.interpretation ? (
+                    <p className="text-xs text-surface-500">{data.inferential.exploratory_factor_screening.interpretation}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {['A', 'B', 'C', 'D'].map((sec) => {
+            const block = sectionBlocks.find((b) => b.sec === sec);
+            if (!block) return null;
+            return (
+              <div
+                key={sec}
+                className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 overflow-hidden"
+              >
+                <div className="px-4 py-2 border-b border-surface-200 dark:border-surface-800 bg-surface-50/80 dark:bg-surface-900/50">
+                  <h3 className="text-sm font-bold text-surface-900 dark:text-surface-100">Section {sec} — full distribution</h3>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-[720px] w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-surface-500 border-b border-surface-200 dark:border-surface-700">
+                        <th className="px-3 py-2 font-medium w-14">Var</th>
+                        <th className="px-3 py-2 font-medium min-w-[180px]">Label</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">n</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">Missing</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">Rate %</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">Mean</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">SD</th>
+                        <th className="px-3 py-2 font-medium min-w-[200px]">Distribution (code counts)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {block.vars.map((row) => (
+                        <tr
+                          key={row.code}
+                          className="border-b border-surface-100 dark:border-surface-800/80 align-top hover:bg-surface-50/50 dark:hover:bg-surface-900/30"
+                        >
+                          <td className="px-3 py-2 font-mono text-xs font-semibold text-brand-600 dark:text-brand-400">
+                            {row.code}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-surface-700 dark:text-surface-300 max-w-xs">{row.label}</td>
+                          <td className="px-3 py-2 tabular-nums text-surface-800 dark:text-surface-200">{row.n_valid}</td>
+                          <td className="px-3 py-2 tabular-nums text-surface-800 dark:text-surface-200">{row.n_missing}</td>
+                          <td className="px-3 py-2 tabular-nums text-surface-800 dark:text-surface-200">{row.response_rate_pct}</td>
+                          <td className="px-3 py-2 tabular-nums text-surface-800 dark:text-surface-200">
+                            {row.mean != null ? row.mean : '—'}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums text-surface-800 dark:text-surface-200">
+                            {row.std_sample != null ? row.std_sample : '—'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <DistributionBars counts={row.counts} min={row.min} max={row.max} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Research() {
   const [, setNavHidden] = useSecondaryNavHidden('research');
   useEffect(() => {
@@ -84,13 +433,21 @@ export default function Research() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [exportDraft, setExportDraft] = useState(false);
+  const [researchTab, setResearchTab] = useState('capture');
+  const [analysisData, setAnalysisData] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const [analysisIncludeDraft, setAnalysisIncludeDraft] = useState(false);
   const fileInputRef = useRef(null);
   /** Queued page images (camera captures or files) — only in memory until you run the reader. */
   const [pendingScans, setPendingScans] = useState([]);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState('');
+  const [liveQuality, setLiveQuality] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const rowRefs = useRef({});
+  const [lastReaderRunAt, setLastReaderRunAt] = useState(null);
   const pendingScansRef = useRef([]);
   pendingScansRef.current = pendingScans;
 
@@ -102,6 +459,7 @@ export default function Research() {
 
   useEffect(() => {
     setCameraOpen(false);
+    setLastReaderRunAt(null);
     setPendingScans((prev) => {
       prev.forEach(revokeScanPreview);
       return [];
@@ -152,7 +510,20 @@ export default function Research() {
       if (stream) stream.getTracks().forEach((t) => t.stop());
       const el = videoRef.current;
       if (el) el.srcObject = null;
+      setLiveQuality(null);
     };
+  }, [cameraOpen]);
+
+  useEffect(() => {
+    if (!cameraOpen) return undefined;
+    const tick = () => {
+      if (!videoRef.current || !canvasRef.current) return;
+      const q = analyzeCameraFrame(videoRef.current, canvasRef.current);
+      if (q) setLiveQuality(q);
+    };
+    tick();
+    const id = setInterval(tick, 900);
+    return () => clearInterval(id);
   }, [cameraOpen]);
 
   const loadList = useCallback(async () => {
@@ -160,6 +531,25 @@ export default function Research() {
     setParticipants(d.participants || []);
     return d.participants || [];
   }, []);
+
+  const loadAnalysis = useCallback(async () => {
+    setAnalysisLoading(true);
+    setAnalysisError('');
+    try {
+      const d = await researchApi.analysis(analysisIncludeDraft);
+      setAnalysisData(d);
+    } catch (e) {
+      setAnalysisError(e.message || 'Failed to load analysis');
+      setAnalysisData(null);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [analysisIncludeDraft]);
+
+  useEffect(() => {
+    if (researchTab !== 'analysis') return;
+    loadAnalysis();
+  }, [researchTab, loadAnalysis]);
 
   const loadDetail = useCallback(async (id) => {
     if (!id) {
@@ -228,6 +618,11 @@ export default function Research() {
 
   const allCaptured = variables.length > 0 && missingCount === 0;
   const isComplete = detail?.status === 'complete';
+  const variableByCode = useMemo(() => {
+    const out = {};
+    for (const v of variables) out[String(v.code || '').toUpperCase()] = v;
+    return out;
+  }, [variables]);
 
   /** Server asked for clarity; hide row prompt once user has picked an answer locally (before save). */
   const displayClarifyList = useMemo(
@@ -241,6 +636,30 @@ export default function Research() {
     }
     return m;
   }, [displayClarifyList]);
+  const clarityBySection = useMemo(() => {
+    const groups = {};
+    for (const item of displayClarifyList) {
+      const code = String(item?.code || '').toUpperCase();
+      if (!code) continue;
+      const def = variableByCode[code];
+      const section = def?.section || '?';
+      if (!groups[section]) groups[section] = [];
+      groups[section].push({
+        code,
+        label: def?.label || '',
+        reason: item?.reason || 'Could not read this field clearly.',
+      });
+    }
+    return Object.entries(groups).sort(([a], [b]) => String(a).localeCompare(String(b)));
+  }, [displayClarifyList, variableByCode]);
+  const latestScanReadable = !!detail?.last_scan_at && displayClarifyList.length === 0;
+
+  const jumpToField = (code) => {
+    const key = String(code || '').toUpperCase();
+    const el = rowRefs.current[key];
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const onNewParticipant = async () => {
     setError('');
@@ -296,6 +715,7 @@ export default function Research() {
       const r = await researchApi.scanParticipant(selectedId, fd);
       setLocalValues((prev) => ({ ...prev, ...(r.values || {}) }));
       await loadDetail(selectedId);
+      setLastReaderRunAt(new Date().toISOString());
       await loadList();
       if (r.all_fields_captured) {
         setError('');
@@ -382,8 +802,19 @@ export default function Research() {
     }
   };
 
+  const onExportAnalysis = async () => {
+    setError('');
+    try {
+      const name = `research_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      await downloadAttachmentWithAuth(researchApi.exportUrl(analysisIncludeDraft), name);
+    } catch (e) {
+      setError(e.message || 'Export failed');
+    }
+  };
+
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+    <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin">
+      <div className="w-full max-w-7xl mx-auto space-y-6">
       {cameraOpen ? (
         <div
           className="fixed inset-0 z-[100] flex flex-col bg-black"
@@ -417,6 +848,33 @@ export default function Research() {
           {cameraError ? (
             <div className="px-3 py-2 text-sm text-amber-100 bg-amber-950/90">{cameraError}</div>
           ) : null}
+          {!cameraError && liveQuality ? (
+            <div
+              className={`px-3 py-2 text-sm ${
+                liveQuality.status === 'good'
+                  ? 'text-emerald-100 bg-emerald-950/90'
+                  : 'text-amber-100 bg-amber-950/90'
+              }`}
+            >
+              {liveQuality.status === 'good' ? (
+                <p>
+                  <strong>Camera quality: green.</strong> Lighting and sharpness look good. Capture pages now.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  <p className="font-semibold">
+                    Camera quality needs attention ({liveQuality.score}%)
+                  </p>
+                  <ul className="list-disc pl-5">
+                    {liveQuality.issues.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                    <li>Keep the full page inside the guide lines and avoid tilted angles.</li>
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center justify-center gap-3 px-3 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] bg-surface-950">
             <button
               type="button"
@@ -431,17 +889,69 @@ export default function Research() {
           </div>
         </div>
       ) : null}
-      <header className="space-y-2">
-        <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-50">Research — questionnaire capture</h1>
-        <p className="text-sm text-surface-600 dark:text-surface-400 max-w-3xl">
-          Chapter 4 data entry for the coal road freight study (V1–V47). Use the in-app camera (live preview, tap capture — nothing
-          is saved to your camera roll) or add files from your device. AI assist for “Run reader” needs{' '}
-          <code className="text-xs bg-surface-100 dark:bg-surface-800 px-1 rounded">OPENAI_API_KEY</code> in the server{' '}
-          <code className="text-xs bg-surface-100 dark:bg-surface-800 px-1 rounded">.env</code> and a server restart; without it, fill
-          V1–V47 manually. With AI on, anything not clearly readable stays empty and you are prompted field-by-field — the app does
-          not guess. Review every value against the paper before marking complete. Export a wide-format Excel workbook (Data +
-          Codebook) for analysis.
-        </p>
+      <header className="space-y-3">
+        <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-50">Research</h1>
+        <div className="flex gap-0 border-b border-surface-200 dark:border-surface-700 overflow-x-auto">
+          <button
+            type="button"
+            className={`shrink-0 px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+              researchTab === 'capture'
+                ? 'border-brand-600 text-brand-700 dark:text-brand-300'
+                : 'border-transparent text-surface-600 hover:text-surface-900 dark:text-surface-400 dark:hover:text-surface-100 font-medium'
+            }`}
+            onClick={() => {
+              setResearchTab('capture');
+              setError('');
+            }}
+          >
+            Questionnaire capture
+          </button>
+          <button
+            type="button"
+            className={`shrink-0 px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+              researchTab === 'analysis'
+                ? 'border-brand-600 text-brand-700 dark:text-brand-300'
+                : 'border-transparent text-surface-600 hover:text-surface-900 dark:text-surface-400 dark:hover:text-surface-100 font-medium'
+            }`}
+            onClick={() => {
+              setResearchTab('analysis');
+              setError('');
+            }}
+          >
+            Results analysis
+          </button>
+        </div>
+        {researchTab === 'capture' ? (
+          <div className="flex items-start gap-2 text-sm text-surface-600 dark:text-surface-400">
+            <span>Use the info icon for capture and AI guidance.</span>
+            <InfoHint
+              title="Research capture help"
+              text="Chapter 4 data entry for the coal road freight study (V1–V47). Use the in-app camera (live preview, tap capture — nothing is saved to your camera roll) or add files from your device."
+              bullets={[
+                'AI assist for “Run reader” needs OPENAI_API_KEY in the server .env and a server restart.',
+                'Without AI, fill V1–V47 manually.',
+                'With AI on, anything not clearly readable stays empty and you are prompted field-by-field — the app does not guess.',
+                'Review every value against the paper before marking complete.',
+                'Export a wide-format Excel workbook (Data + Codebook) for analysis.',
+              ]}
+            />
+          </div>
+        ) : (
+          <div className="flex items-start gap-2 text-sm text-surface-600 dark:text-surface-400">
+            <span>Descriptive statistics and distributions across all participants in scope.</span>
+            <InfoHint
+              title="Results analysis help"
+              text="This tab summarises captured data: response rates, counts per answer code, means and standard deviations. Use “complete only” for publication-ready stats, or include drafts to monitor fieldwork progress."
+              bullets={[
+                'Likert items (V6–V47): codes 1 = strongly disagree … 5 = strongly agree.',
+                'Section cards show average response rate and mean score across Likert items in that section.',
+                'Cronbach’s α, α-if-item-deleted, and item–total correlations use listwise-complete cases per section (B, C, D).',
+                'Bartlett’s test and top eigenvalues of R are exploratory (not rotated factor loadings); use SPSS/R for full EFA/CFA.',
+                'Download Excel for raw rows and the full codebook.',
+              ]}
+            />
+          </div>
+        )}
       </header>
 
       {error ? (
@@ -450,6 +960,8 @@ export default function Research() {
         </div>
       ) : null}
 
+      {researchTab === 'capture' ? (
+        <>
       <div className="flex flex-wrap gap-2 items-center">
         <button type="button" className={btnPrimary()} disabled={busy} onClick={onNewParticipant}>
           New participant
@@ -466,10 +978,10 @@ export default function Research() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 sm:gap-6">
+        <div className="xl:col-span-4 rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4">
           <h2 className="text-sm font-semibold text-surface-800 dark:text-surface-200 mb-3">Participants</h2>
-          <ul className="space-y-1 max-h-[480px] overflow-y-auto">
+          <ul className="space-y-1 max-h-[300px] sm:max-h-[420px] xl:max-h-[calc(100vh-20rem)] overflow-y-auto">
             {participants.map((p) => (
               <li key={p.id}>
                 <button
@@ -495,12 +1007,12 @@ export default function Research() {
           {!participants.length ? <p className="text-sm text-surface-500">No participants yet. Create one to begin.</p> : null}
         </div>
 
-        <div className="lg:col-span-2 space-y-4">
+        <div className="xl:col-span-8 space-y-4">
           {!selectedId ? (
             <p className="text-surface-600 dark:text-surface-400 text-sm">Select a participant or create a new one.</p>
           ) : (
             <>
-              <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4 space-y-3">
+              <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-3 sm:p-4 space-y-3">
                 <div className="flex flex-wrap justify-between gap-2 items-start">
                   <div>
                     <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">{detail?.participant_code}</h2>
@@ -509,7 +1021,7 @@ export default function Research() {
                       {detail?.last_scan_at ? ` · Last scan ${formatDt(detail.last_scan_at)}` : ''}
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2 w-full sm:w-auto">
                     <button type="button" className={btnDanger()} disabled={busy || isComplete} onClick={onDelete}>
                       Delete
                     </button>
@@ -518,12 +1030,19 @@ export default function Research() {
 
                 {displayClarifyList.length > 0 && !isComplete ? (
                   <div className="rounded-lg border border-amber-400 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
-                    <p className="font-semibold mb-2">Please clarify from the paper (reader did not infer these)</p>
-                    <ul className="list-disc pl-5 space-y-1 max-h-48 overflow-y-auto">
+                    <p className="font-semibold mb-2">Reader found unclear fields ({displayClarifyList.length})</p>
+                    <ul className="list-disc pl-5 space-y-2 max-h-48 overflow-y-auto">
                       {displayClarifyList.map((item) => (
                         <li key={item.code}>
                           <strong>{item.code}</strong>
                           {item.reason ? ` — ${item.reason}` : ''}
+                          <button
+                            type="button"
+                            className="ml-2 text-xs underline underline-offset-2"
+                            onClick={() => jumpToField(item.code)}
+                          >
+                            Go to field
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -554,6 +1073,44 @@ export default function Research() {
                     you run the reader — they are not written to your gallery. Use good lighting; anything unclear is left for you to
                     enter.
                   </p>
+                  {detail?.last_scan_at || lastReaderRunAt ? (
+                    displayClarifyList.length > 0 ? (
+                      <div className="rounded-lg border border-amber-400 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 space-y-2">
+                        <p className="font-semibold">
+                          Visibility diagnostics: {displayClarifyList.length} field{displayClarifyList.length === 1 ? '' : 's'} not clearly readable.
+                        </p>
+                        <p className="text-xs opacity-90">
+                          Re-scan with better alignment/lighting, or fill these exact fields manually.
+                        </p>
+                        <div className="space-y-2 max-h-52 overflow-y-auto">
+                          {clarityBySection.map(([section, entries]) => (
+                            <div key={section}>
+                              <p className="text-xs font-semibold uppercase tracking-wide">Section {section}</p>
+                              <ul className="list-disc pl-5 mt-1 space-y-1">
+                                {entries.map((x) => (
+                                  <li key={x.code}>
+                                    <strong>{x.code}</strong>
+                                    {x.label ? ` (${x.label})` : ''}: {x.reason}
+                                    <button
+                                      type="button"
+                                      className="ml-2 text-xs underline underline-offset-2"
+                                      onClick={() => jumpToField(x.code)}
+                                    >
+                                      Go to field
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : latestScanReadable ? (
+                      <div className="rounded-lg border border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
+                        <strong>Visibility diagnostics: green.</strong> The latest scan is clearly readable and no unclear fields were detected.
+                      </div>
+                    ) : null
+                  ) : null}
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -609,7 +1166,7 @@ export default function Research() {
                           </button>
                         </div>
                       </div>
-                      <div className="flex gap-2 overflow-x-auto pb-1">
+                      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
                         {pendingScans.map((entry, idx) => (
                           <div key={entry.id} className="relative shrink-0 w-20">
                             <img
@@ -647,7 +1204,8 @@ export default function Research() {
                   />
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="sticky bottom-0 z-20 -mx-3 px-3 py-3 bg-white/95 dark:bg-surface-950/95 backdrop-blur border-t border-surface-200 dark:border-surface-800 sm:static sm:z-auto sm:mx-0 sm:px-0 sm:py-0 sm:bg-transparent sm:backdrop-blur-none sm:border-0">
+                  <div className="flex flex-wrap gap-2">
                   <button type="button" className={btnSecondary()} disabled={busy || isComplete} onClick={onSaveDraft}>
                     Save draft
                   </button>
@@ -659,6 +1217,7 @@ export default function Research() {
                   >
                     Mark complete
                   </button>
+                  </div>
                 </div>
               </div>
 
@@ -666,7 +1225,7 @@ export default function Research() {
                 (bySection[sec] || []).length ? (
                   <div
                     key={sec}
-                    className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4"
+                    className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-3 sm:p-4"
                   >
                     <h3 className="text-sm font-bold text-surface-900 dark:text-surface-100 mb-3 tracking-wide">
                       SECTION {sec}
@@ -677,6 +1236,9 @@ export default function Research() {
                         return (
                         <div
                           key={v.code}
+                          ref={(el) => {
+                            if (el) rowRefs.current[String(v.code).toUpperCase()] = el;
+                          }}
                           className={`grid grid-cols-1 md:grid-cols-12 gap-2 md:items-start border-b border-surface-100 dark:border-surface-900 pb-3 ${
                             ask ? 'rounded-lg border-2 border-amber-400 bg-amber-50/60 dark:bg-amber-950/25 dark:border-amber-600 p-3 -mx-1' : ''
                           }`}
@@ -706,6 +1268,26 @@ export default function Research() {
             </>
           )}
         </div>
+      </div>
+        </>
+      ) : (
+        <>
+          {analysisError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+              {analysisError}
+            </div>
+          ) : null}
+          <ResearchResultsAnalysis
+            data={analysisData}
+            loading={analysisLoading}
+            includeDraft={analysisIncludeDraft}
+            setIncludeDraft={setAnalysisIncludeDraft}
+            onRefresh={loadAnalysis}
+            onExport={onExportAnalysis}
+            exportBusy={busy}
+          />
+        </>
+      )}
       </div>
     </div>
   );

@@ -15,6 +15,7 @@ import {
   buildCodebookRows,
 } from '../lib/researchQuestionnaireSchema.js';
 import { extractQuestionnaireFromImages, needsClarificationFromStoredPayload } from '../lib/researchVisionExtract.js';
+import { computeResearchInferential } from '../lib/researchInferential.js';
 
 const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -367,6 +368,134 @@ router.post('/participants/:id/scan', upload.array('images', 12), async (req, re
       ready_for_new_participant: validation.isComplete,
       reader_never_guesses:
         'Any field the reader could not see clearly was left empty and listed below. Enter the correct code from the paper before marking complete.',
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Aggregate descriptive stats for all participants in scope (complete only, or include drafts). */
+router.get('/analysis', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'Tenant required.' });
+    const includeDraft = req.query.include_draft === '1' || req.query.include_draft === 'true';
+    const statusFilter = includeDraft ? '' : `AND p.status = N'complete'`;
+
+    const pr = await query(
+      `SELECT p.id, p.status, p.participant_code
+       FROM research_participants p
+       WHERE p.tenant_id = @tenantId ${statusFilter}`,
+      { tenantId }
+    );
+    const pRows = pr.recordset || [];
+    const participantIds = pRows.map((row) => get(row, 'id')).filter(Boolean);
+    let completeCount = 0;
+    let draftCount = 0;
+    for (const row of pRows) {
+      if (get(row, 'status') === 'complete') completeCount += 1;
+      else draftCount += 1;
+    }
+
+    if (participantIds.length === 0) {
+      return res.json({
+        generated_at: new Date().toISOString(),
+        include_draft: includeDraft,
+        participants_in_scope: 0,
+        complete_count: completeCount,
+        draft_count: draftCount,
+        dataset_note: includeDraft
+          ? 'No participants found for this tenant yet.'
+          : 'No completed participants yet. Complete records or enable “include draft” to see statistics.',
+        variables: [],
+        inferential: null,
+      });
+    }
+
+    const valsR = await query(
+      `SELECT v.participant_id, v.var_name, v.value_int
+       FROM research_participant_values v
+       INNER JOIN research_participants p ON p.id = v.participant_id
+       WHERE p.tenant_id = @tenantId ${statusFilter}`,
+      { tenantId }
+    );
+
+    const byPart = new Map();
+    for (const row of valsR.recordset || []) {
+      const pid = get(row, 'participant_id');
+      const vn = String(get(row, 'var_name') || '').toUpperCase();
+      const vi = get(row, 'value_int');
+      if (!pid || !vn) continue;
+      if (!byPart.has(pid)) byPart.set(pid, {});
+      byPart.get(pid)[vn] = vi;
+    }
+
+    const n = participantIds.length;
+    const variables = [];
+
+    for (const code of VAR_ORDER) {
+      const def = VARIABLE_DEFS[code];
+      const { min, max } = def;
+      const values = [];
+      for (const pid of participantIds) {
+        const raw = byPart.get(pid)?.[code];
+        const norm = normalizeVarValue(code, raw);
+        if (norm != null) values.push(norm);
+      }
+      const nValid = values.length;
+      const nMissing = n - nValid;
+      const responseRatePct = n ? Math.round((nValid / n) * 1000) / 10 : 0;
+
+      const counts = {};
+      for (let k = min; k <= max; k += 1) counts[String(k)] = 0;
+      for (const v of values) {
+        if (v >= min && v <= max) counts[String(v)] = (counts[String(v)] || 0) + 1;
+      }
+
+      let mean = null;
+      let stdSample = null;
+      if (nValid > 0) {
+        const sum = values.reduce((a, b) => a + b, 0);
+        mean = Math.round((sum / nValid) * 1000) / 1000;
+        if (nValid >= 2) {
+          const m = sum / nValid;
+          const varSum = values.reduce((s, x) => s + (x - m) ** 2, 0);
+          stdSample = Math.round(Math.sqrt(varSum / (nValid - 1)) * 1000) / 1000;
+        }
+      }
+
+      variables.push({
+        code,
+        section: def.section,
+        question_no: def.questionNo,
+        label: def.label,
+        scale_type: def.type,
+        min,
+        max,
+        n_participants: n,
+        n_valid: nValid,
+        n_missing: nMissing,
+        response_rate_pct: responseRatePct,
+        counts,
+        mean,
+        std_sample: stdSample,
+      });
+    }
+
+    const inferential = computeResearchInferential(byPart, participantIds);
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      include_draft: includeDraft,
+      participants_in_scope: n,
+      complete_count: includeDraft ? completeCount : n,
+      draft_count: includeDraft ? draftCount : 0,
+      dataset_note:
+        !includeDraft && completeCount === 0
+          ? 'Statistics include only completed participants. No completed records yet.'
+          : null,
+      variables,
+      inferential,
     });
   } catch (e) {
     next(e);

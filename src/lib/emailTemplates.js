@@ -80,7 +80,7 @@ function simplyappDocumentTable({
             <td style="background:${footerStripBg};padding:16px 28px;border-top:1px solid ${footerStripBorder};">
               <p style="margin:0;font-size:11px;color:${mutedSmall};text-align:center;line-height:1.65;">
                 You are receiving this because your organisation uses Simplyapp.<br/>
-                <span style="color:${mutedTiny};">© ${new Date().getFullYear()} Lean and Maoto Tech Solutions</span>
+                <span style="color:${mutedTiny};">© ${new Date().getFullYear()} Developed by Lean and Phemelo Mogashoa (Vincent).</span>
               </p>
             </td>
           </tr>

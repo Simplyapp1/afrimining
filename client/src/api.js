@@ -103,6 +103,8 @@ export const research = {
   patchParticipant: (id, body) => request(`/research/participants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   scanParticipant: (id, formData) => requestForm(`/research/participants/${id}/scan`, formData),
   deleteParticipant: (id) => request(`/research/participants/${id}`, { method: 'DELETE' }),
+  analysis: (includeDraft) =>
+    request(`/research/analysis${includeDraft ? '?include_draft=1' : ''}`),
   exportUrl: (includeDraft) => `${API}/research/export.xlsx${includeDraft ? '?include_draft=1' : ''}`,
 };
 

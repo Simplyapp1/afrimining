@@ -21,6 +21,7 @@ import userCareerRoutes from './src/routes/userCareer.js';
 import tasksRoutes, { runOverdueTaskNotifications, runTaskReminderNotifications } from './src/routes/tasks.js';
 import projectTrackerRoutes from './src/routes/projectTracker.js';
 import resourcesRegisterRoutes from './src/routes/resourcesRegister.js';
+import researchRoutes from './src/routes/research.js';
 import contractorRoutes from './src/routes/contractor.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
@@ -132,6 +133,7 @@ app.use('/api/user-career', userCareerRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/project-tracker', projectTrackerRoutes);
 app.use('/api/resources-register', resourcesRegisterRoutes);
+app.use('/api/research', researchRoutes);
 app.use('/api/contractor', contractorRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".

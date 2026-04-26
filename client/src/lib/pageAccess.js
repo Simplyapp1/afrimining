@@ -7,6 +7,7 @@ export const PATH_PAGE_IDS = {
   '/tasks-tracker': 'tasks',
   '/project-tracker': 'project_tracker',
   '/resources-register': 'resources_register',
+  '/research': 'research',
   '/contractor-management': 'contractor_management',
   '/recruitment': 'recruitment',
   '/accounting-management': 'accounting_management',
@@ -24,6 +25,7 @@ export const ALL_PATHS_ORDER = [
   '/tasks-tracker',
   '/project-tracker',
   '/resources-register',
+  '/research',
   '/contractor-management',
   '/users',
   '/tenants',
@@ -55,7 +57,7 @@ export function canAccessPage(user, pageId) {
    * Keeps sidebar/API aligned with src/lib/projectTrackerAccess.js on the server.
    */
   if (
-    (pid === 'project_tracker' || pid === 'resources_register') &&
+    (pid === 'project_tracker' || pid === 'resources_register' || pid === 'research') &&
     (norm.includes('tasks') || norm.includes('management') || norm.includes('users') || norm.includes('tenants'))
   ) {
     return true;

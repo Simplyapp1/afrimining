@@ -1,11 +1,4 @@
--- Recreate CK_user_page_roles_page_id with the full allowed set.
--- Keep in sync with src/routes/users.js PAGE_IDS plus legacy portal page_ids:
---   contractor, command_centre, access_management, rector, transport_operations,
---   tracking_integration, fuel_supply_management, fuel_customer_orders.
--- Run: npm run db:user-page-roles-sync-check
-
-DELETE FROM user_page_roles WHERE page_id = N'letters';
-GO
+-- Add 'research' to user_page_roles.page_id CHECK. Keep in sync with sync-user-page-roles-check-constraint.sql.
 
 IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_user_page_roles_page_id' AND parent_object_id = OBJECT_ID('user_page_roles'))
   ALTER TABLE user_page_roles DROP CONSTRAINT CK_user_page_roles_page_id;

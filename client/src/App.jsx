@@ -17,6 +17,7 @@ import Auditor from './Auditor';
 import TasksTracker from './TasksTracker.jsx';
 import ProjectTracker from './ProjectTracker.jsx';
 import ResourcesRegister from './ResourcesRegister.jsx';
+import Research from './Research.jsx';
 import ContractorManagement from './ContractorManagement.jsx';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
@@ -90,6 +91,7 @@ function AppRoutes() {
         <Route path="tasks-tracker" element={<PageGate pathKey="/tasks-tracker"><TasksTracker /></PageGate>} />
         <Route path="project-tracker" element={<PageGate pathKey="/project-tracker"><ProjectTracker /></PageGate>} />
         <Route path="resources-register" element={<PageGate pathKey="/resources-register"><ResourcesRegister /></PageGate>} />
+        <Route path="research" element={<PageGate pathKey="/research"><Research /></PageGate>} />
         <Route
           path="contractor-management"
           element={

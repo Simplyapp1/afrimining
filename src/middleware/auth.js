@@ -11,6 +11,7 @@ const PAGE_IDS = [
   'tasks',
   'project_tracker',
   'resources_register',
+  'research',
   'contractor_management',
   'recruitment',
   'accounting_management',

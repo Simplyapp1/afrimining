@@ -15,6 +15,7 @@ const PAGE_ROLES = [
   { id: 'tasks', label: 'Tasks tracker' },
   { id: 'project_tracker', label: 'Project tracker' },
   { id: 'resources_register', label: 'Resources register' },
+  { id: 'research', label: 'Research (questionnaire capture)' },
   { id: 'contractor_management', label: 'Contractor management' },
   { id: 'recruitment', label: 'Recruitment' },
   { id: 'accounting_management', label: 'Accounting management' },

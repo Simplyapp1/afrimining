@@ -65,6 +65,7 @@
     "db:tasks-tracker-expand": "node scripts/run-tasks-tracker-expand.js",
     "db:project-tracker": "node scripts/run-project-tracker-schema.js",
     "db:resources-register": "node scripts/run-resources-register-schema.js",
+    "db:research-capture": "node scripts/run-research-capture-schema.js",
     "db:tasks-library": "node scripts/run-tasks-library-schema.js",
     "db:remove-operations-modules": "node scripts/run-remove-operations-modules.js",
     "db:tracking-integration": "node scripts/run-tracking-integration-schema.js",

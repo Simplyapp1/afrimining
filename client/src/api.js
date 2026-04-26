@@ -75,6 +75,37 @@ async function request(path, options = {}) {
   return data;
 }
 
+async function requestForm(path, formData) {
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+  } catch (err) {
+    throw wrapNetworkError(err);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const base = data.error || res.statusText;
+    const hint = data.hint ? ` ${data.hint}` : '';
+    throw new Error(`${base}${hint}`.trim());
+  }
+  return data;
+}
+
+export const research = {
+  schema: () => request('/research/schema'),
+  listParticipants: () => request('/research/participants'),
+  createParticipant: (body) => request('/research/participants', { method: 'POST', body: JSON.stringify(body || {}) }),
+  getParticipant: (id) => request(`/research/participants/${id}`),
+  patchParticipant: (id, body) => request(`/research/participants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  scanParticipant: (id, formData) => requestForm(`/research/participants/${id}/scan`, formData),
+  deleteParticipant: (id) => request(`/research/participants/${id}`, { method: 'DELETE' }),
+  exportUrl: (includeDraft) => `${API}/research/export.xlsx${includeDraft ? '?include_draft=1' : ''}`,
+};
+
 export const auth = {
   login: (email, password, location) =>
     request('/auth/login', {

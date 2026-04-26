@@ -1,8 +1,8 @@
 /**
  * Management-area modules that share the same implicit page access (tasks / management / users / tenants).
- * Keep in sync with client/src/lib/pageAccess.js.
+ * Keep in sync with client/src/lib/pageAccess.js (project tracker, resources register, research).
  */
-const SURROGATE_PAGE_IDS = ['project_tracker', 'resources_register'];
+const SURROGATE_PAGE_IDS = ['project_tracker', 'resources_register', 'research'];
 
 const IMPLICIT_ROLES = ['tasks', 'management', 'users', 'tenants'];
 

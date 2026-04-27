@@ -44,8 +44,8 @@ function makeScannerTag(user) {
   const raw = String(user?.full_name || user?.email || user?.id || 'USER')
     .trim()
     .toUpperCase();
-  const collapsed = raw.replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return (collapsed || 'USER').slice(0, 12);
+  const first = raw.replace(/[^A-Z0-9]/g, '').charAt(0);
+  return first || 'U';
 }
 
 /** Last scan payload: current envelope, or legacy flat / `{ values, needs_clarification }` / extraction raw JSON. */

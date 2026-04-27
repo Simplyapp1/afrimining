@@ -78,6 +78,39 @@ function analyzeCameraFrame(videoEl, canvasEl) {
   }
   const edge = edgeCount ? edgeAcc / edgeCount : 0;
 
+  /** Centre “+” / crosshair heuristic: strong horizontal AND vertical edges through frame centre. */
+  const cx = Math.floor(w / 2);
+  const cy = Math.floor(h / 2);
+  let hLine = 0;
+  let hN = 0;
+  for (let x = 1; x < w - 1; x += 1) {
+    hLine += Math.abs(lum[cy * w + x] - lum[cy * w + (x - 1)]);
+    hN += 1;
+  }
+  hLine /= Math.max(1, hN);
+  let vLine = 0;
+  let vN = 0;
+  for (let y = 1; y < h - 1; y += 1) {
+    vLine += Math.abs(lum[y * w + cx] - lum[(y - 1) * w + cx]);
+    vN += 1;
+  }
+  vLine /= Math.max(1, vN);
+  const minAxis = Math.min(hLine, vLine);
+  const maxAxis = Math.max(hLine, vLine);
+  const axisBalance = maxAxis > 0 ? minAxis / maxAxis : 0;
+  const crossLikely = minAxis > 4.2 && axisBalance > 0.32;
+  const crossHint = crossLikely
+    ? {
+        status: 'visible',
+        detail:
+          'Centre cross detected — alignment mark or printed + is likely visible. You can capture when the page is steady.',
+      }
+    : {
+        status: 'uncertain',
+        detail:
+          'Centre cross not clear — align the questionnaire + or alignment mark with the on-screen guides before capturing.',
+      };
+
   const issues = [];
   if (avg < 72) issues.push('Too dark — add light or move closer to the light source.');
   if (avg > 210) issues.push('Too bright / glare — reduce direct light or tilt the page to remove reflections.');
@@ -92,6 +125,8 @@ function analyzeCameraFrame(videoEl, canvasEl) {
     edge,
     status: issues.length ? 'needs_attention' : 'good',
     issues,
+    crossHint,
+    crossMetrics: { hLine: Math.round(hLine * 100) / 100, vLine: Math.round(vLine * 100) / 100, axisBalance: Math.round(axisBalance * 100) / 100 },
   };
 }
 
@@ -432,6 +467,10 @@ export default function Research() {
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /** Participant ids currently running the reader API (allows overlap across participants). */
+  const [activeScans, setActiveScans] = useState({});
+  const [showCaptureFlash, setShowCaptureFlash] = useState(false);
+  const [captureLocked, setCaptureLocked] = useState(false);
   const [exportDraft, setExportDraft] = useState(false);
   const [researchTab, setResearchTab] = useState('capture');
   const [analysisData, setAnalysisData] = useState(null);
@@ -450,6 +489,10 @@ export default function Research() {
   const [lastReaderRunAt, setLastReaderRunAt] = useState(null);
   const pendingScansRef = useRef([]);
   pendingScansRef.current = pendingScans;
+  const selectedIdRef = useRef(null);
+  const activeScansRef = useRef({});
+  selectedIdRef.current = selectedId;
+  activeScansRef.current = activeScans;
 
   useEffect(() => {
     return () => {
@@ -458,8 +501,10 @@ export default function Research() {
   }, []);
 
   useEffect(() => {
-    setCameraOpen(false);
     setLastReaderRunAt(null);
+    if (Object.keys(activeScansRef.current).length === 0) {
+      setCameraOpen(false);
+    }
     setPendingScans((prev) => {
       prev.forEach(revokeScanPreview);
       return [];
@@ -522,7 +567,7 @@ export default function Research() {
       if (q) setLiveQuality(q);
     };
     tick();
-    const id = setInterval(tick, 900);
+    const id = setInterval(tick, 500);
     return () => clearInterval(id);
   }, [cameraOpen]);
 
@@ -654,6 +699,15 @@ export default function Research() {
   }, [displayClarifyList, variableByCode]);
   const latestScanReadable = !!detail?.last_scan_at && displayClarifyList.length === 0;
 
+  const activeScanCodes = useMemo(
+    () =>
+      Object.keys(activeScans).map(
+        (id) => participants.find((p) => String(p.id) === String(id))?.participant_code || '…'
+      ),
+    [activeScans, participants]
+  );
+  const readerRunningHere = !!(selectedId && activeScans[selectedId]);
+
   const jumpToField = (code) => {
     const key = String(code || '').toUpperCase();
     const el = rowRefs.current[key];
@@ -705,39 +759,56 @@ export default function Research() {
     }
   };
 
-  const runScanWithFiles = async (files) => {
-    if (!selectedId || !files?.length) return;
+  const runScanWithFiles = async (files, participantId) => {
+    const pid = participantId ?? selectedIdRef.current;
+    if (!pid || !files?.length) return;
     setError('');
-    setBusy(true);
+    setActiveScans((s) => ({ ...s, [pid]: true }));
     try {
       const fd = new FormData();
       for (const f of files) fd.append('images', f);
-      const r = await researchApi.scanParticipant(selectedId, fd);
-      setLocalValues((prev) => ({ ...prev, ...(r.values || {}) }));
-      await loadDetail(selectedId);
+      const r = await researchApi.scanParticipant(pid, fd);
+      if (selectedIdRef.current === pid) {
+        setLocalValues((prev) => ({ ...prev, ...(r.values || {}) }));
+        await loadDetail(pid);
+      }
       setLastReaderRunAt(new Date().toISOString());
       await loadList();
-      if (r.all_fields_captured) {
+      if (r.all_fields_captured && selectedIdRef.current === pid) {
         setError('');
       }
     } catch (e) {
-      setError(e.message || 'Scan failed');
+      if (selectedIdRef.current === pid) {
+        setError(e.message || 'Scan failed');
+      }
     } finally {
-      setBusy(false);
+      setActiveScans((s) => {
+        const n = { ...s };
+        delete n[pid];
+        return n;
+      });
     }
   };
 
   const onRunReaderFromQueue = async () => {
-    const files = pendingScans.map((p) => p.file);
-    if (!files.length) return;
-    await runScanWithFiles(files);
-    setPendingScans((prev) => {
-      prev.forEach(revokeScanPreview);
-      return [];
-    });
+    const snapshot = [...pendingScansRef.current];
+    const files = snapshot.map((p) => p.file);
+    const sentIds = new Set(snapshot.map((p) => p.id));
+    const pid = selectedIdRef.current;
+    if (!files.length || !pid) return;
+    try {
+      await runScanWithFiles(files, pid);
+    } finally {
+      setPendingScans((prev) => {
+        const removed = prev.filter((p) => sentIds.has(p.id));
+        removed.forEach(revokeScanPreview);
+        return prev.filter((p) => !sentIds.has(p.id));
+      });
+    }
   };
 
   const captureVideoFrameToQueue = () => {
+    if (captureLocked) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2 || video.videoWidth < 16) {
@@ -749,15 +820,22 @@ export default function Research() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
+    setCaptureLocked(true);
     canvas.toBlob(
       (blob) => {
-        if (!blob) return;
+        if (!blob) {
+          setCaptureLocked(false);
+          return;
+        }
         const file = new File([blob], `page_${Date.now()}.jpg`, { type: 'image/jpeg' });
         setPendingScans((prev) => [...prev, scanQueueEntryFromFile(file)]);
         setCameraError('');
+        setShowCaptureFlash(true);
+        window.setTimeout(() => setShowCaptureFlash(false), 720);
+        window.setTimeout(() => setCaptureLocked(false), 420);
       },
       'image/jpeg',
-      0.9
+      0.82
     );
   };
 
@@ -844,6 +922,43 @@ export default function Research() {
             />
             <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
             <div className="pointer-events-none absolute inset-x-0 top-1/3 bottom-1/3 border-y-2 border-white/30" aria-hidden="true" />
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
+              <div className="relative h-20 w-20 sm:h-24 sm:w-24">
+                <div className="absolute left-1/2 top-0 bottom-0 w-0.5 -translate-x-1/2 bg-white/55 shadow-sm" />
+                <div className="absolute top-1/2 left-0 right-0 h-0.5 -translate-y-1/2 bg-white/55 shadow-sm" />
+              </div>
+            </div>
+            {liveQuality?.crossHint ? (
+              <div
+                className={`pointer-events-none absolute left-2 top-2 z-10 flex max-w-[min(100%-1rem,220px)] items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold leading-tight shadow-lg ring-1 ring-black/40 ${
+                  liveQuality.crossHint.status === 'visible'
+                    ? 'bg-emerald-600/95 text-white'
+                    : 'bg-amber-600/95 text-white'
+                }`}
+                aria-live="polite"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    liveQuality.crossHint.status === 'visible' ? 'bg-white' : 'bg-white/90 animate-pulse'
+                  }`}
+                />
+                {liveQuality.crossHint.status === 'visible'
+                  ? 'Centre + detected — OK to capture'
+                  : 'Centre + not clear — align with guides'}
+              </div>
+            ) : null}
+            {showCaptureFlash ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/25"
+                aria-live="polite"
+              >
+                <div className="rounded-full bg-emerald-500 p-5 shadow-2xl ring-4 ring-emerald-300/80 animate-[ping_0.6s_ease-out_1]">
+                  <svg className="h-14 w-14 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+              </div>
+            ) : null}
           </div>
           {cameraError ? (
             <div className="px-3 py-2 text-sm text-amber-100 bg-amber-950/90">{cameraError}</div>
@@ -873,18 +988,27 @@ export default function Research() {
                   </ul>
                 </div>
               )}
+              {liveQuality.crossHint ? (
+                <p
+                  className={`mt-2 text-xs font-medium ${
+                    liveQuality.crossHint.status === 'visible' ? 'text-emerald-200' : 'text-amber-200'
+                  }`}
+                >
+                  <strong>Centre mark:</strong> {liveQuality.crossHint.detail}
+                </p>
+              ) : null}
             </div>
           ) : null}
           <div className="flex flex-wrap items-center justify-center gap-3 px-3 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] bg-surface-950">
             <button
               type="button"
               className="rounded-full h-16 w-16 border-4 border-white bg-white/20 hover:bg-white/30 disabled:opacity-40"
-              disabled={busy || !!cameraError}
+              disabled={captureLocked || !!cameraError}
               onClick={captureVideoFrameToQueue}
               aria-label="Capture this page"
             />
             <p className="text-xs text-surface-300 max-w-[200px]">
-              Each tap adds a page to your queue. Close when done, then run the reader from the form.
+              Each tap adds one page — a green tick confirms the shot. Wait for the tick before the next capture to avoid duplicates.
             </p>
           </div>
         </div>
@@ -957,6 +1081,14 @@ export default function Research() {
       {error ? (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
           {error}
+        </div>
+      ) : null}
+
+      {Object.keys(activeScans).length > 0 ? (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-100">
+          Reader running for{' '}
+          <strong>{activeScanCodes.join(', ')}</strong>
+          {readerRunningHere ? ' — you can open the camera or queue pages for other participants while this finishes.' : ''}
         </div>
       ) : null}
 
@@ -1153,19 +1285,33 @@ export default function Research() {
                           {pendingScans.length} page{pendingScans.length === 1 ? '' : 's'} queued
                         </span>
                         <div className="flex flex-wrap gap-2">
-                          <button type="button" className={btnSecondary()} disabled={busy || isComplete} onClick={clearPendingScans}>
+                          <button
+                            type="button"
+                            className={btnSecondary()}
+                            disabled={busy || isComplete}
+                            onClick={clearPendingScans}
+                          >
                             Clear queue
                           </button>
                           <button
                             type="button"
                             className={btnPrimary()}
-                            disabled={busy || isComplete}
+                            disabled={readerRunningHere || busy || isComplete}
                             onClick={onRunReaderFromQueue}
                           >
-                            Run reader on queued pages
+                            {readerRunningHere ? 'Reader running…' : 'Run reader on queued pages'}
                           </button>
                         </div>
                       </div>
+                      {readerRunningHere ? (
+                        <div
+                          className="flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-2 text-xs text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-100"
+                          aria-live="polite"
+                        >
+                          <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-sky-600 border-t-transparent dark:border-sky-300 dark:border-t-transparent" />
+                          Reader is processing queued pages for this participant...
+                        </div>
+                      ) : null}
                       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
                         {pendingScans.map((entry, idx) => (
                           <div key={entry.id} className="relative shrink-0 w-20">

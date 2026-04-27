@@ -40,6 +40,14 @@ function relUploadPath(absPath) {
   return rel.split(path.sep).join('/');
 }
 
+function makeScannerTag(user) {
+  const raw = String(user?.full_name || user?.email || user?.id || 'USER')
+    .trim()
+    .toUpperCase();
+  const collapsed = raw.replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return (collapsed || 'USER').slice(0, 12);
+}
+
 /** Last scan payload: current envelope, or legacy flat / `{ values, needs_clarification }` / extraction raw JSON. */
 function parseScanEnvelope(rawStr) {
   if (rawStr == null || rawStr === '') return { needs: [] };
@@ -117,7 +125,8 @@ router.post('/participants', async (req, res, next) => {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'Tenant required.' });
     const notes = (req.body?.notes && String(req.body.notes).trim().slice(0, 2000)) || null;
-    let code = `R-${randomBytes(4).toString('hex').toUpperCase()}`;
+    const scannerTag = makeScannerTag(req.user);
+    let code = `${scannerTag}-R-${randomBytes(4).toString('hex').toUpperCase()}`;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         const ins = await query(
@@ -135,7 +144,7 @@ router.post('/participants', async (req, res, next) => {
         });
       } catch (err) {
         if (String(err?.message || '').includes('UQ_research_participant_code')) {
-          code = `R-${randomBytes(4).toString('hex').toUpperCase()}`;
+          code = `${scannerTag}-R-${randomBytes(4).toString('hex').toUpperCase()}`;
           continue;
         }
         throw err;
@@ -307,24 +316,24 @@ router.post('/participants/:id/scan', upload.array('images', 12), async (req, re
     );
     let sortBase = (existing.recordset?.[0]?.mx ?? existing.recordset?.[0]?.MX ?? -1) + 1;
 
-    const imagePayload = [];
-    for (let i = 0; i < files.length; i += 1) {
-      const f = files[i];
-      const ext = (f.mimetype && f.mimetype.includes('png')) ? 'png' : 'jpg';
-      const fname = `scan_${sortBase + i}.${ext}`;
-      const abs = path.join(dir, fname);
-      await fs.writeFile(abs, f.buffer);
-      const rel = relUploadPath(abs);
-      await query(
-        `INSERT INTO research_participant_images (participant_id, sort_order, file_path, mime_type)
-         VALUES (@pid, @so, @fp, @mt)`,
-        { pid, so: sortBase + i, fp: rel, mt: f.mimetype || null }
-      );
-      imagePayload.push({
-        mime: f.mimetype || 'image/jpeg',
-        base64: f.buffer.toString('base64'),
-      });
-    }
+    const imagePayload = await Promise.all(
+      files.map(async (f, i) => {
+        const ext = f.mimetype && f.mimetype.includes('png') ? 'png' : 'jpg';
+        const fname = `scan_${sortBase + i}.${ext}`;
+        const abs = path.join(dir, fname);
+        await fs.writeFile(abs, f.buffer);
+        const rel = relUploadPath(abs);
+        await query(
+          `INSERT INTO research_participant_images (participant_id, sort_order, file_path, mime_type)
+           VALUES (@pid, @so, @fp, @mt)`,
+          { pid, so: sortBase + i, fp: rel, mt: f.mimetype || null }
+        );
+        return {
+          mime: f.mimetype || 'image/jpeg',
+          base64: f.buffer.toString('base64'),
+        };
+      })
+    );
 
     const model = (process.env.OPENAI_RESEARCH_MODEL || 'gpt-4o-mini').trim();
     const extracted = await extractQuestionnaireFromImages(imagePayload);

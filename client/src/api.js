@@ -95,6 +95,32 @@ async function requestForm(path, formData) {
   return data;
 }
 
+async function requestFormBlob(path, formData) {
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+  } catch (err) {
+    throw wrapNetworkError(err);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    try {
+      const data = JSON.parse(text);
+      throw new Error(data.error || res.statusText);
+    } catch {
+      throw new Error(text || res.statusText);
+    }
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const nameMatch = disposition.match(/filename="([^"]+)"/i);
+  return { blob, filename: nameMatch?.[1] || 'list_data_capture.xlsx' };
+}
+
 export const research = {
   schema: () => request('/research/schema'),
   listParticipants: () => request('/research/participants'),
@@ -106,6 +132,8 @@ export const research = {
   analysis: (includeDraft) =>
     request(`/research/analysis${includeDraft ? '?include_draft=1' : ''}`),
   exportUrl: (includeDraft) => `${API}/research/export.xlsx${includeDraft ? '?include_draft=1' : ''}`,
+  previewListDataCapture: (formData) => requestForm('/research/list-data-capture/preview', formData),
+  extractListDataCaptureExcel: (formData) => requestFormBlob('/research/list-data-capture/extract.xlsx', formData),
 };
 
 export const auth = {

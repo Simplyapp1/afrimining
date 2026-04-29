@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import ExcelJS from 'exceljs';
+import { PDFParse } from 'pdf-parse';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import {
@@ -16,6 +17,7 @@ import {
 } from '../lib/researchQuestionnaireSchema.js';
 import { extractQuestionnaireFromImages, needsClarificationFromStoredPayload } from '../lib/researchVisionExtract.js';
 import { computeResearchInferential } from '../lib/researchInferential.js';
+import { extractListDataCaptureFromPdfText } from '../lib/researchListCaptureExtract.js';
 
 const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +76,25 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024, files: 12 },
 });
+const uploadPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024, files: 1 },
+});
+
+async function readPdfText(buffer) {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const out = await parser.getText();
+    return {
+      text: String(out?.text || '').trim(),
+      pages: Array.isArray(out?.pages)
+        ? out.pages.map((p) => ({ num: Number(p?.num || 0), text: String(p?.text || '') }))
+        : [],
+    };
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
+}
 
 router.use(requireAuth, loadUser, requirePageAccess('research'));
 
@@ -523,6 +544,151 @@ router.delete('/participants/:id', async (req, res, next) => {
     } catch (_) {}
     await query(`DELETE FROM research_participants WHERE id = @id`, { id: pid });
     res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/list-data-capture/extract.xlsx', uploadPdf.single('document'), async (req, res, next) => {
+  try {
+    const f = req.file;
+    if (!f) return res.status(400).json({ error: 'Attach one PDF file (field name: document).' });
+    const mime = String(f.mimetype || '').toLowerCase();
+    if (!mime.includes('pdf')) return res.status(400).json({ error: 'Only PDF uploads are supported for list data capture.' });
+
+    let parsed = null;
+    try {
+      parsed = await readPdfText(f.buffer);
+    } catch {
+      return res.status(422).json({ error: 'Could not read text from this PDF. Try a clearer / text-based file.' });
+    }
+
+    const ai = await extractListDataCaptureFromPdfText({
+      fileName: f.originalname || 'uploaded.pdf',
+      pdfText: parsed?.text || '',
+      pdfPages: parsed?.pages || [],
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Simplyapp — Research list data capture';
+    workbook.created = new Date();
+
+    const dataSheet = workbook.addWorksheet('Captured Data', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const templateSheet = workbook.addWorksheet('Template', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const guideSheet = workbook.addWorksheet('Field Guide');
+    const readmeSheet = workbook.addWorksheet('Read_me');
+
+    const headers = ai.template_columns.map((c) => c.header);
+    const keys = ai.template_columns.map((c) => c.key);
+
+    const styleHeader = (sheet, rowIdx) => {
+      const r = sheet.getRow(rowIdx);
+      r.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F4C81' } };
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFD9E1F2' } },
+          left: { style: 'thin', color: { argb: 'FFD9E1F2' } },
+          bottom: { style: 'thin', color: { argb: 'FFD9E1F2' } },
+          right: { style: 'thin', color: { argb: 'FFD9E1F2' } },
+        };
+      });
+      r.height = 24;
+    };
+
+    dataSheet.addRow(headers);
+    styleHeader(dataSheet, 1);
+    ai.template_columns.forEach((col, idx) => {
+      dataSheet.getColumn(idx + 1).width = col.width;
+    });
+    for (const row of ai.extracted_rows) {
+      dataSheet.addRow(keys.map((k) => row[k] ?? ''));
+    }
+    dataSheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: Math.max(1, headers.length) },
+    };
+
+    templateSheet.addRow(headers);
+    styleHeader(templateSheet, 1);
+    ai.template_columns.forEach((col, idx) => {
+      templateSheet.getColumn(idx + 1).width = col.width;
+    });
+    const sampleRow = templateSheet.addRow(ai.template_columns.map((c) => c.example || ''));
+    sampleRow.eachCell((cell) => {
+      cell.font = { italic: true, color: { argb: 'FF6B7280' } };
+    });
+    for (let i = 0; i < 200; i += 1) templateSheet.addRow(new Array(headers.length).fill(''));
+
+    guideSheet.columns = [
+      { header: 'Column key', key: 'key', width: 24 },
+      { header: 'Excel header', key: 'header', width: 28 },
+      { header: 'Description', key: 'description', width: 60 },
+      { header: 'Example', key: 'example', width: 30 },
+    ];
+    styleHeader(guideSheet, 1);
+    for (const col of ai.template_columns) {
+      guideSheet.addRow({
+        key: col.key,
+        header: col.header,
+        description: col.description || '',
+        example: col.example || '',
+      });
+    }
+
+    readmeSheet.getColumn(1).width = 110;
+    readmeSheet.addRow([`Workbook: ${ai.workbook_title}`]);
+    readmeSheet.addRow([`Source file: ${f.originalname || 'uploaded.pdf'}`]);
+    readmeSheet.addRow([`Generated at: ${new Date().toISOString()}`]);
+    readmeSheet.addRow([`AI model: ${ai.model}`]);
+    readmeSheet.addRow([]);
+    readmeSheet.addRow([
+      'This workbook was generated with AI-assisted extraction. Always review captured values against the source document before publishing.',
+    ]);
+    for (const note of ai.notes || []) {
+      readmeSheet.addRow([`• ${note}`]);
+    }
+
+    const buf = await workbook.xlsx.writeBuffer();
+    const safeBase = String(ai.workbook_title || 'list_data_capture').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 50);
+    const filename = `${safeBase}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(buf));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/list-data-capture/preview', uploadPdf.single('document'), async (req, res, next) => {
+  try {
+    const f = req.file;
+    if (!f) return res.status(400).json({ error: 'Attach one PDF file (field name: document).' });
+    const mime = String(f.mimetype || '').toLowerCase();
+    if (!mime.includes('pdf')) return res.status(400).json({ error: 'Only PDF uploads are supported for list data capture.' });
+
+    let parsed = null;
+    try {
+      parsed = await readPdfText(f.buffer);
+    } catch {
+      return res.status(422).json({ error: 'Could not read text from this PDF. Try a clearer / text-based file.' });
+    }
+
+    const ai = await extractListDataCaptureFromPdfText({
+      fileName: f.originalname || 'uploaded.pdf',
+      pdfText: parsed?.text || '',
+      pdfPages: parsed?.pages || [],
+    });
+
+    res.json({
+      workbook_title: ai.workbook_title,
+      columns: ai.template_columns,
+      preview_rows: ai.extracted_rows.slice(0, 20),
+      row_count: ai.extracted_rows.length,
+      notes: ai.notes || [],
+      model: ai.model,
+    });
   } catch (e) {
     next(e);
   }

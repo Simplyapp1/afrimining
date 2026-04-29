@@ -473,6 +473,11 @@ export default function Research() {
   const [captureLocked, setCaptureLocked] = useState(false);
   const [exportDraft, setExportDraft] = useState(false);
   const [researchTab, setResearchTab] = useState('capture');
+  const [listCaptureFile, setListCaptureFile] = useState(null);
+  const [listCapturePreviewBusy, setListCapturePreviewBusy] = useState(false);
+  const [listCapturePreview, setListCapturePreview] = useState(null);
+  const [listCaptureBusy, setListCaptureBusy] = useState(false);
+  const [listCaptureNote, setListCaptureNote] = useState('');
   const [analysisData, setAnalysisData] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
@@ -890,6 +895,46 @@ export default function Research() {
     }
   };
 
+  const onGenerateListCaptureExcel = async () => {
+    if (!listCaptureFile) return;
+    setError('');
+    setListCaptureBusy(true);
+    setListCaptureNote('');
+    try {
+      const fd = new FormData();
+      fd.append('document', listCaptureFile);
+      const { blob, filename } = await researchApi.extractListDataCaptureExcel(fd);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || `list_data_capture_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setListCaptureNote('Excel generated successfully. Review extracted rows and template before final use.');
+    } catch (e) {
+      setError(e.message || 'Could not generate list data capture workbook');
+    } finally {
+      setListCaptureBusy(false);
+    }
+  };
+
+  const onPreviewListCapture = async () => {
+    if (!listCaptureFile) return;
+    setError('');
+    setListCaptureNote('');
+    setListCapturePreviewBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('document', listCaptureFile);
+      const data = await researchApi.previewListDataCapture(fd);
+      setListCapturePreview(data);
+    } catch (e) {
+      setError(e.message || 'Could not generate list data preview');
+    } finally {
+      setListCapturePreviewBusy(false);
+    }
+  };
+
   return (
     <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin">
       <div className="w-full max-w-7xl mx-auto space-y-6">
@@ -1044,6 +1089,20 @@ export default function Research() {
           >
             Results analysis
           </button>
+          <button
+            type="button"
+            className={`shrink-0 px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+              researchTab === 'list_capture'
+                ? 'border-brand-600 text-brand-700 dark:text-brand-300'
+                : 'border-transparent text-surface-600 hover:text-surface-900 dark:text-surface-400 dark:hover:text-surface-100 font-medium'
+            }`}
+            onClick={() => {
+              setResearchTab('list_capture');
+              setError('');
+            }}
+          >
+            List data capture
+          </button>
         </div>
         {researchTab === 'capture' ? (
           <div className="flex items-start gap-2 text-sm text-surface-600 dark:text-surface-400">
@@ -1057,6 +1116,20 @@ export default function Research() {
                 'With AI on, anything not clearly readable stays empty and you are prompted field-by-field — the app does not guess.',
                 'Review every value against the paper before marking complete.',
                 'Export a wide-format Excel workbook (Data + Codebook) for analysis.',
+              ]}
+            />
+          </div>
+        ) : researchTab === 'list_capture' ? (
+          <div className="flex items-start gap-2 text-sm text-surface-600 dark:text-surface-400">
+            <span>Upload a list-style PDF and generate an AI-assisted professional Excel template + extracted rows.</span>
+            <InfoHint
+              title="List data capture help"
+              text="Use this when you have a document like SPM107V and need a structured Excel workbook. AI infers columns and extracts rows, then generates a polished template for final verification."
+              bullets={[
+                'Upload one PDF at a time; text-based PDFs work best.',
+                'AI extraction needs OPENAI_API_KEY in server .env and a server restart.',
+                'The workbook includes Captured Data, Template, Field Guide, and Read_me sheets.',
+                'Always review extracted rows for accuracy before publication.',
               ]}
             />
           </div>
@@ -1416,6 +1489,101 @@ export default function Research() {
         </div>
       </div>
         </>
+      ) : researchTab === 'list_capture' ? (
+        <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-950 p-4 sm:p-5 space-y-4">
+          <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">List data capture</h2>
+          <p className="text-sm text-surface-600 dark:text-surface-400 max-w-3xl">
+            Upload a PDF (for example SPM107V). AI will read the document, infer a structured capture layout, and generate a professional
+            Excel workbook with data and a clean template for manual continuation.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              disabled={listCaptureBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setListCaptureFile(f);
+                setListCaptureNote('');
+                setListCapturePreview(null);
+              }}
+              className={inputClass()}
+            />
+            <button
+              type="button"
+              className={btnSecondary()}
+              disabled={listCapturePreviewBusy || listCaptureBusy || !listCaptureFile}
+              onClick={onPreviewListCapture}
+            >
+              {listCapturePreviewBusy ? 'Previewing…' : 'Preview with AI'}
+            </button>
+            <button
+              type="button"
+              className={btnPrimary()}
+              disabled={listCaptureBusy || !listCaptureFile}
+              onClick={onGenerateListCaptureExcel}
+            >
+              {listCaptureBusy ? 'Generating workbook…' : 'Generate AI Excel workbook'}
+            </button>
+          </div>
+          {listCaptureFile ? (
+            <p className="text-xs text-surface-500">
+              Selected file: <strong>{listCaptureFile.name}</strong>
+            </p>
+          ) : null}
+          {listCaptureNote ? (
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
+              {listCaptureNote}
+            </div>
+          ) : null}
+          {listCapturePreview ? (
+            <div className="space-y-3 rounded-xl border border-surface-200 dark:border-surface-800 bg-surface-50/60 dark:bg-surface-900/40 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-100">
+                  Preview: {listCapturePreview.workbook_title || 'List data capture'}
+                </h3>
+                <span className="text-xs text-surface-500">
+                  Showing first {Math.min(20, Number(listCapturePreview.preview_rows?.length || 0))} of {Number(listCapturePreview.row_count || 0)} extracted rows
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-950">
+                <table className="min-w-[760px] w-full text-xs">
+                  <thead>
+                    <tr className="bg-surface-100 dark:bg-surface-800 text-surface-700 dark:text-surface-200">
+                      {(listCapturePreview.columns || []).map((col) => (
+                        <th key={col.key} className="px-2 py-2 text-left font-semibold border-b border-surface-200 dark:border-surface-700">
+                          {col.header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(listCapturePreview.preview_rows || []).length ? (
+                      listCapturePreview.preview_rows.map((row, idx) => (
+                        <tr key={idx} className="border-b border-surface-100 dark:border-surface-800">
+                          {(listCapturePreview.columns || []).map((col) => (
+                            <td key={`${idx}_${col.key}`} className="px-2 py-1.5 text-surface-700 dark:text-surface-300 align-top">
+                              {row[col.key] || '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          className="px-2 py-3 text-surface-500"
+                          colSpan={Math.max(1, (listCapturePreview.columns || []).length)}
+                        >
+                          No rows were confidently extracted from this PDF. You can still download the template workbook.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : (
         <>
           {analysisError ? (
